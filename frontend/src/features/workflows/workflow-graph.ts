@@ -274,9 +274,7 @@ export function portDisplayLabel(node: WorkflowGraphNode, port: WorkflowPortDefi
 }
 
 export function portDisplayType(port: WorkflowPortDefinition): string {
-  // The current agent handler transports a generated report as an artifact;
-  // its user-facing contract is Markdown and must remain understandable.
-  return port.type === "artifact" ? "markdown" : port.type;
+  return port.type;
 }
 
 export type ConnectionValidation =

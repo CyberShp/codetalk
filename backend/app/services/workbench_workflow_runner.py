@@ -29,19 +29,7 @@ from app.llm.factory import (
     create_llm_client_from_active,
     create_source_analysis_llm_client,
 )
-from app.services.ai_staged_execution import (
-    _deterministic_schema_repair,
-    _deterministic_quality_claim_repair,
-    _apply_quality_feedback_field_patches,
-    build_source_evidence_pack,
-    build_profile_execution_evidence,
-    build_staged_execution_plan,
-    execute_staged_builtin_plan,
-    materialize_final_deterministic_quality_repairs,
-    materialize_source_evidence_pack,
-    normalize_materialized_sfmea_risk_contract,
-    refresh_deterministic_combined_report,
-)
+from app.services import legacy_workflow_execution as legacy_execution
 from app.services.agent_run_harness import (
     AgentRunRecord,
     ArtifactValidationResult,
@@ -58,29 +46,6 @@ from app.services.provider_adapters.registry import (
     create_provider_adapter,
     missing_provider_capabilities,
 )
-from app.services.artifact_contract_v3 import (
-    enrich_external_agent_claim_bindings,
-    materialize_artifact_contract_v3_outputs,
-    materialize_claim_evidence_ledger,
-    validate_artifact_contract_v3_outputs,
-)
-from app.services.behavior_claim_validator import materialize_behavior_claim_validation
-from app.services.regular_stage_governance import promote_regular_stage_caches
-from app.services.source_driven_test_design import (
-    refresh_source_driven_delivery_governance,
-)
-from app.services.flow_evidence import render_business_flow_markdown
-from app.services.test_activity_contract import (
-    ARTIFACT_TEMPLATES,
-    audit_test_activity_artifacts,
-    black_box_case_delivery_quality_gaps,
-    refresh_test_activity_contract,
-)
-from app.services.test_activity_stage_specs import (
-    TestActivityStageProgressTracker,
-    project_test_activity_stage_progress,
-    validate_test_activity_stage_contract,
-)
 from app.services.input_consumption import (
     record_external_agent_artifact_consumption,
     record_external_agent_input_delivery,
@@ -93,6 +58,11 @@ from app.services.workflow_run_status import (
     derive_delivery_status,
     legacy_delivery_status as _legacy_v3_delivery_status,
     legacy_quality_status as _legacy_v3_quality_status,
+)
+from app.services.workflow_handler_dispatcher import (
+    WorkflowHandlerDispatcher,
+    WorkflowHandlerRequest,
+    WorkflowHandlerResult,
 )
 
 
@@ -151,7 +121,7 @@ def _append_nested_black_box_delivery_issues(
         for index, case in enumerate(cases):
             if not isinstance(case, dict):
                 continue
-            reasons = black_box_case_delivery_quality_gaps(
+            reasons = legacy_execution.black_box_case_delivery_quality_gaps(
                 case,
                 repo_path=repo_path,
             )
@@ -220,14 +190,14 @@ def _materialize_external_agent_source_evidence_pack(task_run: Any) -> bool:
         task_run=task_run,
         context=context,
     )
-    pack = build_source_evidence_pack(context)
+    pack = legacy_execution.build_source_evidence_pack(context)
     if not pack.get("evidence_cards"):
         return False
     root = Path(str(task_run.artifact_dir))
     stage_dir = root / "stages" / "source_analysis"
     stage_dir.mkdir(parents=True, exist_ok=True)
     _write_json(stage_dir / "source_evidence_pack.json", pack)
-    materialize_source_evidence_pack(pack, root)
+    legacy_execution.materialize_source_evidence_pack(pack, root)
     return True
 
 
@@ -266,7 +236,7 @@ def _refresh_external_agent_delivery_report(task_run: Any) -> bool:
         if isinstance(bundle.get("test_activity_contract"), dict)
         else {}
     )
-    refresh_deterministic_combined_report(
+    legacy_execution.refresh_deterministic_combined_report(
         artifact_dir=root,
         plan=plan,
         artifact="report.md",
@@ -1096,7 +1066,7 @@ def _profile_execution_evidence_for_quality_audit(
     persisted = _read_json(evidence_path)
     if isinstance(persisted, dict) and persisted.get("kind") == "profile_execution_evidence":
         return persisted
-    evidence = build_profile_execution_evidence(
+    evidence = legacy_execution.build_profile_execution_evidence(
         artifact_dir=runtime_artifact_dir,
         execution_profile=profile,
     )
@@ -1139,11 +1109,13 @@ class WorkbenchWorkflowRunner:
         *,
         event_sink: Callable[[str, dict[str, Any]], None] | None = None,
         is_cancelled: Callable[[], bool] | None = None,
+        handler_dispatcher: WorkflowHandlerDispatcher | None = None,
     ) -> None:
         self.artifact_root = Path(artifact_root)
         self.store = WorkbenchTaskRunStore(self.artifact_root)
         self._event_sink = event_sink
         self._is_cancelled_callback = is_cancelled
+        self._handler_dispatcher = handler_dispatcher or WorkflowHandlerDispatcher()
 
     def execute_task_run(
         self,
@@ -1153,6 +1125,24 @@ class WorkbenchWorkflowRunner:
         stop_on_error: bool = True,
     ) -> WorkbenchWorkflowExecutionResult:
         task_run = self.store.load(task_run_id)
+        snapshot_root = Path(task_run.artifact_dir)
+        bundle = task_run.task_bundle if isinstance(task_run.task_bundle, dict) else {}
+        snapshot_required = bool(
+            bundle.get("run_snapshot_path")
+            or (snapshot_root / "run_snapshot_v3.json").is_file()
+            or (snapshot_root / "compiled_definition.json").is_file()
+            or (snapshot_root / "compiled_plan.json").is_file()
+            or (snapshot_root / "task_bundle.json").is_file()
+            or (snapshot_root / "workflow_snapshot.json").is_file()
+            or _task_run_declares_v3_contract(task_run)
+        )
+        if snapshot_required:
+            snapshot_errors = validate_run_snapshot_v3(snapshot_root)
+            if snapshot_errors:
+                return self._finalize_invalid_run_snapshot(
+                    task_run=task_run,
+                    snapshot_errors=snapshot_errors,
+                )
         contract_version = _frozen_compiled_contract_version(task_run)
         if contract_version == 3:
             return self._execute_v3_task_run(
@@ -1178,23 +1168,6 @@ class WorkbenchWorkflowRunner:
         timeout_sec: int,
         stop_on_error: bool,
     ) -> WorkbenchWorkflowExecutionResult:
-        # A V3 preparer records the immutable component index before the first
-        # provider is launched.  Refuse a changed input/profile/policy rather
-        # than executing a task that no longer matches the user's reviewed run.
-        if isinstance(task_run.task_bundle, dict) and task_run.task_bundle.get("run_snapshot_path"):
-            snapshot_errors = validate_run_snapshot_v3(task_run.artifact_dir)
-            if snapshot_errors:
-                started_at = _now()
-                return self._finalize_execution(
-                    task_run=task_run,
-                    started_at=started_at,
-                    step_results=[{
-                        "step_id": "run_snapshot",
-                        "type": "run_snapshot",
-                        "status": "invalid",
-                        "error": "; ".join(snapshot_errors),
-                    }],
-                )
         self._record_builtin_provider_readiness_if_applicable(task_run)
         started_at = _now()
         step_results: list[dict[str, Any]] = []
@@ -1301,9 +1274,6 @@ class WorkbenchWorkflowRunner:
         declared_outputs = _v3_declared_outputs(compiled_definition)
         plan_nodes = _v3_plan_nodes(compiled_plan)
         plan_by_id = {str(node.get("node_id") or ""): node for node in plan_nodes}
-        ordered_ids = [str(item) for item in compiled_plan.get("topological_order") or []]
-        if not ordered_ids:
-            ordered_ids = [str(node.get("node_id") or "") for node in plan_nodes]
 
         steps_by_id = {
             str(step.get("id") or ""): step
@@ -1318,92 +1288,155 @@ class WorkbenchWorkflowRunner:
         step_results: list[dict[str, Any]] = []
         execution_results: list[dict[str, Any]] = []
         validator_results: list[dict[str, Any]] = []
+        governance_results: list[dict[str, Any]] = []
         results_by_node: dict[str, dict[str, Any]] = {}
+        from app.services.workflow_scheduler import WorkflowDagScheduler
 
-        for node_id in ordered_ids:
-            node = plan_by_id.get(node_id)
-            if not isinstance(node, dict):
-                execution_results.append({
-                    "step_id": node_id,
-                    "type": "unknown",
-                    "status": "error",
-                    "error": "compiled_plan_node_missing",
-                })
-                break
-            if self._is_cancelled():
-                cancelled = _cancelled_step_result({"id": node_id, "type": str(node.get("type") or node.get("kind") or "")})
-                step_results.append(cancelled)
-                execution_results.append(cancelled)
-                break
+        effective_plan = json.loads(json.dumps(compiled_plan))
+        for node in effective_plan.get("nodes") or []:
+            if isinstance(node, dict) and not str(node.get("failure_policy") or ""):
+                node["failure_policy"] = (
+                    "stop" if stop_on_error else "continue_independent"
+                )
+
+        def execute_node(
+            node: dict[str, Any],
+            direct_dependency_outputs: dict[str, dict[str, Any]],
+        ) -> dict[str, Any]:
+            node_id = str(node.get("node_id") or "")
             kind = str(node.get("kind") or "")
             handler_id = str(node.get("handler_id") or "")
-            if kind == "validator":
-                validator = self._execute_v3_validator(
-                    task_run=task_run,
-                    node=node,
-                    declared_outputs=declared_outputs,
-                    results_by_node=results_by_node,
+            if self._is_cancelled():
+                result = _cancelled_step_result(
+                    {"id": node_id, "type": str(node.get("type") or kind)}
                 )
-                step_results.append(validator)
-                validator_results.append(validator)
-                results_by_node[node_id] = validator
-                self._emit_step_finished(validator)
-                continue
-
-            step = steps_by_id.get(node_id)
-            if kind not in {"agent", "builtin_model"} or not step or str(node.get("type") or "") != "agent_task":
-                result = {
-                    "step_id": node_id,
-                    "type": str(node.get("type") or kind),
-                    "status": "error",
-                    "error": "v3_handler_not_implemented",
-                    "handler_id": handler_id,
-                }
+            elif kind in {"validator", "governance"}:
+                self._emit_event(
+                    "step_started",
+                    _v3_handler_started_event_payload(node),
+                )
+                result = _v3_handler_step_result(
+                    self._execute_v3_handler(
+                        task_run=task_run,
+                        node=node,
+                        declared_outputs=declared_outputs,
+                        results_by_node=results_by_node,
+                        plan_by_id=plan_by_id,
+                    )
+                )
             else:
-                agent_run = agent_runs.get(node_id)
-                if not agent_run:
+                step = steps_by_id.get(node_id)
+                if (
+                    kind not in {"agent", "builtin_model"}
+                    or not step
+                    or str(node.get("type") or "") != "agent_task"
+                ):
                     result = {
                         "step_id": node_id,
-                        "type": "agent_task",
+                        "type": str(node.get("type") or kind),
                         "status": "error",
-                        "error": "missing_agent_run",
+                        "error": "v3_handler_not_implemented",
+                        "handler_id": handler_id,
                     }
                 else:
-                    dependencies = {
-                        dependency_id: results_by_node[dependency_id]
-                        for dependency_id in node.get("depends_on") or []
-                        if dependency_id in results_by_node
-                    }
-                    resolved_inputs = _resolve_plan_node_inputs(
-                        plan_node=node,
-                        input_snapshot=task_run.input_snapshot,
-                        direct_dependency_outputs=dependencies,
-                    )
-                    self._emit_event(
-                        "step_started",
-                        _step_started_event_payload(task_run=task_run, step=step, agent_run=agent_run),
-                    )
-                    result = self._execute_agent_step(
-                        task_run_id=task_run.task_run_id,
-                        step=step,
-                        agent_run=agent_run,
-                        prior_step_results=list(dependencies.values()),
-                        resolved_inputs=resolved_inputs,
-                        timeout_sec=timeout_sec,
-                    )
-            step_results.append(result)
-            execution_results.append(result)
+                    agent_run = agent_runs.get(node_id)
+                    if not agent_run:
+                        result = {
+                            "step_id": node_id,
+                            "type": "agent_task",
+                            "status": "error",
+                            "error": "missing_agent_run",
+                        }
+                    else:
+                        dependency_results = {
+                            dependency_id: results_by_node[dependency_id]
+                            for dependency_id in node.get("depends_on") or []
+                            if dependency_id in results_by_node
+                        }
+                        resolved_inputs = _resolve_plan_node_inputs(
+                            plan_node=node,
+                            input_snapshot=task_run.input_snapshot,
+                            direct_dependency_outputs=direct_dependency_outputs,
+                        )
+                        started_payload = _step_started_event_payload(
+                            task_run=task_run,
+                            step=step,
+                            agent_run=agent_run,
+                        )
+                        started_payload.update({
+                            "handler_id": handler_id,
+                            "handler_version": int(node.get("handler_version") or 1),
+                        })
+                        self._emit_event("step_started", started_payload)
+                        result = self._execute_agent_step(
+                            task_run_id=task_run.task_run_id,
+                            step=step,
+                            agent_run=agent_run,
+                            prior_step_results=list(dependency_results.values()),
+                            resolved_inputs=resolved_inputs,
+                            timeout_sec=timeout_sec,
+                        )
+            result["validated_outputs"] = _validated_step_outputs(
+                result,
+                plan_node=node,
+                declared_outputs=declared_outputs,
+            )
             results_by_node[node_id] = result
             self._emit_step_finished(result)
-            if stop_on_error and str(result.get("status") or "") not in {"completed", "completed_empty", "needs_review"}:
-                break
+            return result
+
+        scheduled = WorkflowDagScheduler(event_sink=self._emit_event).run(
+            effective_plan,
+            execute_node=execute_node,
+        )
+        step_results = []
+        results_by_node = {}
+        for item in scheduled.ordered_results:
+            normalized = dict(item)
+            node_id = str(normalized.get("node_id") or "")
+            node = plan_by_id.get(node_id) or {}
+            kind = str(node.get("kind") or "")
+            normalized.setdefault("step_id", node_id)
+            if kind in {"validator", "governance"}:
+                normalized.setdefault("handler_id", str(node.get("handler_id") or ""))
+                normalized.setdefault(
+                    "handler_version", int(node.get("handler_version") or 1)
+                )
+            step_results.append(normalized)
+            results_by_node[node_id] = normalized
+            if kind not in {"validator", "governance"}:
+                execution_results.append(normalized)
+            elif str(normalized.get("status") or "") != "blocked":
+                if str(normalized.get("handler_axis") or "") == "artifact_validation":
+                    validator_results.append(normalized)
+                else:
+                    governance_results.append(normalized)
 
         execution_status = _v3_execution_status(execution_results)
+        validator_blocked_by_failed_governance = any(
+            str(item.get("status") or "") == "blocked"
+            and str((plan_by_id.get(str(item.get("node_id") or "")) or {}).get("kind") or "")
+            == "validator"
+            and any(
+                str((plan_by_id.get(str(blocker)) or {}).get("kind") or "") == "governance"
+                and str((results_by_node.get(str(blocker)) or {}).get("status") or "")
+                in {"failed", "error", "invalid"}
+                for blocker in item.get("blocked_by") or []
+            )
+            for item in step_results
+        )
         artifact_validation_status = _v3_artifact_validation_status(
             validator_results=validator_results,
-            execution_status=execution_status,
+            configured=any(
+                str(node.get("kind") or "") == "validator"
+                for node in plan_nodes
+            ),
+            blocked_by_failed_governance=(
+                execution_status == "completed"
+                and validator_blocked_by_failed_governance
+            ),
         )
-        governance_status = "not_requested"
+        governance_status = _v3_governance_status(governance_results)
         delivery_status = derive_delivery_status(
             execution_status=execution_status,
             artifact_validation_status=artifact_validation_status,
@@ -1418,7 +1451,7 @@ class WorkbenchWorkflowRunner:
                 for item in validator_results
             ),
             validate_exists=any(
-                str(item.get("handler_id") or "") in {"artifact_exists", "json_schema"}
+                str(item.get("status") or "") in {"completed", "failed"}
                 for item in validator_results
             ),
         )
@@ -1439,11 +1472,51 @@ class WorkbenchWorkflowRunner:
             legacy_delivery_status=_legacy_v3_delivery_status(delivery_status=delivery_status),
             quality_status=quality_status,
             compiled_contract_version=3,
-            audit_summary={"v3": True, "validator_count": len(validator_results)},
+            audit_summary={
+                "v3": True,
+                "validator_count": len(validator_results),
+                "governance_handler_count": len(governance_results),
+                "handler_ids": [
+                    str(item.get("handler_id") or "")
+                    for item in [*validator_results, *governance_results]
+                ],
+            },
             rerun_plan={},
             step_results=step_results,
             outputs=outputs,
             test_activity_quality={},
+        )
+        self._write_v3_execution_artifact(task_run.task_run_id, result)
+        self._emit_event("v3_status_updated", _v3_status_event_payload(result))
+        return result
+
+    def _finalize_invalid_run_snapshot(
+        self,
+        *,
+        task_run: Any,
+        snapshot_errors: list[str],
+    ) -> WorkbenchWorkflowExecutionResult:
+        started_at = _now()
+        result = WorkbenchWorkflowExecutionResult(
+            task_run_id=task_run.task_run_id,
+            status="invalid",
+            started_at=started_at,
+            completed_at=_now(),
+            execution_status="failed",
+            artifact_validation_status="not_started",
+            governance_status="not_requested",
+            delivery_status="blocked",
+            legacy_delivery_status="none",
+            quality_status="blocked",
+            compiled_contract_version=_int_or_none(
+                _frozen_compiled_contract_version(task_run)
+            ),
+            step_results=[{
+                "step_id": "run_snapshot",
+                "type": "run_snapshot",
+                "status": "invalid",
+                "error": "; ".join(snapshot_errors),
+            }],
         )
         self._write_v3_execution_artifact(task_run.task_run_id, result)
         self._emit_event("v3_status_updated", _v3_status_event_payload(result))
@@ -1480,45 +1553,75 @@ class WorkbenchWorkflowRunner:
         self._emit_event("v3_status_updated", _v3_status_event_payload(result))
         return result
 
-    def _execute_v3_validator(
+    def _execute_v3_handler(
         self,
         *,
         task_run: Any,
         node: dict[str, Any],
         declared_outputs: list[dict[str, Any]],
         results_by_node: dict[str, dict[str, Any]],
-    ) -> dict[str, Any]:
+        plan_by_id: dict[str, dict[str, Any]],
+    ) -> WorkflowHandlerResult:
         handler_id = str(node.get("handler_id") or "")
-        required_output_ids = [str(item) for item in node.get("required_outputs") or []]
-        if handler_id not in {"artifact_exists", "json_schema"}:
-            return {
-                "step_id": str(node.get("node_id") or ""),
-                "type": "validator",
-                "handler_id": handler_id,
-                "status": "error",
-                "error": "v3_validator_not_implemented",
-            }
-        selected = [
-            item for item in declared_outputs
-            if str(item.get("output_id") or "") in required_output_ids
-        ]
-        records = _v3_output_records(
-            task_run=task_run,
-            declared_outputs=selected,
-            results_by_node=results_by_node,
-            validate_schema=handler_id == "json_schema",
-            validate_exists=True,
-        )
-        failed = [item for item in records if item.get("status") in {"missing", "invalid"}]
-        return {
-            "step_id": str(node.get("node_id") or ""),
-            "type": "validator",
-            "handler_id": handler_id,
-            "status": "failed" if failed else "completed",
-            "required_outputs": required_output_ids,
-            "outputs": records,
-            "errors": [str(item.get("reason") or "") for item in failed],
+        node_id = str(node.get("node_id") or "")
+        dependency_results = {
+            dependency_id: results_by_node[dependency_id]
+            for dependency_id in node.get("depends_on") or []
+            if dependency_id in results_by_node
         }
+        dependency_outputs = {
+            dependency_id: _validated_step_outputs(
+                dependency_result,
+                plan_node=plan_by_id.get(dependency_id),
+                declared_outputs=declared_outputs,
+            )
+            for dependency_id, dependency_result in dependency_results.items()
+        }
+        try:
+            resolved_inputs = _resolve_plan_node_inputs(
+                plan_node=node,
+                input_snapshot=task_run.input_snapshot,
+                direct_dependency_outputs=dependency_outputs,
+            )
+            resolved_inputs = _handler_semantic_inputs(node, resolved_inputs)
+        except ValueError as exc:
+            return WorkflowHandlerResult(
+                handler_id=handler_id,
+                handler_version=int(node.get("handler_version") or 1),
+                node_id=node_id,
+                node_kind=str(node.get("kind") or "validator"),
+                axis=(
+                    "artifact_validation"
+                    if handler_id in {"artifact_exists", "json_schema", "source_evidence"}
+                    else "governance"
+                ),
+                status="failed",
+                governance_status=(
+                    "failed" if str(node.get("kind") or "") == "governance" else ""
+                ),
+                error_code="compiled_handler_input_missing",
+                message=str(exc),
+            )
+        return self._handler_dispatcher.dispatch(
+            WorkflowHandlerRequest(
+                handler_id=handler_id,
+                handler_version=int(node.get("handler_version") or 1),
+                node_id=node_id,
+                node_kind=str(node.get("kind") or "validator"),
+                task_artifact_dir=Path(str(task_run.artifact_dir)),
+                source_root=Path(str(task_run.repo_path)),
+                declared_outputs=tuple(declared_outputs),
+                required_output_ids=tuple(
+                    str(item) for item in node.get("required_outputs") or []
+                ),
+                artifact_roots_by_output_id=_v3_artifact_roots_by_output_id(
+                    declared_outputs=declared_outputs,
+                    results_by_node=results_by_node,
+                ),
+                inputs=resolved_inputs,
+                blocking=bool(node.get("blocking", True)),
+            )
+        )
 
     @staticmethod
     def _record_builtin_provider_readiness_if_applicable(task_run: Any) -> None:
@@ -1682,6 +1785,10 @@ class WorkbenchWorkflowRunner:
         for output in outputs:
             if isinstance(output, dict) and output.get("status") in {"ok", "completed", "ready", "success"}:
                 self._emit_event("artifact_created", dict(output))
+                # Historical cockpit consumers use ``artifact``. The canonical
+                # Harness event is ``artifact_created``; emit both projections
+                # from the same immutable output record during legacy runs.
+                self._emit_event("artifact", dict(output))
         execution_profile = task_run.task_bundle.get("execution_profile")
         profile_id = (
             str(execution_profile.get("id") or "rapid")
@@ -1699,7 +1806,7 @@ class WorkbenchWorkflowRunner:
             for item in step_results
         ):
             _materialize_external_agent_source_evidence_pack(task_run)
-        materialize_artifact_contract_v3_outputs(
+        legacy_execution.materialize_artifact_contract_v3_outputs(
             task_run.artifact_dir,
             profile_id=profile_id,
         )
@@ -1709,14 +1816,14 @@ class WorkbenchWorkflowRunner:
             and str(item.get("provider") or "") != BUILTIN_LLM_PROVIDER_ID
             for item in step_results
         ):
-            enrich_external_agent_claim_bindings(task_run.artifact_dir)
+            legacy_execution.enrich_external_agent_claim_bindings(task_run.artifact_dir)
             _refresh_external_agent_delivery_report(task_run)
         # A repair can remove an unsafe SFMEA row after the stage contract was
         # first met. Normalize the bytes before the initial final audit so the
         # declared minimum and the judge are assessed on the same delivery
         # artifact.  Running the judge first leaves a stale contradicted claim
         # behind even when normalization produces a fully verified ledger.
-        normalize_materialized_sfmea_risk_contract(
+        legacy_execution.normalize_materialized_sfmea_risk_contract(
             artifact_dir=Path(str(task_run.artifact_dir)),
             plan={},
         )
@@ -1739,7 +1846,7 @@ class WorkbenchWorkflowRunner:
         # Markdown heading). Converge over final bytes without sending another
         # provider request; the bound prevents an accidental repair loop.
         for _ in range(3):
-            repairs = materialize_final_deterministic_quality_repairs(
+            repairs = legacy_execution.materialize_final_deterministic_quality_repairs(
                 task_run.artifact_dir,
                 quality_feedback=test_activity_quality,
             )
@@ -1757,11 +1864,11 @@ class WorkbenchWorkflowRunner:
             # artifact contract and judge are materialized.  The final judge
             # must see these bytes, otherwise it retains contradicted claims
             # from the pre-normalization artifact.
-            normalize_materialized_sfmea_risk_contract(
+            legacy_execution.normalize_materialized_sfmea_risk_contract(
                 artifact_dir=Path(str(task_run.artifact_dir)),
                 plan={},
             )
-            materialize_artifact_contract_v3_outputs(
+            legacy_execution.materialize_artifact_contract_v3_outputs(
                 task_run.artifact_dir,
                 profile_id=profile_id,
             )
@@ -1803,7 +1910,7 @@ class WorkbenchWorkflowRunner:
                 # was already proven against the pre-candidate audit.  Keep
                 # bounded L0/L1 fixes on the restored baseline before its L2
                 # verdict and the next repair decision are materialized.
-                restored_repairs = materialize_final_deterministic_quality_repairs(
+                restored_repairs = legacy_execution.materialize_final_deterministic_quality_repairs(
                     task_run.artifact_dir,
                     quality_feedback=test_activity_quality,
                 )
@@ -1815,11 +1922,11 @@ class WorkbenchWorkflowRunner:
                             for field in fields
                             if field not in final_deterministic_repairs[artifact]
                         )
-                    normalize_materialized_sfmea_risk_contract(
+                    legacy_execution.normalize_materialized_sfmea_risk_contract(
                         artifact_dir=Path(str(task_run.artifact_dir)),
                         plan={},
                     )
-                    materialize_artifact_contract_v3_outputs(
+                    legacy_execution.materialize_artifact_contract_v3_outputs(
                         task_run.artifact_dir,
                         profile_id=profile_id,
                     )
@@ -1859,7 +1966,7 @@ class WorkbenchWorkflowRunner:
         # delivery rendering above. Re-materialize the user-facing Markdown
         # from the final canonical bytes so the download never preserves a
         # pre-repair statement that the quality gate has already downgraded.
-        materialize_artifact_contract_v3_outputs(
+        legacy_execution.materialize_artifact_contract_v3_outputs(
             task_run.artifact_dir,
             profile_id=profile_id,
         )
@@ -1874,7 +1981,7 @@ class WorkbenchWorkflowRunner:
         # repair loop above. Re-run the same deterministic, no-model repair on
         # those final bytes so a regenerated table row cannot evade the last
         # acceptance audit.
-        final_delivery_repairs = materialize_final_deterministic_quality_repairs(
+        final_delivery_repairs = legacy_execution.materialize_final_deterministic_quality_repairs(
             task_run.artifact_dir,
             quality_feedback={"issues": []},
         )
@@ -1903,7 +2010,7 @@ class WorkbenchWorkflowRunner:
         # deterministic and bounded; no provider call or full-stage rerun is
         # introduced here.
         for _ in range(2):
-            post_render_repairs = materialize_final_deterministic_quality_repairs(
+            post_render_repairs = legacy_execution.materialize_final_deterministic_quality_repairs(
                 task_run.artifact_dir,
                 quality_feedback=final_quality_audit,
             )
@@ -1916,7 +2023,7 @@ class WorkbenchWorkflowRunner:
                     for field in fields
                     if field not in final_deterministic_repairs[artifact]
                 )
-            materialize_artifact_contract_v3_outputs(
+            legacy_execution.materialize_artifact_contract_v3_outputs(
                 task_run.artifact_dir,
                 profile_id=profile_id,
             )
@@ -1960,7 +2067,7 @@ class WorkbenchWorkflowRunner:
                     and str(issue.get("artifact") or "").strip()
                 }
             )
-            promoted = promote_regular_stage_caches(
+            promoted = legacy_execution.promote_regular_stage_caches(
                 cache_root=(
                     settings.data_path / "workbench" / "regular_stage_cache"
                     if settings.regular_stage_cache_enabled
@@ -2185,7 +2292,7 @@ class WorkbenchWorkflowRunner:
 
         try:
             validation = _run_async_blocking(
-                materialize_behavior_claim_validation(
+                legacy_execution.materialize_behavior_claim_validation(
                     artifact_dir=Path(str(task_run.artifact_dir)),
                     repo_path=Path(str(task_run.repo_path)),
                     generator_identity=generator_identity,
@@ -2262,7 +2369,7 @@ class WorkbenchWorkflowRunner:
         # delivery bytes.  Renderers can regenerate Markdown after a stage-level
         # repair, so keep this bounded no-model materialization at the single
         # quality-audit entry point rather than relying on call ordering.
-        materialize_final_deterministic_quality_repairs(
+        legacy_execution.materialize_final_deterministic_quality_repairs(
             artifact_dir,
             quality_feedback={"issues": []},
         )
@@ -2270,7 +2377,7 @@ class WorkbenchWorkflowRunner:
             contract=contract,
             workflow_snapshot=task_run.workflow_snapshot,
         )
-        audit = audit_test_activity_artifacts(
+        audit = legacy_execution.audit_test_activity_artifacts(
             artifact_dir=artifact_dir,
             contract=scoped_contract,
             repo_path=str(task_run.repo_path or ""),
@@ -2279,7 +2386,7 @@ class WorkbenchWorkflowRunner:
             audit=audit,
             artifact_dir=artifact_dir,
         )
-        claim_ledger = materialize_claim_evidence_ledger(artifact_dir)
+        claim_ledger = legacy_execution.materialize_claim_evidence_ledger(artifact_dir)
         audit = _apply_claim_evidence_ledger_to_quality_audit(
             audit=audit,
             claim_ledger=claim_ledger,
@@ -2302,7 +2409,7 @@ class WorkbenchWorkflowRunner:
         )
         quality_axes = audit.get("quality_axes")
         artifact_contract_validation = (
-            validate_artifact_contract_v3_outputs(
+            legacy_execution.validate_artifact_contract_v3_outputs(
                 artifact_dir,
                 profile_id=profile_id,
             )
@@ -2310,7 +2417,7 @@ class WorkbenchWorkflowRunner:
             else {"status": "not_enforced", "required": [], "missing_required": []}
         )
         audit["artifact_contract_v3"] = artifact_contract_validation
-        stage_contract_validation = validate_test_activity_stage_contract(
+        stage_contract_validation = legacy_execution.validate_test_activity_stage_contract(
             artifact_dir=artifact_dir,
             profile_id=profile_id,
         )
@@ -3069,7 +3176,7 @@ class WorkbenchWorkflowRunner:
                     else "rapid"
                 )
                 task_root = artifact_dir
-                live_stage_progress = TestActivityStageProgressTracker(
+                live_stage_progress = legacy_execution.TestActivityStageProgressTracker(
                     task_root,
                     profile_id=profile_id,
                 )
@@ -3187,7 +3294,7 @@ class WorkbenchWorkflowRunner:
                     async def execute_staged(plan: dict[str, Any]) -> dict[str, Any]:
                         remaining_seconds = remaining_lifecycle_seconds()
                         return await _execute_staged_with_deadline(
-                            execute_staged_builtin_plan(
+                            legacy_execution.execute_staged_builtin_plan(
                                 llm=llm,
                                 plan=plan,
                                 artifact_dir=artifact_dir,
@@ -3282,7 +3389,7 @@ class WorkbenchWorkflowRunner:
                             }
                         try:
                             validation = await _await_with_absolute_deadline(
-                                materialize_behavior_claim_validation(
+                                legacy_execution.materialize_behavior_claim_validation(
                                     artifact_dir=artifact_dir,
                                     repo_path=str(
                                         scoped_execution_contract.get("repo_path") or ""
@@ -3359,7 +3466,7 @@ class WorkbenchWorkflowRunner:
                             # that root before auditing; otherwise a deep run is
                             # falsely blocked for files that only the later task
                             # finalizer would render from the same bytes.
-                            materialize_artifact_contract_v3_outputs(
+                            legacy_execution.materialize_artifact_contract_v3_outputs(
                                 Path(str(staged_task_run.artifact_dir)),
                                 profile_id=profile_id,
                             )
@@ -3369,11 +3476,11 @@ class WorkbenchWorkflowRunner:
                             # canonical bytes below agent_runs/<step>; waiting
                             # for the later task finalizer left first-pass
                             # Markdown table defects needlessly quality-blocked.
-                            materialize_final_deterministic_quality_repairs(
+                            legacy_execution.materialize_final_deterministic_quality_repairs(
                                 artifact_dir,
                                 quality_feedback={"issues": []},
                             )
-                            normalize_materialized_sfmea_risk_contract(
+                            legacy_execution.normalize_materialized_sfmea_risk_contract(
                                 artifact_dir=artifact_dir,
                                 plan=current_plan,
                             )
@@ -3830,7 +3937,7 @@ class WorkbenchWorkflowRunner:
                             repair_history=repair_history,
                             behavior_validation=behavior_validation,
                         ):
-                            normalize_materialized_sfmea_risk_contract(
+                            legacy_execution.normalize_materialized_sfmea_risk_contract(
                                 artifact_dir=artifact_dir,
                                 plan=current_plan,
                             )
@@ -3889,7 +3996,7 @@ class WorkbenchWorkflowRunner:
                             # agent_runs/<step>. Apply the shared nested-artifact
                             # repair layer before re-auditing those final bytes.
                             nested_deterministic_repairs = (
-                                materialize_final_deterministic_quality_repairs(
+                                legacy_execution.materialize_final_deterministic_quality_repairs(
                                     artifact_dir,
                                     quality_feedback=final_repair_audit,
                                 )
@@ -3901,7 +4008,7 @@ class WorkbenchWorkflowRunner:
                                 # A deterministic repair can remove duplicate
                                 # SFMEA rows. Re-apply the declared floor to the
                                 # materialized nested file before the next audit.
-                                normalize_materialized_sfmea_risk_contract(
+                                legacy_execution.normalize_materialized_sfmea_risk_contract(
                                     artifact_dir=artifact_dir,
                                     plan=current_plan,
                                 )
@@ -3967,7 +4074,7 @@ class WorkbenchWorkflowRunner:
                             # that the preceding materialization already
                             # fixed.  This bounded loop never calls a model.
                             for _ in range(2):
-                                follow_up_repairs = materialize_final_deterministic_quality_repairs(
+                                follow_up_repairs = legacy_execution.materialize_final_deterministic_quality_repairs(
                                     artifact_dir,
                                     quality_feedback=final_repair_audit,
                                 )
@@ -4642,7 +4749,7 @@ class WorkbenchWorkflowRunner:
                 except (UnicodeDecodeError, json.JSONDecodeError):
                     payload = None
                 if payload is not None:
-                    repaired_payload, repaired_fields = _deterministic_schema_repair(
+                    repaired_payload, repaired_fields = legacy_execution._deterministic_schema_repair(
                         payload, output_schema
                     )
                     if repaired_fields:
@@ -4712,13 +4819,13 @@ class WorkbenchWorkflowRunner:
             if isinstance(execution_profile, dict)
             else "rapid"
         )
-        materialize_artifact_contract_v3_outputs(
+        legacy_execution.materialize_artifact_contract_v3_outputs(
             task_dir,
             profile_id=profile_id,
         )
         _write_json(
             task_dir / "test_activity_stage_progress.json",
-            project_test_activity_stage_progress(
+            legacy_execution.project_test_activity_stage_progress(
                 artifact_dir=task_dir,
                 profile_id=profile_id,
             ),
@@ -4836,7 +4943,7 @@ def _workflow_scoped_test_activity_contract(
         )
         if not template_artifact:
             continue
-        spec = base_artifacts.get(template_artifact) or ARTIFACT_TEMPLATES.get(
+        spec = base_artifacts.get(template_artifact) or legacy_execution.ARTIFACT_TEMPLATES.get(
             template_artifact
         )
         if isinstance(spec, dict):
@@ -4856,7 +4963,7 @@ def _workflow_scoped_test_activity_contract(
             )
             if not template_artifact:
                 continue
-            spec = base_artifacts.get(template_artifact) or ARTIFACT_TEMPLATES.get(
+            spec = base_artifacts.get(template_artifact) or legacy_execution.ARTIFACT_TEMPLATES.get(
                 template_artifact
             )
             if isinstance(spec, dict):
@@ -4895,7 +5002,7 @@ def _workflow_scoped_test_activity_contract(
             support_spec = (
                 scoped_artifacts.get(artifact)
                 or base_artifacts.get(artifact)
-                or ARTIFACT_TEMPLATES.get(artifact, {})
+                or legacy_execution.ARTIFACT_TEMPLATES.get(artifact, {})
             )
             if isinstance(support_spec, dict):
                 scoped_artifacts[artifact] = {
@@ -4938,7 +5045,7 @@ def _audit_staged_agent_artifacts(
         contract=contract,
         workflow_snapshot=workflow_snapshot,
     )
-    audit = audit_test_activity_artifacts(
+    audit = legacy_execution.audit_test_activity_artifacts(
         artifact_dir=artifact_dir,
         contract=scoped,
         repo_path=str(execution_contract.get("repo_path") or ""),
@@ -4949,7 +5056,7 @@ def _audit_staged_agent_artifacts(
     )
     return _apply_claim_evidence_ledger_to_quality_audit(
         audit=audit,
-        claim_ledger=materialize_claim_evidence_ledger(artifact_dir),
+        claim_ledger=legacy_execution.materialize_claim_evidence_ledger(artifact_dir),
     )
 
 
@@ -5395,7 +5502,7 @@ def _test_activity_template_for_declaration(
     artifact = str(declaration.get("artifact") or declaration.get("path") or "").strip()
     if allow_flow_map_alias and artifact == "flow_map.md":
         return "business_flow.md"
-    if artifact in ARTIFACT_TEMPLATES:
+    if artifact in legacy_execution.ARTIFACT_TEMPLATES:
         return artifact
     by_type = {
         "business_flow": "business_flow.md",
@@ -5473,7 +5580,7 @@ def _build_workbench_staged_plan(
         original_request = str(
             (task_bundle.get("context_bundle") or {}).get("query") or ""
         ).strip()
-    plan = build_staged_execution_plan(
+    plan = legacy_execution.build_staged_execution_plan(
         contract={
             "target": str(test_activity_contract.get("target") or original_request),
             "required_outputs": required_artifacts,
@@ -8177,7 +8284,7 @@ def _apply_behavior_validation_field_patches(
         rows = _read_json(path)
         if not isinstance(rows, list):
             continue
-        patched = _apply_quality_feedback_field_patches(
+        patched = legacy_execution._apply_quality_feedback_field_patches(
             rows,
             artifact=artifact,
             quality_feedback={"issues": feedback_issues},
@@ -8452,7 +8559,7 @@ def _apply_final_deterministic_quality_repairs(
         sfmea_risk_ledger = _read_json(
             _canonical_structured_artifact_path("sfmea.json")
         )
-        repaired, fields = _deterministic_quality_claim_repair(
+        repaired, fields = legacy_execution._deterministic_quality_claim_repair(
             payload,
             artifact=artifact,
             quality_feedback={"issues": issues},
@@ -8515,7 +8622,7 @@ def _apply_final_deterministic_quality_repairs(
         outline = _read_json(artifact_dir / "flow_outline.json")
         flow_path = artifact_dir / "business_flow.md"
         if isinstance(outline, dict) and flow_path.is_file():
-            flow_path.write_text(render_business_flow_markdown(outline), encoding="utf-8")
+            flow_path.write_text(legacy_execution.render_business_flow_markdown(outline), encoding="utf-8")
             changed.setdefault("business_flow.md", []).append("render_verified_flow_outline")
 
     # A table row can contain a private enum name without the full sentence
@@ -8602,7 +8709,7 @@ def _refresh_reports_after_tombstones(
             and (contract.get("min_sfmea_rows") or contract.get("min_black_box_cases"))
         ):
             continue
-        refresh_deterministic_combined_report(
+        legacy_execution.refresh_deterministic_combined_report(
             artifact_dir=artifact_dir,
             plan=plan,
             artifact=artifact,
@@ -8641,7 +8748,7 @@ def _refresh_canonical_agent_combined_reports(*, artifact_dir: Path) -> list[str
             ),
             {},
         )
-        refresh_deterministic_combined_report(
+        legacy_execution.refresh_deterministic_combined_report(
             artifact_dir=stage_root,
             plan=plan,
             artifact="report.md",
@@ -8661,7 +8768,7 @@ def _refresh_source_delivery_governance_after_finalizing(
     must materialize their removal before report or judge code reads SFMEA.
     """
     _apply_source_driven_fact_tombstones(artifact_dir=artifact_dir)
-    normalize_materialized_sfmea_risk_contract(
+    legacy_execution.normalize_materialized_sfmea_risk_contract(
         artifact_dir=artifact_dir,
         plan=plan,
     )
@@ -8702,7 +8809,7 @@ def _refresh_source_delivery_governance_after_finalizing(
             reconciled.append(row)
         if changed_cases:
             _write_json(governance_root / "black_box_cases.json", reconciled)
-    return refresh_source_driven_delivery_governance(governance_root)
+    return legacy_execution.refresh_source_driven_delivery_governance(governance_root)
 
 
 async def _converge_behavior_validation_field_patches(
@@ -9562,7 +9669,7 @@ def _inject_prior_step_context(
     bundle["workflow_step_artifacts"] = _workflow_step_artifact_map(prior_step_results)
     test_activity_contract = bundle.get("test_activity_contract")
     if isinstance(test_activity_contract, dict):
-        bundle["test_activity_contract"] = refresh_test_activity_contract(
+        bundle["test_activity_contract"] = legacy_execution.refresh_test_activity_contract(
             test_activity_contract,
             declared_artifacts=[
                 str(item) for item in bundle.get("required_artifacts") or []
@@ -9596,7 +9703,7 @@ def _inject_prior_step_context(
         ]
         bundle["quality_retry_required_artifacts"] = retry_required_artifacts
         if isinstance(bundle.get("test_activity_contract"), dict):
-            bundle["test_activity_contract"] = refresh_test_activity_contract(
+            bundle["test_activity_contract"] = legacy_execution.refresh_test_activity_contract(
                 bundle["test_activity_contract"],
                 declared_artifacts=retry_required_artifacts,
             )
@@ -10036,8 +10143,12 @@ def _artifact_context_key(artifact_name: str) -> str:
 
 def _frozen_compiled_contract_version(task_run: Any) -> int | str | None:
     """Read only the immutable definition/plan copied into this attempt."""
-    bundle = task_run.task_bundle if isinstance(task_run.task_bundle, dict) else {}
-    for candidate in (bundle.get("compiled_plan"), bundle.get("compiled_definition")):
+    root = Path(str(getattr(task_run, "artifact_dir", "") or ""))
+    candidates = (
+        _read_frozen_json(root / "compiled_plan.json"),
+        _read_frozen_json(root / "compiled_definition.json"),
+    )
+    for candidate in candidates:
         if not isinstance(candidate, dict):
             continue
         value = candidate.get("compiled_contract_version")
@@ -10049,13 +10160,39 @@ def _frozen_compiled_contract_version(task_run: Any) -> int | str | None:
     return None
 
 
-def _v3_frozen_contract(task_run: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+def _task_run_declares_v3_contract(task_run: Any) -> bool:
     bundle = task_run.task_bundle if isinstance(task_run.task_bundle, dict) else {}
-    definition = bundle.get("compiled_definition")
-    plan = bundle.get("compiled_plan")
-    if not isinstance(definition, dict) or not isinstance(plan, dict):
-        raise ValueError("V3 run is missing its frozen compiled contract")
-    return definition, plan
+    candidates = (
+        getattr(task_run, "workflow_snapshot", None),
+        bundle,
+        bundle.get("compiled_plan"),
+        bundle.get("compiled_definition"),
+    )
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        value = candidate.get("compiled_contract_version")
+        if isinstance(value, int) and not isinstance(value, bool) and value == 3:
+            return True
+        if str(value or "").strip() == "3":
+            return True
+    return False
+
+
+def _v3_frozen_contract(task_run: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    root = Path(str(getattr(task_run, "artifact_dir", "") or ""))
+    frozen_definition = _read_frozen_json(root / "compiled_definition.json")
+    frozen_plan = _read_frozen_json(root / "compiled_plan.json")
+    if isinstance(frozen_definition, dict) and isinstance(frozen_plan, dict):
+        return frozen_definition, frozen_plan
+    raise ValueError("V3 run is missing its frozen compiled contract")
+
+
+def _read_frozen_json(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
 
 
 def _v3_declared_outputs(compiled_definition: dict[str, Any]) -> list[dict[str, Any]]:
@@ -10086,16 +10223,95 @@ def _v3_execution_status(step_results: list[dict[str, Any]]) -> str:
 def _v3_artifact_validation_status(
     *,
     validator_results: list[dict[str, Any]],
-    execution_status: str,
+    configured: bool,
+    blocked_by_failed_governance: bool = False,
 ) -> str:
     if not validator_results:
-        return "not_requested"
-    if execution_status != "completed":
-        return "not_started"
+        if configured and blocked_by_failed_governance:
+            return "failed"
+        return "not_started" if configured else "not_requested"
     statuses = {str(item.get("status") or "") for item in validator_results}
     if statuses.intersection({"failed", "error", "invalid"}):
         return "failed"
     return "passed"
+
+
+def _v3_governance_status(governance_results: list[dict[str, Any]]) -> str:
+    if not governance_results:
+        return "not_requested"
+    statuses = {
+        str(item.get("governance_status") or "")
+        for item in governance_results
+    }
+    if "failed" in statuses:
+        return "failed"
+    if "warning" in statuses:
+        return "warning"
+    return "passed"
+
+
+def _v3_artifact_roots_by_output_id(
+    *,
+    declared_outputs: list[dict[str, Any]],
+    results_by_node: dict[str, dict[str, Any]],
+) -> dict[str, Path]:
+    roots: dict[str, Path] = {}
+    for output in declared_outputs:
+        output_id = str(output.get("output_id") or "")
+        producer_id = str(output.get("producer_step_id") or "")
+        producer = results_by_node.get(producer_id)
+        if str((producer or {}).get("status") or "") not in {
+            "completed",
+            "completed_empty",
+            "needs_review",
+            "succeeded",
+            "success",
+        }:
+            continue
+        artifact_dir = str((producer or {}).get("artifact_dir") or "")
+        if output_id and artifact_dir:
+            roots[output_id] = Path(artifact_dir)
+    return roots
+
+
+def _v3_handler_started_event_payload(node: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "step_id": str(node.get("node_id") or ""),
+        "step_type": str(node.get("kind") or ""),
+        "executor": "workflow_handler",
+        "handler_id": str(node.get("handler_id") or ""),
+        "handler_version": int(node.get("handler_version") or 1),
+        "started_at": _now(),
+    }
+
+
+def _v3_handler_step_result(
+    result: WorkflowHandlerResult,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "step_id": result.node_id,
+        "type": result.node_kind,
+        "handler_id": result.handler_id,
+        "handler_version": result.handler_version,
+        "handler_axis": result.axis,
+        "status": "completed" if result.status == "passed" else "failed",
+        "provider_failed": result.provider_failed,
+        "required_outputs": list(result.validated_output_ids),
+        "validated_output_ids": list(result.validated_output_ids),
+        "produced_output_ids": list(result.produced_output_ids),
+        "issues": list(result.issues),
+    }
+    if result.governance_status:
+        payload["governance_status"] = result.governance_status
+    if result.error_code:
+        payload["error"] = result.error_code
+    if result.message:
+        payload["message"] = result.message
+    if result.artifact_dir:
+        payload["artifact_dir"] = result.artifact_dir
+    if result.details:
+        payload["details"] = result.details
+    return payload
 
 
 def _v3_output_records(
@@ -10121,6 +10337,16 @@ def _v3_output_records(
             "status": "unvalidated" if not validate_exists else "missing",
         }
         producer = results_by_node.get(producer_id)
+        if producer and str(producer.get("status") or "") not in {
+            "completed",
+            "completed_empty",
+            "needs_review",
+            "succeeded",
+            "success",
+        }:
+            record["reason"] = "declared producer did not complete successfully"
+            records.append(record)
+            continue
         artifact_dir = Path(str((producer or {}).get("artifact_dir") or ""))
         artifact_path = _resolve_artifact_path(artifact_dir, artifact) if artifact_dir and artifact else None
         if not validate_exists:
@@ -10275,7 +10501,10 @@ def _resolve_single_plan_node_input(
 
 
 def _validated_step_outputs(
-    step_result: dict[str, Any], *, plan_node: dict[str, Any] | None = None
+    step_result: dict[str, Any],
+    *,
+    plan_node: dict[str, Any] | None = None,
+    declared_outputs: Iterable[dict[str, Any]] = (),
 ) -> dict[str, Any]:
     if str(step_result.get("status") or "") not in {
         "completed",
@@ -10305,7 +10534,47 @@ def _validated_step_outputs(
             outputs[port_id] = step_result[port_id]
         elif len(ports) == 1:
             outputs[port_id] = dict(outputs)
+    node_id = str((plan_node or {}).get("node_id") or "")
+    artifact_root = str(step_result.get("artifact_dir") or "")
+    if node_id and artifact_root:
+        for declaration in declared_outputs:
+            if str(declaration.get("producer_step_id") or "") != node_id:
+                continue
+            port_id = str(declaration.get("producer_port_id") or "")
+            output_id = str(declaration.get("output_id") or "")
+            artifact = str(declaration.get("artifact") or "")
+            if not port_id or not output_id or not artifact:
+                continue
+            # This is an immutable reference, not provider-controlled content.
+            # The dispatcher resolves it under artifact_root with the shared
+            # anti-traversal/symlink checks immediately before plugin use.
+            outputs[port_id] = {
+                "__workflow_artifact_ref__": True,
+                "output_id": output_id,
+                "artifact_root": artifact_root,
+                "artifact": artifact,
+                "media_type": str(
+                    declaration.get("media_type") or "application/octet-stream"
+                ),
+            }
     return outputs
+
+
+def _handler_semantic_inputs(
+    plan_node: dict[str, Any], resolved_inputs: dict[str, Any]
+) -> dict[str, Any]:
+    semantic = dict(resolved_inputs)
+    for port in plan_node.get("input_ports") or []:
+        if not isinstance(port, dict):
+            continue
+        port_id = str(port.get("id") or "")
+        binding_key = str(port.get("binding_key") or "")
+        if not port_id or not binding_key or port_id not in resolved_inputs:
+            continue
+        semantic[binding_key] = resolved_inputs[port_id]
+        if binding_key != port_id:
+            semantic.pop(port_id, None)
+    return semantic
 
 
 def _cancelled_step_result(step: dict[str, Any]) -> dict[str, Any]:

@@ -267,14 +267,47 @@ def test_handler_capabilities_are_generic_and_shared_by_workflow_api():
     registry = workflow_handler_capability_snapshot()
     assert registry == {
         "handlers": {
-            "agent": {"versions": [1]},
-            "artifact_exists": {"versions": [1]},
-            "json_schema": {"versions": [1]},
+            "agent": {"versions": [1], "kind": "agent"},
+            "artifact_exists": {"versions": [1], "kind": "validator"},
+            "json_schema": {"versions": [1], "kind": "validator"},
+            "source_evidence": {"versions": [1], "kind": "validator"},
+            "storage_test_design": {
+                "versions": [1],
+                "kind": "governance",
+                "input_ports": [
+                    {
+                        "key": "source_evidence",
+                        "label": "源码证据",
+                        "type": "artifact",
+                        "required": True,
+                        "collection": False,
+                    }
+                ],
+                "output_ports": [
+                    {
+                        "key": "sfmea",
+                        "label": "SFMEA 风险清单",
+                        "type": "artifact",
+                        "required": True,
+                        "collection": False,
+                    },
+                    {
+                        "key": "black_box_cases",
+                        "label": "黑盒测试用例",
+                        "type": "artifact",
+                        "required": True,
+                        "collection": False,
+                    },
+                ],
+            },
+            "sfmea": {"versions": [1], "kind": "validator"},
+            "black_box": {"versions": [1], "kind": "validator"},
+            "independent_review": {"versions": [1], "kind": "validator"},
         }
     }
     api_capabilities = _workflow_graph_capabilities()
     assert api_capabilities["handlers"] == registry["handlers"]
-    assert "storage_test_design" not in api_capabilities["handlers"]
+    assert api_capabilities["handlers"]["storage_test_design"]["kind"] == "governance"
     assert "formal_release" not in api_capabilities["handlers"]
 
 

@@ -120,6 +120,16 @@ _NODE_REGISTRY: tuple[dict[str, Any], ...] = (
             "type": {"type": "output_type", "required": True, "label": "输出类型"},
             "artifact": {"type": "artifact_name", "required": True, "label": "文件名"},
             "required": {"type": "boolean", "label": "必需交付"},
+            "validation_roles": {
+                "type": "enum_multiselect",
+                "label": "验收角色",
+                "options": [
+                    {"value": "source_evidence", "label": "源码证据"},
+                    {"value": "sfmea", "label": "SFMEA"},
+                    {"value": "black_box", "label": "黑盒测试"},
+                    {"value": "independent_review", "label": "独立审查"},
+                ],
+            },
             "evidence_memory": {"type": "boolean", "label": "写入证据库"},
             "semantic_import": {"type": "boolean", "label": "导入测试语义库"},
         },
@@ -156,6 +166,42 @@ _NODE_REGISTRY: tuple[dict[str, Any], ...] = (
             "skill_ids": {"type": "skill_multiselect", "label": "Skills"},
             "mcp_profiles": {"type": "mcp_multiselect", "label": "MCP"},
             "required_artifacts": {"type": "artifact_list", "label": "必须生成的文件"},
+        },
+    ),
+    _node(
+        kind="validator",
+        label="Validator",
+        palette_label="Validator",
+        palette_group="quality",
+        description="只读验收已声明交付件，不生成新的用户产物。",
+        default_config={
+            "handler_id": "artifact_exists",
+            "handler_version": 1,
+            "required_outputs": [],
+            "blocking": True,
+        },
+        config_schema={
+            "handler_id": {"type": "enum", "required": True, "label": "Validator"},
+            "required_outputs": {"type": "declared_output_multiselect", "required": True, "label": "验收交付件"},
+            "blocking": {"type": "boolean", "label": "失败时阻断交付"},
+        },
+    ),
+    _node(
+        kind="governance",
+        label="Governance",
+        palette_label="Governance",
+        palette_group="quality",
+        description="基于显式输入生成已声明并连线的专业治理交付件。",
+        default_inputs=[{"id": "source", "type": "artifact", "required": True}],
+        default_outputs=[{"id": "result", "type": "artifact", "required": True}],
+        default_config={
+            "handler_id": "",
+            "handler_version": 1,
+            "failure_policy": "stop",
+        },
+        config_schema={
+            "handler_id": {"type": "enum", "required": True, "label": "Governance"},
+            "failure_policy": _BUILTIN_STEP_SCHEMA["failure_policy"],
         },
     ),
     _node(
@@ -266,11 +312,23 @@ _NODE_REGISTRY: tuple[dict[str, Any], ...] = (
 SUPPORTED_NODE_KINDS = frozenset(item["kind"] for item in _NODE_REGISTRY)
 
 
-_PHASE3_EXECUTABLE_KINDS = frozenset({"input", "output", "agent"})
+_BASE_V3_KINDS = frozenset({"input", "output", "agent"})
 _TECHNICAL_CONFIG_FIELDS = frozenset({"contract_id", "input_id", "output_id", "step_id", "input_ports", "output_ports"})
+_HANDLER_KIND_FALLBACK = {
+    "artifact_exists": "validator",
+    "json_schema": "validator",
+    "source_evidence": "validator",
+    "independent_review": "validator",
+    "storage_test_design": "governance",
+    "sfmea": "validator",
+    "black_box": "validator",
+    "black_box_cases": "validator",
+}
 
 
-def node_registry_payload(*, schema_version: int = 3) -> dict[str, Any]:
+def node_registry_payload(
+    *, schema_version: int = 3, capabilities: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Return the authoring palette for one graph generation.
 
     V2 remains readable through an explicit legacy request.  The default is the
@@ -284,7 +342,18 @@ def node_registry_payload(*, schema_version: int = 3) -> dict[str, Any]:
         }
     if schema_version != 3:
         raise ValueError(f"Unsupported node registry schema_version: {schema_version}")
-    nodes = [_phase3_node(item) for item in _NODE_REGISTRY if item["kind"] in _PHASE3_EXECUTABLE_KINDS]
+    handlers = _available_handlers(capabilities)
+    nodes: list[dict[str, Any]] = []
+    for item in _NODE_REGISTRY:
+        kind = item["kind"]
+        if kind in _BASE_V3_KINDS:
+            nodes.append(_phase3_node(item))
+            continue
+        if kind not in {"validator", "governance"}:
+            continue
+        options = _handler_options(handlers, kind)
+        if options:
+            nodes.append(_phase3_node(item, handler_options=options))
     return {
         "schema_version": NODE_REGISTRY_SCHEMA_VERSION,
         "authoring_schema_version": 3,
@@ -299,15 +368,24 @@ def node_definition(kind: str) -> dict[str, Any] | None:
     return None
 
 
-def executable_node_definition(kind: str) -> dict[str, Any] | None:
-    """Return a Phase 3 palette definition only when the node can execute."""
-    if kind not in _PHASE3_EXECUTABLE_KINDS:
-        return None
+def executable_node_definition(
+    kind: str, *, capabilities: dict[str, Any] | None = None
+) -> dict[str, Any] | None:
+    """Return a V3 palette definition only when its handler can execute."""
     definition = node_definition(kind)
-    return _phase3_node(definition) if definition else None
+    if not definition:
+        return None
+    if kind in _BASE_V3_KINDS:
+        return _phase3_node(definition)
+    if kind not in {"validator", "governance"}:
+        return None
+    options = _handler_options(_available_handlers(capabilities), kind)
+    return _phase3_node(definition, handler_options=options) if options else None
 
 
-def _phase3_node(source: dict[str, Any]) -> dict[str, Any]:
+def _phase3_node(
+    source: dict[str, Any], *, handler_options: list[dict[str, str]] | None = None
+) -> dict[str, Any]:
     node = deepcopy(source)
     config_schema = node.get("config_schema") if isinstance(node.get("config_schema"), dict) else {}
     node["config_schema"] = {
@@ -328,16 +406,53 @@ def _phase3_node(source: dict[str, Any]) -> dict[str, Any]:
         key for key in inspector.get("field_order", list(node["config_schema"]))
         if key in node["config_schema"]
     ]
+    if handler_options:
+        node["config_schema"]["handler_id"]["options"] = handler_options
+        node["default_config"]["handler_id"] = handler_options[0]["value"]
     if node["kind"] in {"input", "output"}:
         node["execution"] = {
             "available": True,
             "handler_id": None,
             "handler_version": None,
         }
-    else:
+    elif node["kind"] == "agent":
         node["execution"] = {
             "available": True,
             "handler_id": "agent",
             "handler_version": 1,
         }
+    else:
+        node["execution"] = {
+            "available": True,
+            "handler_id": node["default_config"]["handler_id"],
+            "handler_version": 1,
+            "handler_options": [item["value"] for item in handler_options or []],
+        }
     return node
+
+
+def _available_handlers(capabilities: dict[str, Any] | None) -> dict[str, Any]:
+    if capabilities is None:
+        from app.services.workflow_handler_registry import workflow_handler_capability_snapshot
+
+        capabilities = workflow_handler_capability_snapshot()
+    handlers = capabilities.get("handlers") if isinstance(capabilities, dict) else None
+    return handlers if isinstance(handlers, dict) else {}
+
+
+def _handler_options(
+    handlers: dict[str, Any], kind: str
+) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
+    for handler_id, entry in sorted(handlers.items()):
+        declared_kind = (
+            entry.get("kind") or entry.get("node_kind")
+            if isinstance(entry, dict)
+            else None
+        )
+        if declared_kind is None:
+            declared_kind = _HANDLER_KIND_FALLBACK.get(str(handler_id))
+        if declared_kind != kind:
+            continue
+        result.append({"value": str(handler_id), "label": str(handler_id)})
+    return result

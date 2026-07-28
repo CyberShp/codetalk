@@ -1,20 +1,8 @@
-"""Static capability snapshot for workflow compilation and trial runs.
-
-The registry answers only whether CodeTalk has a generic handler implementation.
-It deliberately does not claim that optional storage-test governance handlers are
-available before their runtime implementations are migrated in a later phase.
-"""
+"""Capability snapshot shared by V3 compilation and runtime dispatch."""
 
 from __future__ import annotations
 
 from typing import Any
-
-
-_PHASE1_HANDLERS: dict[str, dict[str, list[int]]] = {
-    "agent": {"versions": [1]},
-    "artifact_exists": {"versions": [1]},
-    "json_schema": {"versions": [1]},
-}
 
 
 def workflow_handler_capability_snapshot() -> dict[str, Any]:
@@ -23,9 +11,35 @@ def workflow_handler_capability_snapshot() -> dict[str, Any]:
     A returned copy prevents a draft validation from mutating the process-wide
     registry and keeps publish and trial-run decisions on the exact same data.
     """
-    return {
-        "handlers": {
-            handler_id: {"versions": list(spec["versions"])}
-            for handler_id, spec in _PHASE1_HANDLERS.items()
-        }
+    from app.services.governance_plugins.registry import (
+        governance_handler_availability_snapshot,
+    )
+    from app.services.validators import DEFAULT_VALIDATOR_REGISTRY
+
+    handlers: dict[str, dict[str, Any]] = {
+        "agent": {"versions": [1], "kind": "agent"},
     }
+    handlers.update(
+        {
+            validator_id: {"versions": [1], "kind": "validator"}
+            for validator_id in DEFAULT_VALIDATOR_REGISTRY.ids()
+        }
+    )
+    for item in governance_handler_availability_snapshot():
+        if not item.get("available"):
+            continue
+        handlers[str(item["handler_id"])] = {
+            "versions": [int(item["handler_version"])],
+            "kind": str(item["node_kind"]),
+            **(
+                {"input_ports": [dict(port) for port in item["input_ports"]]}
+                if item.get("input_ports")
+                else {}
+            ),
+            **(
+                {"output_ports": [dict(port) for port in item["output_ports"]]}
+                if item.get("output_ports")
+                else {}
+            ),
+        }
+    return {"handlers": handlers}

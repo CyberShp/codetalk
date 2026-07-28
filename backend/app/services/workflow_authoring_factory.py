@@ -146,6 +146,9 @@ def build_v3_node(
 ) -> dict[str, Any]:
     """Create one executable Phase 3 node with all technical IDs allocated."""
     requested = dict(config or {})
+    requested_handler_id = ""
+    if kind in {"validator", "governance"}:
+        requested_handler_id = str(requested.pop("handler_id", "")).strip()
     _reject_technical_fields(requested)
     from app.services.workflow_node_registry import executable_node_definition
 
@@ -242,13 +245,83 @@ def build_v3_node(
                 **requested,
             },
         }
+    if kind in {"validator", "governance"}:
+        from app.services.workflow_handler_registry import (
+            workflow_handler_capability_snapshot,
+        )
+
+        handlers = workflow_handler_capability_snapshot().get("handlers") or {}
+        candidates = [
+            (handler_id, metadata)
+            for handler_id, metadata in sorted(handlers.items())
+            if isinstance(metadata, dict) and metadata.get("kind") == kind
+        ]
+        handler_id = requested_handler_id or (candidates[0][0] if candidates else "")
+        metadata = handlers.get(handler_id) if isinstance(handlers, dict) else None
+        if not isinstance(metadata, dict) or metadata.get("kind") != kind:
+            raise CanvasAuthoringError(f"node_handler_unavailable:{handler_id or kind}")
+        versions = metadata.get("versions") if isinstance(metadata.get("versions"), list) else []
+        handler_version = max(
+            (item for item in versions if isinstance(item, int) and not isinstance(item, bool)),
+            default=0,
+        )
+        if handler_version < 1:
+            raise CanvasAuthoringError(f"node_handler_unavailable:{handler_id}")
+        input_ports = [
+            _port(
+                str(item.get("label") or item.get("key") or "Input"),
+                str(item.get("type") or "artifact"),
+                required=bool(item.get("required", False)),
+                collection=bool(item.get("collection", False)),
+                binding_key=str(item.get("key") or ""),
+            )
+            for item in metadata.get("input_ports") or []
+            if isinstance(item, dict) and str(item.get("key") or "")
+        ]
+        output_ports = [
+            _port(
+                str(item.get("label") or item.get("key") or "Output"),
+                str(item.get("type") or "artifact"),
+                required=bool(item.get("required", False)),
+                collection=bool(item.get("collection", False)),
+                binding_key=str(item.get("key") or ""),
+            )
+            for item in metadata.get("output_ports") or []
+            if isinstance(item, dict) and str(item.get("key") or "")
+        ]
+        return {
+            "id": node_id,
+            "kind": kind,
+            "label": label or ("Validator" if kind == "validator" else "Governance"),
+            "position": safe_position,
+            "ports": {"inputs": input_ports, "outputs": output_ports},
+            "config": {
+                "handler_id": handler_id,
+                "handler_version": handler_version,
+                "blocking": bool(requested.pop("blocking", True)),
+                "required_outputs": list(requested.pop("required_outputs", [])),
+                "failure_policy": str(requested.pop("failure_policy", "stop")),
+                **requested,
+            },
+        }
     raise CanvasAuthoringError(f"node_kind_not_executable:{kind}")
 
 
 def build_v3_port(
-    *, label: str, port_type: str, required: bool = False, collection: bool = False
+    *,
+    label: str,
+    port_type: str,
+    required: bool = False,
+    collection: bool = False,
+    binding_key: str = "",
 ) -> dict[str, Any]:
-    return _port(label, port_type, required=required, collection=collection)
+    return _port(
+        label,
+        port_type,
+        required=required,
+        collection=collection,
+        binding_key=binding_key,
+    )
 
 
 def build_v3_edge(
@@ -260,6 +333,48 @@ def build_v3_edge(
         "source": {"node_id": source_node_id, "port_id": source_port_id},
         "target": {"node_id": target_node_id, "port_id": target_port_id},
     }
+
+
+def switch_v3_validator_handler(
+    graph: dict[str, Any], *, node_id: str, handler_id: str
+) -> dict[str, Any]:
+    """Switch one Validator through the registered server-side capability set."""
+    node = next(
+        (
+            item
+            for item in graph.get("nodes") or []
+            if isinstance(item, dict) and str(item.get("id") or "") == node_id
+        ),
+        None,
+    )
+    if node is None:
+        raise CanvasAuthoringError("validator_node_not_found")
+    if str(node.get("kind") or "") != "validator":
+        raise CanvasAuthoringError("validator_node_kind_required")
+
+    from app.services.workflow_handler_registry import (
+        workflow_handler_capability_snapshot,
+    )
+
+    handlers = workflow_handler_capability_snapshot().get("handlers") or {}
+    metadata = handlers.get(handler_id) if isinstance(handlers, dict) else None
+    if not isinstance(metadata, dict) or metadata.get("kind") != "validator":
+        raise CanvasAuthoringError("validator_handler_unavailable")
+    versions = metadata.get("versions") if isinstance(metadata.get("versions"), list) else []
+    handler_version = max(
+        (item for item in versions if isinstance(item, int) and not isinstance(item, bool)),
+        default=0,
+    )
+    if handler_version < 1:
+        raise CanvasAuthoringError("validator_handler_unavailable")
+
+    config = node.get("config") if isinstance(node.get("config"), dict) else {}
+    node["config"] = {
+        **config,
+        "handler_id": handler_id,
+        "handler_version": handler_version,
+    }
+    return node
 
 
 def assert_v3_technical_ids_preserved(
@@ -280,6 +395,7 @@ def assert_v3_technical_ids_preserved(
         if str(old_node.get("kind") or "") != str(new_node.get("kind") or ""):
             raise CanvasAuthoringError("node_kind_immutable")
         _assert_owned_fields_equal(old_node, new_node, TECHNICAL_ID_FIELDS)
+        assert_handler_owned_port_contract(new_node)
         for direction in ("inputs", "outputs"):
             old_ports = _by_id((old_node.get("ports") or {}).get(direction), "port")
             new_ports = _by_id((new_node.get("ports") or {}).get(direction), "port")
@@ -289,6 +405,13 @@ def assert_v3_technical_ids_preserved(
                 _assert_owned_fields_equal(
                     old_ports[port_id], new_ports[port_id], TECHNICAL_ID_FIELDS
                 )
+                if (
+                    "binding_key" in old_ports[port_id]
+                    or "binding_key" in new_ports[port_id]
+                ) and old_ports[port_id].get("binding_key") != new_ports[port_id].get(
+                    "binding_key"
+                ):
+                    raise CanvasAuthoringError("binding_key_immutable")
                 if str(old_ports[port_id].get("type") or "") != str(new_ports[port_id].get("type") or ""):
                     raise CanvasAuthoringError("port_type_immutable")
         for field in TECHNICAL_ID_FIELDS:
@@ -304,6 +427,52 @@ def assert_v3_technical_ids_preserved(
         for endpoint in ("source", "target"):
             if old_edges[edge_id].get(endpoint) != new_edges[edge_id].get(endpoint):
                 raise CanvasAuthoringError("edge_endpoints_immutable")
+
+
+def assert_handler_port_mutation_allowed(node: dict[str, Any]) -> None:
+    """Only user-owned node kinds expose mutable ports in authoring commands."""
+    if str(node.get("kind") or "") in {"validator", "governance"}:
+        raise CanvasAuthoringError("handler_port_contract_immutable")
+
+
+def assert_handler_owned_port_contract(node: dict[str, Any]) -> None:
+    """Raw graph replacement must preserve the registered semantic contract."""
+    kind = str(node.get("kind") or "")
+    if kind not in {"validator", "governance"}:
+        return
+    from app.services.workflow_handler_registry import (
+        workflow_handler_capability_snapshot,
+    )
+
+    config = node.get("config") if isinstance(node.get("config"), dict) else {}
+    handler_id = str(config.get("handler_id") or "")
+    descriptor = workflow_handler_capability_snapshot().get("handlers", {}).get(handler_id)
+    if not isinstance(descriptor, dict) or descriptor.get("kind") != kind:
+        raise CanvasAuthoringError("handler_port_contract_immutable")
+    ports = node.get("ports") if isinstance(node.get("ports"), dict) else {}
+    for direction, descriptor_key in (
+        ("inputs", "input_ports"),
+        ("outputs", "output_ports"),
+    ):
+        expected = _handler_semantic_ports(descriptor.get(descriptor_key))
+        actual = _handler_semantic_ports(ports.get(direction), graph_ports=True)
+        if expected != actual:
+            raise CanvasAuthoringError("handler_port_contract_immutable")
+
+
+def _handler_semantic_ports(value: Any, *, graph_ports: bool = False) -> list[tuple[str, str, bool, bool]]:
+    if not isinstance(value, list):
+        return []
+    return sorted(
+        (
+            str(item.get("binding_key" if graph_ports else "key") or ""),
+            str(item.get("type") or ""),
+            bool(item.get("required", False)),
+            bool(item.get("collection", False)),
+        )
+        for item in value
+        if isinstance(item, dict)
+    )
 
 
 def migrate_legacy_graph_to_v3(
@@ -380,14 +549,24 @@ def _identifier(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex}"
 
 
-def _port(label: str, port_type: str, *, required: bool = False, collection: bool = False) -> dict[str, Any]:
-    return {
+def _port(
+    label: str,
+    port_type: str,
+    *,
+    required: bool = False,
+    collection: bool = False,
+    binding_key: str = "",
+) -> dict[str, Any]:
+    port = {
         "id": new_identity("port"),
         "label": label,
         "type": port_type,
         "required": required,
         "collection": collection,
     }
+    if binding_key:
+        port["binding_key"] = binding_key
+    return port
 
 
 def _position(value: dict[str, Any] | None) -> dict[str, int]:

@@ -906,6 +906,603 @@ async def test_v3_agent_handler_injection_cannot_persist_or_reach_compiled_plan(
 
 
 @pytest.mark.asyncio
+async def test_v3_validator_handler_can_switch_only_through_server_command_and_publish(
+    tmp_path, monkeypatch
+):
+    """The visible Validator selector must persist through a server-owned command."""
+    from app.config import settings
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setattr(settings, "data_dir", str(data_dir))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_canvas_app()), base_url="http://test"
+    ) as client:
+        created = await client.post(
+            "/api/workbench/workflows/new",
+            json={"template": "free_source_analysis", "name": "Switch validator"},
+        )
+        draft = created.json()["draft"]
+        graph = draft["authoring_graph"]
+        declared_output = next(node for node in graph["nodes"] if node["kind"] == "output")
+        added = await client.post(
+            f"/api/workbench/workflows/{draft['workflow_id']}"
+            f"/versions/{draft['version_id']}/nodes",
+            json={
+                "expected_revision": draft["draft_revision"],
+                "kind": "validator",
+                "label": "交付件校验",
+                "position": {"x": 820, "y": 420},
+                "config": {
+                    "handler_id": "artifact_exists",
+                    "required_outputs": [declared_output["config"]["output_id"]],
+                    "blocking": True,
+                },
+            },
+        )
+        assert added.status_code == 201
+        validator = added.json()["node"]
+
+        switched = await client.patch(
+            f"/api/workbench/workflows/{draft['workflow_id']}"
+            f"/versions/{draft['version_id']}/nodes/{validator['id']}/handler",
+            json={
+                "expected_revision": added.json()["draft"]["draft_revision"],
+                "handler_id": "json_schema",
+            },
+        )
+        assert switched.status_code == 200
+        refreshed_without_schema = await client.get(
+            f"/api/workbench/workflows/{draft['workflow_id']}"
+            f"/versions/{draft['version_id']}"
+        )
+        rejected_compile = await client.post(
+            f"/api/workbench/workflows/{draft['workflow_id']}"
+            f"/versions/{draft['version_id']}/compile",
+            json={"expected_revision": switched.json()["draft"]["draft_revision"]},
+        )
+        assert rejected_compile.status_code == 422
+        rejected_publish = await client.post(
+            f"/api/workbench/workflows/{draft['workflow_id']}"
+            f"/versions/{draft['version_id']}/publish",
+            json={"expected_revision": switched.json()["draft"]["draft_revision"]},
+        )
+        assert rejected_publish.status_code == 422
+
+        configured_graph = deepcopy(switched.json()["draft"]["authoring_graph"])
+        configured_output = next(
+            node for node in configured_graph["nodes"] if node["kind"] == "output"
+        )
+        configured_output["config"].update(
+            {
+                "type": "json",
+                "media_type": "application/json",
+                "artifact": "report.json",
+                "schema": {"type": "object"},
+            }
+        )
+        configured = await client.put(
+            f"/api/workbench/workflows/{draft['workflow_id']}"
+            f"/versions/{draft['version_id']}",
+            json={
+                "authoring_graph": configured_graph,
+                "expected_revision": switched.json()["draft"]["draft_revision"],
+            },
+        )
+        assert configured.status_code == 200, configured.text
+        refreshed_with_schema = await client.get(
+            f"/api/workbench/workflows/{draft['workflow_id']}"
+            f"/versions/{draft['version_id']}"
+        )
+        compiled = await client.post(
+            f"/api/workbench/workflows/{draft['workflow_id']}"
+            f"/versions/{draft['version_id']}/compile",
+            json={"expected_revision": configured.json()["draft_revision"]},
+        )
+        published = await client.post(
+            f"/api/workbench/workflows/{draft['workflow_id']}"
+            f"/versions/{draft['version_id']}/publish",
+            json={"expected_revision": compiled.json()["draft_revision"]},
+        )
+
+    switched_node = switched.json()["node"]
+    assert switched_node["kind"] == "validator"
+    assert switched_node["config"]["handler_id"] == "json_schema"
+    assert switched_node["config"]["handler_version"] == 1
+    assert switched_node["config"]["required_outputs"] == [
+        declared_output["config"]["output_id"]
+    ]
+    refreshed_node = next(
+        node
+        for node in refreshed_without_schema.json()["authoring_graph"]["nodes"]
+        if node["id"] == validator["id"]
+    )
+    assert refreshed_node == switched_node
+    for rejected in (rejected_compile, rejected_publish):
+        [issue] = [
+            item
+            for item in rejected.json()["detail"]["errors"]
+            if item["code"] == "json_schema_required_output_schema_invalid"
+        ]
+        assert issue["node_id"] == validator["id"]
+        assert issue["output_id"] == declared_output["config"]["output_id"]
+        assert issue["field"] == "required_outputs"
+        assert issue["message"] == (
+            "JSON 结构校验所验收的交付件“分析报告”缺少有效的 JSON Schema；"
+            "请在输出节点选择 JSON 类型并配置结构规则。"
+        )
+    assert configured.status_code == 200
+    persisted_output = next(
+        node
+        for node in refreshed_with_schema.json()["authoring_graph"]["nodes"]
+        if node["id"] == declared_output["id"]
+    )
+    assert persisted_output["config"]["schema"] == {"type": "object"}
+    assert compiled.status_code == 200
+    compiled_validator = next(
+        node
+        for node in compiled.json()["compiled_plan"]["nodes"]
+        if node["node_id"] == validator["id"]
+    )
+    assert compiled_validator["handler_id"] == "json_schema"
+    assert published.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_v3_explicit_validator_without_declared_outputs_blocks_compile_and_publish(
+    tmp_path, monkeypatch
+):
+    """A visible Validator cannot publish as an implicit no-op."""
+    from app.config import settings
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setattr(settings, "data_dir", str(data_dir))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_canvas_app()), base_url="http://test"
+    ) as client:
+        created = await client.post(
+            "/api/workbench/workflows/new",
+            json={"template": "free_source_analysis", "name": "Empty validator"},
+        )
+        draft = created.json()["draft"]
+        added = await client.post(
+            f"/api/workbench/workflows/{draft['workflow_id']}"
+            f"/versions/{draft['version_id']}/nodes",
+            json={
+                "expected_revision": draft["draft_revision"],
+                "kind": "validator",
+                "label": "交付件校验",
+                "position": {"x": 820, "y": 420},
+                "config": {
+                    "handler_id": "artifact_exists",
+                    "required_outputs": [],
+                    "blocking": True,
+                },
+            },
+        )
+        assert added.status_code == 201
+        revision = added.json()["draft"]["draft_revision"]
+        compiled = await client.post(
+            f"/api/workbench/workflows/{draft['workflow_id']}"
+            f"/versions/{draft['version_id']}/compile",
+            json={"expected_revision": revision},
+        )
+        published = await client.post(
+            f"/api/workbench/workflows/{draft['workflow_id']}"
+            f"/versions/{draft['version_id']}/publish",
+            json={"expected_revision": revision},
+        )
+
+    for response in (compiled, published):
+        assert response.status_code == 422
+        issue = next(
+            item for item in response.json()["detail"]["errors"]
+            if item["code"] == "validator_required_outputs_empty"
+        )
+        assert issue["node_id"] == added.json()["node"]["id"]
+        assert issue["field"] == "required_outputs"
+        assert issue["message"] == (
+            "Validator 至少选择一个已声明交付件；"
+            "请在节点属性的“验收交付件”中完成选择。"
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("profile", "output_patch", "expected_code"),
+    [
+        (
+            "schema",
+            {
+                "type": "json",
+                "media_type": "application/json",
+                "artifact": "profile-report.json",
+                "schema": {"type": "unsupported"},
+            },
+            "json_schema_required_output_schema_invalid",
+        ),
+        (
+            "storage_test_design",
+            {
+                "type": "markdown",
+                "media_type": "text/markdown",
+                "artifact": "custom-professional-result.md",
+                "schema": {"type": "array"},
+                "validation_roles": ["sfmea", "black_box"],
+            },
+            "validator_output_media_type_incompatible",
+        ),
+    ],
+)
+async def test_v3_profile_output_incompatibility_blocks_compile_and_publish(
+    tmp_path, monkeypatch, profile, output_patch, expected_code
+):
+    """Compile and publish must share the same Profile-expanded output gate."""
+    from app.config import settings
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setattr(settings, "data_dir", str(data_dir))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_canvas_app()), base_url="http://test"
+    ) as client:
+        created = await client.post(
+            "/api/workbench/workflows/new",
+            json={"template": "free_source_analysis", "name": "Profile output gate"},
+        )
+        draft = created.json()["draft"]
+        graph = deepcopy(draft["authoring_graph"])
+        graph["settings"]["validation_profile"] = profile
+        output = next(node for node in graph["nodes"] if node["kind"] == "output")
+        output["config"].update(output_patch)
+        saved = await client.put(
+            f"/api/workbench/workflows/{draft['workflow_id']}"
+            f"/versions/{draft['version_id']}",
+            json={
+                "authoring_graph": graph,
+                "expected_revision": draft["draft_revision"],
+            },
+        )
+        assert saved.status_code == 200, saved.text
+        revision = saved.json()["draft_revision"]
+        compiled = await client.post(
+            f"/api/workbench/workflows/{draft['workflow_id']}"
+            f"/versions/{draft['version_id']}/compile",
+            json={"expected_revision": revision},
+        )
+        published = await client.post(
+            f"/api/workbench/workflows/{draft['workflow_id']}"
+            f"/versions/{draft['version_id']}/publish",
+            json={"expected_revision": revision},
+        )
+
+    for response in (compiled, published):
+        assert response.status_code == 422
+        issues = response.json()["detail"]["errors"]
+        issue = next(item for item in issues if item["code"] == expected_code)
+        assert issue["output_id"] == output["config"]["output_id"]
+        assert "交付件" in issue["message"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requested_handler", ["agent", "not_registered"])
+async def test_v3_validator_handler_command_rejects_wrong_kind_or_unknown_handler(
+    tmp_path, monkeypatch, requested_handler
+):
+    from app.config import settings
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setattr(settings, "data_dir", str(data_dir))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_canvas_app()), base_url="http://test"
+    ) as client:
+        created = await client.post(
+            "/api/workbench/workflows/new",
+            json={"template": "blank", "name": "Reject validator injection"},
+        )
+        draft = created.json()["draft"]
+        added = await client.post(
+            f"/api/workbench/workflows/{draft['workflow_id']}"
+            f"/versions/{draft['version_id']}/nodes",
+            json={
+                "expected_revision": draft["draft_revision"],
+                "kind": "validator",
+                "config": {"handler_id": "artifact_exists"},
+            },
+        )
+        response = await client.patch(
+            f"/api/workbench/workflows/{draft['workflow_id']}"
+            f"/versions/{draft['version_id']}/nodes/{added.json()['node']['id']}/handler",
+            json={
+                "expected_revision": added.json()["draft"]["draft_revision"],
+                "handler_id": requested_handler,
+            },
+        )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "validator_handler_unavailable"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", ["change", "remove", "add"])
+async def test_v3_put_freezes_server_owned_semantic_port_binding_keys(
+    tmp_path, monkeypatch, mutation
+):
+    from app.config import settings
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setattr(settings, "data_dir", str(data_dir))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_canvas_app()), base_url="http://test"
+    ) as client:
+        created = await client.post(
+            "/api/workbench/workflows/new",
+            json={"template": "free_source_analysis", "name": "Frozen semantic ports"},
+        )
+        draft = created.json()["draft"]
+        added = await client.post(
+            f"/api/workbench/workflows/{draft['workflow_id']}"
+            f"/versions/{draft['version_id']}/nodes",
+            json={
+                "expected_revision": draft["draft_revision"],
+                "kind": "governance",
+                "config": {"handler_id": "storage_test_design"},
+            },
+        )
+        revision = added.json()["draft"]["draft_revision"]
+        graph = deepcopy(added.json()["draft"]["authoring_graph"])
+        governance = next(node for node in graph["nodes"] if node["kind"] == "governance")
+        if mutation == "change":
+            governance["ports"]["outputs"][0]["binding_key"] = "black_box_cases"
+        elif mutation == "remove":
+            governance["ports"]["outputs"][0].pop("binding_key")
+        else:
+            agent = next(node for node in graph["nodes"] if node["kind"] == "agent")
+            agent["ports"]["outputs"][0]["binding_key"] = "sfmea"
+
+        response = await client.put(
+            f"/api/workbench/workflows/{draft['workflow_id']}"
+            f"/versions/{draft['version_id']}",
+            json={"authoring_graph": graph, "expected_revision": revision},
+        )
+
+    assert response.status_code == 422
+    expected = (
+        "binding_key_immutable"
+        if mutation == "add"
+        else "handler_port_contract_immutable"
+    )
+    assert response.json()["detail"] == expected
+
+
+@pytest.mark.asyncio
+async def test_v3_put_keeps_semantic_binding_while_custom_output_filename_is_editable(
+    tmp_path, monkeypatch
+):
+    from app.config import settings
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setattr(settings, "data_dir", str(data_dir))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_canvas_app()), base_url="http://test"
+    ) as client:
+        created = await client.post(
+            "/api/workbench/workflows/new",
+            json={"template": "free_source_analysis", "name": "Custom physical output"},
+        )
+        draft = created.json()["draft"]
+        added = await client.post(
+            f"/api/workbench/workflows/{draft['workflow_id']}"
+            f"/versions/{draft['version_id']}/nodes",
+            json={
+                "expected_revision": draft["draft_revision"],
+                "kind": "governance",
+                "config": {"handler_id": "storage_test_design"},
+            },
+        )
+        graph = deepcopy(added.json()["draft"]["authoring_graph"])
+        output = next(node for node in graph["nodes"] if node["kind"] == "output")
+        output["config"]["artifact"] = "team-risk-register.json"
+        output["label"] = "团队风险清单"
+        saved = await client.put(
+            f"/api/workbench/workflows/{draft['workflow_id']}"
+            f"/versions/{draft['version_id']}",
+            json={
+                "authoring_graph": graph,
+                "expected_revision": added.json()["draft"]["draft_revision"],
+            },
+        )
+
+    assert saved.status_code == 200
+    saved_governance = next(
+        node
+        for node in saved.json()["authoring_graph"]["nodes"]
+        if node["kind"] == "governance"
+    )
+    assert [port["binding_key"] for port in saved_governance["ports"]["outputs"]] == [
+        "sfmea",
+        "black_box_cases",
+    ]
+    saved_output = next(
+        node for node in saved.json()["authoring_graph"]["nodes"] if node["kind"] == "output"
+    )
+    assert saved_output["config"]["artifact"] == "team-risk-register.json"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["add", "update", "delete"])
+async def test_handler_owned_ports_reject_api_mutation_commands(
+    tmp_path, monkeypatch, command
+):
+    from app.config import settings
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setattr(settings, "data_dir", str(data_dir))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_canvas_app()), base_url="http://test"
+    ) as client:
+        created = await client.post(
+            "/api/workbench/workflows/new",
+            json={"template": "blank", "name": f"Reject handler port {command}"},
+        )
+        draft = created.json()["draft"]
+        added = await client.post(
+            f"/api/workbench/workflows/{draft['workflow_id']}"
+            f"/versions/{draft['version_id']}/nodes",
+            json={
+                "expected_revision": draft["draft_revision"],
+                "kind": "governance",
+                "config": {"handler_id": "storage_test_design"},
+            },
+        )
+        added_payload = added.json()
+        governance = added_payload["node"]
+        revision = added_payload["draft"]["draft_revision"]
+        base = (
+            f"/api/workbench/workflows/{draft['workflow_id']}"
+            f"/versions/{draft['version_id']}/nodes/{governance['id']}/ports"
+        )
+        if command == "add":
+            response = await client.post(
+                base,
+                json={
+                    "expected_revision": revision,
+                    "direction": "inputs",
+                    "label": "Extra",
+                    "type": "artifact",
+                },
+            )
+        elif command == "update":
+            response = await client.patch(
+                f"{base}/{governance['ports']['inputs'][0]['id']}",
+                json={"expected_revision": revision, "required": False},
+            )
+        else:
+            response = await client.request(
+                "DELETE",
+                f"{base}/{governance['ports']['inputs'][0]['id']}",
+                json={"expected_revision": revision},
+            )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "handler_port_contract_immutable"
+    assert "系统维护" in response.json()["detail"]["message"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", ["remove", "required", "collection", "extra"])
+async def test_handler_owned_ports_reject_raw_put_contract_mutation(
+    tmp_path, monkeypatch, mutation
+):
+    from app.config import settings
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setattr(settings, "data_dir", str(data_dir))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_canvas_app()), base_url="http://test"
+    ) as client:
+        created = await client.post(
+            "/api/workbench/workflows/new",
+            json={"template": "blank", "name": f"Raw handler port {mutation}"},
+        )
+        draft = created.json()["draft"]
+        added = await client.post(
+            f"/api/workbench/workflows/{draft['workflow_id']}"
+            f"/versions/{draft['version_id']}/nodes",
+            json={
+                "expected_revision": draft["draft_revision"],
+                "kind": "governance",
+                "config": {"handler_id": "storage_test_design"},
+            },
+        )
+        payload = added.json()
+        graph = deepcopy(payload["draft"]["authoring_graph"])
+        governance = next(node for node in graph["nodes"] if node["kind"] == "governance")
+        if mutation == "remove":
+            governance["ports"]["inputs"] = []
+        elif mutation == "required":
+            governance["ports"]["inputs"][0]["required"] = False
+        elif mutation == "collection":
+            governance["ports"]["inputs"][0]["collection"] = True
+        else:
+            governance["ports"]["inputs"].append({
+                "id": governance["ports"]["outputs"][0]["id"],
+                "binding_key": "extra",
+                "label": "Extra",
+                "type": "artifact",
+                "required": False,
+                "collection": False,
+            })
+        response = await client.put(
+            f"/api/workbench/workflows/{draft['workflow_id']}"
+            f"/versions/{draft['version_id']}",
+            json={
+                "authoring_graph": graph,
+                "expected_revision": payload["draft"]["draft_revision"],
+            },
+        )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "handler_port_contract_immutable"
+
+
+@pytest.mark.asyncio
+async def test_validate_api_reports_unbound_storage_source_evidence_in_chinese(
+    tmp_path, monkeypatch
+):
+    from app.config import settings
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setattr(settings, "data_dir", str(data_dir))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_canvas_app()), base_url="http://test"
+    ) as client:
+        created = await client.post(
+            "/api/workbench/workflows/new",
+            json={"template": "blank", "name": "Missing source evidence"},
+        )
+        draft = created.json()["draft"]
+        added = await client.post(
+            f"/api/workbench/workflows/{draft['workflow_id']}"
+            f"/versions/{draft['version_id']}/nodes",
+            json={
+                "expected_revision": draft["draft_revision"],
+                "kind": "governance",
+                "config": {"handler_id": "storage_test_design"},
+            },
+        )
+        response = await client.post(
+            f"/api/workbench/workflows/{draft['workflow_id']}"
+            f"/versions/{draft['version_id']}/validate",
+            json={"expected_revision": added.json()["draft"]["draft_revision"]},
+        )
+
+    assert response.status_code == 200
+    issue = next(
+        item for item in response.json()["errors"]
+        if item["code"] == "required_input_unbound"
+    )
+    assert "源码证据" in issue["message"]
+    assert "未连接" in issue["message"]
+
+
+@pytest.mark.asyncio
 async def test_v3_put_preserves_identity_while_business_config_remains_editable(
     tmp_path, monkeypatch
 ):

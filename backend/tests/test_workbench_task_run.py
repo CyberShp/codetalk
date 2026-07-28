@@ -50,7 +50,10 @@ def _prepare_phase0_ordinary_report_run(tmp_path):
 def _prepare_phase1_v3_ordinary_report_run(tmp_path):
     from app.services.workflow_contract_v3 import compile_workflow_contract_v3
     from app.services.workflow_dsl import WorkflowStore
-    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+    from app.services.workbench_task_run import (
+        WorkbenchTaskRunPreparer,
+        refresh_run_snapshot_v3,
+    )
 
     graph = {
         "schema_version": 3,
@@ -115,7 +118,7 @@ def _prepare_phase1_v3_ordinary_report_run(tmp_path):
     )
     workflow_store = WorkflowStore(tmp_path / "workflows-v3.db")
     workflow_store.save_workflow(compiled["compiled_definition"])
-    return WorkbenchTaskRunPreparer(
+    prepared = WorkbenchTaskRunPreparer(
         artifact_root=tmp_path / "task-runs-v3",
         workflow_store=workflow_store,
     ).prepare(
@@ -124,6 +127,20 @@ def _prepare_phase1_v3_ordinary_report_run(tmp_path):
         repo_path=str(tmp_path),
         inputs={"subject": "summarize the module"},
     )
+    root = Path(prepared.artifact_dir)
+    prepared.task_bundle["compiled_plan"] = compiled["compiled_plan"]
+    task_run_payload = json.loads((root / "task_run.json").read_text(encoding="utf-8"))
+    task_run_payload["task_bundle"] = prepared.task_bundle
+    (root / "task_run.json").write_text(
+        json.dumps(task_run_payload, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    (root / "task_bundle.json").write_text(
+        json.dumps(prepared.task_bundle, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    refresh_run_snapshot_v3(root)
+    return prepared
 
 
 def test_phase0_ordinary_report_workflow_implicit_governance_defect_shape_is_stable(tmp_path):
@@ -1934,6 +1951,97 @@ def test_runner_refuses_a_prepared_run_when_frozen_snapshot_is_mutated(tmp_path)
     }]
 
 
+@pytest.mark.parametrize("component", ["compiled_plan.json", "compiled_definition.json"])
+def test_v3_runner_refuses_mutated_frozen_contract_component(tmp_path, component):
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+
+    prepared = _prepare_phase1_v3_ordinary_report_run(tmp_path)
+    root = Path(prepared.artifact_dir)
+    (root / component).write_text("{}", encoding="utf-8")
+
+    result = WorkbenchWorkflowRunner(tmp_path / "task-runs-v3").execute_task_run(
+        prepared.task_run_id
+    )
+
+    assert result.status == "invalid"
+    assert result.delivery_status == "blocked"
+    assert result.step_results[0]["step_id"] == "run_snapshot"
+    assert component in result.step_results[0]["error"]
+
+
+def test_v3_runner_executes_validated_frozen_contract_not_mutable_task_bundle(tmp_path):
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+
+    prepared = _prepare_phase1_v3_ordinary_report_run(tmp_path)
+    root = Path(prepared.artifact_dir)
+    frozen_plan = json.loads((root / "compiled_plan.json").read_text(encoding="utf-8"))
+    frozen_node_ids = [item["node_id"] for item in frozen_plan["nodes"]]
+    task_run_payload = json.loads((root / "task_run.json").read_text(encoding="utf-8"))
+    task_run_payload["task_bundle"]["compiled_plan"] = {
+        "compiled_contract_version": 3,
+        "plan_version": 1,
+        "nodes": [],
+        "topological_order": [],
+        "max_parallelism": 1,
+    }
+    task_run_payload["task_bundle"]["compiled_definition"] = {
+        "compiled_contract_version": 3,
+        "declared_outputs": [],
+    }
+    (root / "task_run.json").write_text(
+        json.dumps(task_run_payload, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    agent_dir = Path(prepared.agent_runs[0]["artifact_dir"])
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    (agent_dir / "report.md").write_text("# frozen contract\n", encoding="utf-8")
+    runner = WorkbenchWorkflowRunner(tmp_path / "task-runs-v3")
+    runner._execute_agent_step = lambda **kwargs: {
+        "step_id": kwargs["step"]["id"],
+        "type": "agent_task",
+        "status": "completed",
+        "artifact_dir": str(agent_dir),
+    }
+
+    result = runner.execute_task_run(prepared.task_run_id)
+
+    assert [item["node_id"] for item in result.step_results] == frozen_node_ids
+    assert result.compiled_contract_version == 3
+
+
+def test_v3_runner_does_not_downgrade_when_snapshot_contract_and_marker_are_deleted(tmp_path):
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+
+    prepared = _prepare_phase1_v3_ordinary_report_run(tmp_path)
+    root = Path(prepared.artifact_dir)
+    task_run_payload = json.loads((root / "task_run.json").read_text(encoding="utf-8"))
+    task_run_payload["task_bundle"] = {}
+    task_run_payload["workflow_snapshot"] = {}
+    (root / "task_run.json").write_text(
+        json.dumps(task_run_payload, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    for name in (
+        "run_snapshot_v3.json",
+        "compiled_definition.json",
+        "compiled_plan.json",
+    ):
+        (root / name).unlink()
+
+    result = WorkbenchWorkflowRunner(tmp_path / "task-runs-v3").execute_task_run(
+        prepared.task_run_id
+    )
+
+    assert result.status == "invalid"
+    assert result.delivery_status == "blocked"
+    assert result.step_results == [{
+        "step_id": "run_snapshot",
+        "type": "run_snapshot",
+        "status": "invalid",
+        "error": "运行快照缺失或无法读取：run_snapshot_v3.json",
+    }]
+
+
 def test_workflow_execution_artifact_keeps_the_frozen_execution_profile(tmp_path):
     from app.services.workflow_dsl import WorkflowStore
     from app.services.workbench_task_run import WorkbenchTaskRunPreparer
@@ -2262,7 +2370,7 @@ def test_external_agent_finalization_materializes_behavior_validation_before_qua
         }
 
     monkeypatch.setattr(
-        runner_module,
+        runner_module.legacy_execution,
         "materialize_behavior_claim_validation",
         fake_materialize,
     )
@@ -7520,7 +7628,7 @@ def test_staged_builtin_quality_repair_respects_the_shared_attempt_budget(
     monkeypatch.setattr(runner_module, "create_llm_client_from_active", fake_factory)
     monkeypatch.setattr(runner_module, "create_source_analysis_llm_client", fake_factory)
     monkeypatch.setattr(
-        runner_module,
+        runner_module.legacy_execution,
         "execute_staged_builtin_plan",
         fake_execute_staged_builtin_plan,
     )
@@ -7535,7 +7643,7 @@ def test_staged_builtin_quality_repair_respects_the_shared_attempt_budget(
         lambda _self, **_kwargs: fake_audit(**_kwargs),
     )
     monkeypatch.setattr(
-        runner_module,
+        runner_module.legacy_execution,
         "materialize_behavior_claim_validation",
         fake_behavior_validation,
     )
@@ -7661,7 +7769,7 @@ def test_quality_audit_deadline_marks_staged_execution_partial_and_timed_out(
     monkeypatch.setattr(runner_module, "create_llm_client_from_active", fake_factory)
     monkeypatch.setattr(runner_module, "create_source_analysis_llm_client", fake_factory)
     monkeypatch.setattr(
-        runner_module,
+        runner_module.legacy_execution,
         "execute_staged_builtin_plan",
         fake_execute_staged_builtin_plan,
     )
@@ -7907,7 +8015,11 @@ def test_delivery_refresh_removes_sfmea_tombstones_before_judge_rebuild(tmp_path
         observed["rows"] = json.loads((Path(root) / "sfmea.json").read_text())
         return {"status": "ready"}
 
-    monkeypatch.setattr(runner, "refresh_source_driven_delivery_governance", refresh)
+    monkeypatch.setattr(
+        runner.legacy_execution,
+        "refresh_source_driven_delivery_governance",
+        refresh,
+    )
 
     result = runner._refresh_source_delivery_governance_after_finalizing(
         artifact_dir=tmp_path,
@@ -8054,12 +8166,12 @@ def test_final_governance_refresh_uses_nested_agent_delivery_root(tmp_path, monk
     observed = {}
 
     monkeypatch.setattr(
-        runner,
+        runner.legacy_execution,
         "normalize_materialized_sfmea_risk_contract",
         lambda **_: [],
     )
     monkeypatch.setattr(
-        runner,
+        runner.legacy_execution,
         "refresh_source_driven_delivery_governance",
         lambda path: observed.setdefault("path", Path(path)) or {"status": "READY"},
     )
@@ -11685,7 +11797,7 @@ def test_runner_materializes_verified_fact_ledger_with_quality_audit(tmp_path, m
         },
     }
     monkeypatch.setattr(
-        workbench_workflow_runner,
+        workbench_workflow_runner.legacy_execution,
         "audit_test_activity_artifacts",
         lambda **_: audit,
     )
@@ -11697,7 +11809,7 @@ def test_runner_materializes_verified_fact_ledger_with_quality_audit(tmp_path, m
         "claims": [{"claim_id": "C-001", "verification_status": "contradicted"}],
     }
     monkeypatch.setattr(
-        workbench_workflow_runner,
+        workbench_workflow_runner.legacy_execution,
         "materialize_claim_evidence_ledger",
         lambda _: claim_ledger,
     )

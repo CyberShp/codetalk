@@ -184,6 +184,10 @@ export interface WorkflowPlanNode {
   timeout_sec: number;
   idle_timeout_sec: number;
   failure_policy: "stop" | "continue_independent";
+  kind?: string;
+  handler_id?: string;
+  handler_version?: number;
+  generated_by_validation_profile?: boolean;
 }
 
 export interface CompiledWorkflowPlan {

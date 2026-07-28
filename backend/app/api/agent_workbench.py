@@ -3031,7 +3031,12 @@ async def create_agent_run(payload: AgentRunCreate) -> dict[str, Any]:
             requires_network=payload.requires_network,
         )
     )
-    return asdict(run)
+    response = asdict(run)
+    # ``session_id`` is the provider-neutral Phase 4 name. Keep the public
+    # ``run_id`` alias so existing clients can address the same CodeTalk-owned
+    # run without becoming coupled to adapter terminology.
+    response["run_id"] = str(response.get("session_id") or run_id)
+    return response
 
 
 @router.post("/agent-runs/{run_id}/raw-output")
@@ -5054,11 +5059,38 @@ def _v2_workflow_compatibility_response(version_store: Any, header: Any) -> dict
         response.update(definition)
         response["authoring_graph"] = dict(version.authoring_graph or {})
         response["v2"] = asdict(header)
-    response["audit"] = (
-        audit_workflow_definition(definition)
-        if definition
-        else {"status": "draft", "warnings": []}
-    )
+    if schema_version == 3:
+        validation = version.validation if version and isinstance(version.validation, dict) else {}
+        errors = validation.get("errors") if isinstance(validation.get("errors"), list) else []
+        warnings = validation.get("warnings") if isinstance(validation.get("warnings"), list) else []
+        compatibility_issues = [
+            {
+                "severity": severity,
+                "code": str(item.get("code") or "workflow_validation_issue"),
+                "path": ".".join(
+                    part
+                    for part in (
+                        str(item.get("node_id") or ""),
+                        str(item.get("field") or ""),
+                    )
+                    if part
+                ),
+                "message": str(item.get("message") or "工作流校验未通过。"),
+            }
+            for severity, items in (("error", errors), ("warning", warnings))
+            for item in items
+            if isinstance(item, dict)
+        ]
+        response["audit"] = {
+            "status": "error" if errors else "warning" if warnings else "ok",
+            "warnings": compatibility_issues,
+        }
+    else:
+        response["audit"] = (
+            audit_workflow_definition(definition)
+            if definition
+            else {"status": "draft", "warnings": []}
+        )
     return response
 
 

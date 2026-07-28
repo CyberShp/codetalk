@@ -4,19 +4,23 @@ from __future__ import annotations
 
 import copy
 
+import pytest
+
 
 def _capabilities(*, include_professional: bool = False) -> dict:
     handlers = {
-        "agent": {"versions": [1]},
-        "artifact_exists": {"versions": [1]},
-        "json_schema": {"versions": [1]},
+        "agent": {"versions": [1], "kind": "agent"},
+        "artifact_exists": {"versions": [1], "kind": "validator"},
+        "json_schema": {"versions": [1], "kind": "validator"},
     }
     if include_professional:
         handlers.update({
-            "source_evidence": {"versions": [1]},
-            "storage_test_design": {"versions": [1]},
-            "independent_review": {"versions": [1]},
-            "human_approval": {"versions": [1]},
+            "source_evidence": {"versions": [1], "kind": "validator"},
+            "storage_test_design": {"versions": [1], "kind": "governance"},
+            "sfmea": {"versions": [1], "kind": "validator"},
+            "black_box": {"versions": [1], "kind": "validator"},
+            "independent_review": {"versions": [1], "kind": "validator"},
+            "human_approval": {"versions": [1], "kind": "human_approval"},
         })
     return {"handlers": handlers}
 
@@ -43,6 +47,98 @@ def _graph(*, profile: str | None = None, schema: dict | None = None) -> dict:
     }
 
 
+def _professional_graph(*, profile: str) -> dict:
+    graph = _graph(profile=profile)
+    agent = graph["nodes"][1]
+    agent["ports"]["outputs"].extend([
+        {"id": "sfmea", "type": "artifact", "required": True},
+        {"id": "black_box", "type": "artifact", "required": True},
+    ])
+    graph["nodes"].extend([
+        {
+            "id": "sfmea-output",
+            "kind": "output",
+            "label": "SFMEA",
+            "position": {"x": 600, "y": 180},
+            "ports": {"inputs": [{"id": "value", "type": "artifact", "required": True}], "outputs": []},
+            "config": {
+                "output_id": "sfmea",
+                "artifact": "risk-register.json",
+                "media_type": "application/json",
+                "required": True,
+                "schema": {"type": "array"},
+                "validation_roles": ["sfmea", "independent_review"],
+            },
+        },
+        {
+            "id": "black-box-output",
+            "kind": "output",
+            "label": "Black-box cases",
+            "position": {"x": 600, "y": 360},
+            "ports": {"inputs": [{"id": "value", "type": "artifact", "required": True}], "outputs": []},
+            "config": {
+                "output_id": "black_box",
+                "artifact": "external-cases.json",
+                "media_type": "application/json",
+                "required": True,
+                "schema": {"type": "array"},
+                "validation_roles": ["black_box", "independent_review"],
+            },
+        },
+    ])
+    graph["edges"].extend([
+        {
+            "id": "analyze-to-sfmea",
+            "kind": "data",
+            "source": {"node_id": "analyze", "port_id": "sfmea"},
+            "target": {"node_id": "sfmea-output", "port_id": "value"},
+        },
+        {
+            "id": "analyze-to-black-box",
+            "kind": "data",
+            "source": {"node_id": "analyze", "port_id": "black_box"},
+            "target": {"node_id": "black-box-output", "port_id": "value"},
+        },
+    ])
+    return graph
+
+
+def _source_evidence_graph() -> dict:
+    graph = _graph(profile="source_evidence")
+    agent = graph["nodes"][1]
+    agent["ports"]["outputs"].append({
+        "id": "evidence_port_01j",
+        "binding_key": "source_evidence",
+        "type": "artifact",
+        "required": True,
+    })
+    graph["nodes"].append({
+        "id": "verified-evidence-output",
+        "kind": "output",
+        "label": "Verified source evidence",
+        "position": {"x": 600, "y": 180},
+        "ports": {
+            "inputs": [{"id": "value", "type": "artifact", "required": True}],
+            "outputs": [],
+        },
+        "config": {
+            "output_id": "evidence_bundle_01j",
+            "artifact": "verified-source-evidence.json",
+            "media_type": "application/json",
+            "required": True,
+            "schema": {"type": "array"},
+            "validation_roles": ["source_evidence"],
+        },
+    })
+    graph["edges"].append({
+        "id": "analyze-to-verified-evidence",
+        "kind": "data",
+        "source": {"node_id": "analyze", "port_id": "evidence_port_01j"},
+        "target": {"node_id": "verified-evidence-output", "port_id": "value"},
+    })
+    return graph
+
+
 def _generated_validators(compiled: dict) -> list[dict]:
     return [node for node in compiled["compiled_plan"]["nodes"] if node.get("generated_by_validation_profile")]
 
@@ -58,7 +154,7 @@ def test_v3_default_profile_is_artifact_only_and_declared_outputs_are_authoritat
     assert {"id", "name", "version", "inputs", "steps", "outputs", "compiled_contract_version", "validation_profile", "declared_inputs", "declared_outputs", "validators"} <= definition.keys()
     assert definition["compiled_contract_version"] == 3
     assert definition["validation_profile"] == "artifact_only"
-    assert definition["outputs"] == definition["declared_outputs"] == [{"output_id": "report", "id": "report", "label": "Analysis report", "artifact": "report.md", "media_type": "text/markdown", "type": "markdown", "required": True, "schema": None, "producer_step_id": "analyze", "from": "analyze"}]
+    assert definition["outputs"] == definition["declared_outputs"] == [{"output_id": "report", "id": "report", "label": "Analysis report", "artifact": "report.md", "media_type": "text/markdown", "type": "markdown", "required": True, "schema": None, "producer_step_id": "analyze", "producer_port_id": "report", "producer_port_key": "report", "from": "analyze"}]
     assert definition["inputs"] == definition["declared_inputs"] == [{"input_id": "repo", "id": "repo", "label": "Source repository", "type": "directory", "required": True, "resolver": "manual"}]
     analyze = next(node for node in definition["nodes"] if node["node_id"] == "analyze")
     assert analyze["required_outputs"] == ["report"]
@@ -102,6 +198,41 @@ def test_v3_default_profile_is_artifact_only_and_declared_outputs_are_authoritat
     assert plan_step["type"] == "agent_task"
 
 
+def test_profile_does_not_duplicate_an_identical_explicit_validator():
+    from app.services.workflow_contract_v3 import compile_workflow_contract_v3
+
+    graph = _graph(profile="artifact_only")
+    graph["nodes"].append({
+        "id": "explicit-artifact-check",
+        "kind": "validator",
+        "label": "Explicit artifact check",
+        "position": {"x": 600, "y": 0},
+        "ports": {"inputs": [], "outputs": []},
+        "config": {
+            "handler_id": "artifact_exists",
+            "handler_version": 1,
+            "required_outputs": ["report"],
+            "blocking": True,
+        },
+    })
+
+    compiled = compile_workflow_contract_v3(
+        graph,
+        capabilities=_capabilities(include_professional=True),
+        workflow_version_id="wfv-profile-explicit-dedupe",
+    )
+
+    assert compiled["validation_result"]["valid"] is True
+    matching = [
+        node
+        for node in compiled["compiled_plan"]["nodes"]
+        if node["kind"] == "validator"
+        and node["handler_id"] == "artifact_exists"
+        and node["required_outputs"] == ["report"]
+    ]
+    assert [node["node_id"] for node in matching] == ["explicit-artifact-check"]
+
+
 def test_profiles_expand_only_explicitly_and_schema_only_targets_schema_outputs():
     from app.services.workflow_contract_v3 import compile_workflow_contract_v3
 
@@ -110,15 +241,282 @@ def test_profiles_expand_only_explicitly_and_schema_only_targets_schema_outputs(
     assert _generated_validators(none) == []
     artifact_only = compile_workflow_contract_v3(_graph(profile="artifact_only"), capabilities=_capabilities(), workflow_version_id="wfv_artifact")
     assert [node["handler_id"] for node in _generated_validators(artifact_only)] == ["artifact_exists"]
-    schema = compile_workflow_contract_v3(_graph(profile="schema", schema={"type": "object"}), capabilities=_capabilities(), workflow_version_id="wfv_schema")
+    schema_graph = _graph(profile="schema", schema={"type": "object"})
+    schema_graph["nodes"][-1]["config"].update({
+        "type": "json",
+        "media_type": "application/json",
+        "artifact": "report.json",
+    })
+    schema = compile_workflow_contract_v3(schema_graph, capabilities=_capabilities(), workflow_version_id="wfv_schema")
     assert [(node["handler_id"], node["required_outputs"]) for node in _generated_validators(schema)] == [("artifact_exists", ["report"]), ("json_schema", ["report"])]
     no_schema = compile_workflow_contract_v3(_graph(profile="schema"), capabilities=_capabilities(), workflow_version_id="wfv_no_schema")
     assert [node["handler_id"] for node in _generated_validators(no_schema)] == ["artifact_exists"]
 
-    source_evidence = compile_workflow_contract_v3(_graph(profile="source_evidence"), capabilities=_capabilities(include_professional=True), workflow_version_id="wfv_evidence")
+    source_evidence = compile_workflow_contract_v3(_source_evidence_graph(), capabilities=_capabilities(include_professional=True), workflow_version_id="wfv_evidence")
     assert [node["handler_id"] for node in _generated_validators(source_evidence)] == ["artifact_exists", "source_evidence"]
-    formal_release = compile_workflow_contract_v3(_graph(profile="formal_release"), capabilities=_capabilities(include_professional=True), workflow_version_id="wfv_formal")
-    assert [node["handler_id"] for node in _generated_validators(formal_release)] == ["artifact_exists", "storage_test_design", "independent_review", "human_approval"]
+    storage = compile_workflow_contract_v3(_professional_graph(profile="storage_test_design"), capabilities=_capabilities(include_professional=True), workflow_version_id="wfv_storage")
+    assert [(node["kind"], node["handler_id"], node["required_outputs"]) for node in _generated_validators(storage)] == [
+        ("validator", "artifact_exists", ["black_box", "report", "sfmea"]),
+        ("validator", "sfmea", ["sfmea"]),
+        ("validator", "black_box", ["black_box"]),
+    ]
+    formal_release = compile_workflow_contract_v3(_professional_graph(profile="formal_release"), capabilities=_capabilities(include_professional=True), workflow_version_id="wfv_formal")
+    generated = [
+        node for node in formal_release["compiled_plan"]["nodes"]
+        if node.get("generated_by_validation_profile")
+    ]
+    assert [(node["kind"], node["handler_id"]) for node in generated] == [
+        ("validator", "artifact_exists"),
+        ("validator", "sfmea"),
+        ("validator", "black_box"),
+        ("validator", "independent_review"),
+        ("human_approval", "human_approval"),
+    ]
+    assert generated[0]["depends_on"] == ["analyze"]
+    assert generated[0]["node_id"] in generated[1]["depends_on"]
+    assert generated[1]["node_id"] in generated[2]["depends_on"]
+    assert generated[2]["node_id"] in generated[3]["depends_on"]
+    assert generated[3]["node_id"] in generated[4]["depends_on"]
+
+
+def test_explicit_json_schema_validator_rejects_missing_empty_or_invalid_output_schema():
+    from app.services.workflow_contract_v3 import compile_workflow_contract_v3
+
+    invalid_schemas = [
+        None,
+        {},
+        [],
+        {"type": "unsupported"},
+        {"type": "object", "required": "id"},
+    ]
+    for index, schema in enumerate(invalid_schemas):
+        graph = _graph(schema=schema)  # type: ignore[arg-type]
+        graph["nodes"].append({
+            "id": "explicit-json-schema",
+            "kind": "validator",
+            "label": "JSON schema validator",
+            "position": {"x": 900, "y": 0},
+            "ports": {"inputs": [], "outputs": []},
+            "config": {
+                "handler_id": "json_schema",
+                "handler_version": 1,
+                "required_outputs": ["report"],
+                "blocking": True,
+            },
+        })
+
+        compiled = compile_workflow_contract_v3(
+            graph,
+            capabilities=_capabilities(),
+            workflow_version_id=f"wfv-invalid-schema-{index}",
+        )
+
+        assert compiled["compiled_definition"] is None
+        issue = next(
+            item
+            for item in compiled["validation_result"]["errors"]
+            if item["code"] == "json_schema_required_output_schema_invalid"
+        )
+        assert issue["node_id"] == "explicit-json-schema"
+        assert issue["output_id"] == "report"
+        assert issue["field"] == "required_outputs"
+        assert "JSON Schema" in issue["message"]
+
+
+def test_explicit_json_schema_validator_accepts_supported_non_empty_output_schema():
+    from app.services.workflow_contract_v3 import compile_workflow_contract_v3
+
+    graph = _graph(schema={"type": "object", "required": ["summary"]})
+    graph["nodes"][-1]["config"].update({
+        "type": "json",
+        "media_type": "application/json",
+        "artifact": "report.json",
+    })
+    graph["nodes"].append({
+        "id": "explicit-json-schema",
+        "kind": "validator",
+        "label": "JSON schema validator",
+        "position": {"x": 900, "y": 0},
+        "ports": {"inputs": [], "outputs": []},
+        "config": {
+            "handler_id": "json_schema",
+            "handler_version": 1,
+            "required_outputs": ["report"],
+            "blocking": True,
+        },
+    })
+
+    compiled = compile_workflow_contract_v3(
+        graph,
+        capabilities=_capabilities(),
+        workflow_version_id="wfv-valid-schema",
+    )
+
+    assert compiled["validation_result"]["valid"] is True
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {},
+        {"type": "unsupported"},
+        {"type": "object", "required": "id"},
+        {"type": "object", "properties": []},
+        {"type": "array", "items": []},
+    ],
+)
+def test_schema_profile_generated_validator_rejects_invalid_output_schema(schema):
+    """Profile-generated json_schema must use the same publish gate as an explicit node."""
+    from app.services.workflow_contract_v3 import compile_workflow_contract_v3
+
+    graph = _graph(profile="schema", schema=schema)
+    graph["nodes"][-1]["config"].update({
+        "type": "json",
+        "media_type": "application/json",
+        "artifact": "custom-report.json",
+    })
+
+    compiled = compile_workflow_contract_v3(
+        graph,
+        capabilities=_capabilities(),
+        workflow_version_id="wfv-schema-profile-invalid",
+    )
+
+    assert compiled["compiled_definition"] is None
+    issue = next(
+        item
+        for item in compiled["validation_result"]["errors"]
+        if item["code"] == "json_schema_required_output_schema_invalid"
+    )
+    assert issue["output_id"] == "report"
+    assert issue["handler_id"] == "json_schema"
+    assert "缺少有效的 JSON Schema" in issue["message"]
+
+
+@pytest.mark.parametrize("role", ["source_evidence", "sfmea", "black_box"])
+@pytest.mark.parametrize(
+    ("media_type", "schema", "expected_code"),
+    [
+        ("text/markdown", {"type": "array"}, "validator_output_media_type_incompatible"),
+        ("application/json", None, "professional_output_schema_incompatible"),
+        ("application/json", {}, "professional_output_schema_incompatible"),
+        ("application/json", {"type": "object"}, "professional_output_schema_incompatible"),
+    ],
+)
+def test_professional_profile_roles_reject_incompatible_output_contracts(
+    role, media_type, schema, expected_code
+):
+    """Professional role keys select validators but never weaken their JSON-array contract."""
+    from app.services.workflow_contract_v3 import compile_workflow_contract_v3
+
+    graph = (
+        _source_evidence_graph()
+        if role == "source_evidence"
+        else _professional_graph(profile="storage_test_design")
+    )
+    target = next(
+        node
+        for node in graph["nodes"]
+        if node["kind"] == "output" and role in node["config"].get("validation_roles", [])
+    )
+    target["config"]["artifact"] = f"custom-{role}-result.data"
+    target["config"]["media_type"] = media_type
+    target["config"]["schema"] = schema
+
+    compiled = compile_workflow_contract_v3(
+        graph,
+        capabilities=_capabilities(include_professional=True),
+        workflow_version_id=f"wfv-{role}-incompatible",
+    )
+
+    assert compiled["compiled_definition"] is None
+    issue = next(
+        item
+        for item in compiled["validation_result"]["errors"]
+        if item["code"] == expected_code and item.get("handler_id") == role
+    )
+    assert issue["output_id"] == target["config"]["output_id"]
+    assert issue["node_id"] == target["id"]
+    assert "交付件" in issue["message"]
+
+
+def test_source_evidence_profile_rejects_workflow_without_explicit_evidence_binding():
+    from app.services.workflow_contract_v3 import compile_workflow_contract_v3
+
+    compiled = compile_workflow_contract_v3(
+        _graph(profile="source_evidence"),
+        capabilities=_capabilities(include_professional=True),
+        workflow_version_id="wfv-evidence-unbound",
+    )
+
+    assert compiled["compiled_definition"] is None
+    issue = next(
+        item
+        for item in compiled["validation_result"]["errors"]
+        if item["code"] == "profile_output_binding_missing"
+        and item.get("handler_id") == "source_evidence"
+    )
+    assert issue["field"] == "validation_roles"
+    assert "源码证据" in issue["message"]
+    assert "source_evidence" in issue["message"]
+    assert "输出" in issue["message"]
+
+
+def test_source_evidence_profile_freezes_only_explicit_evidence_artifact_ports_and_bindings():
+    from app.services.workflow_contract_v3 import compile_workflow_contract_v3
+
+    compiled = compile_workflow_contract_v3(
+        _source_evidence_graph(),
+        capabilities=_capabilities(include_professional=True),
+        workflow_version_id="wfv-evidence-explicit-subset",
+    )
+
+    assert compiled["validation_result"]["valid"] is True
+    generated = _generated_validators(compiled)
+    assert [
+        (node["handler_id"], node["required_outputs"])
+        for node in generated
+    ] == [
+        ("artifact_exists", ["evidence_bundle_01j", "report"]),
+        ("source_evidence", ["evidence_bundle_01j"]),
+    ]
+    evidence_validator = generated[1]
+    assert evidence_validator["input_ports"] == [{
+        "id": "evidence_bundle_01j",
+        "binding_key": "source_evidence",
+        "type": "artifact",
+        "required": True,
+    }]
+    assert evidence_validator["resolved_input_bindings"] == {
+        "evidence_bundle_01j": {
+            "source_node_id": "analyze",
+            "source_port_id": "evidence_port_01j",
+            "source_output_id": "evidence_bundle_01j",
+        }
+    }
+    assert evidence_validator["depends_on"] == [
+        "analyze",
+        generated[0]["node_id"],
+    ]
+
+
+def test_professional_profile_requires_explicit_output_role_bindings():
+    from app.services.workflow_contract_v3 import compile_workflow_contract_v3
+
+    compiled = compile_workflow_contract_v3(
+        _graph(profile="storage_test_design"),
+        capabilities=_capabilities(include_professional=True),
+        workflow_version_id="wfv-unbound-professional-profile",
+    )
+
+    assert compiled["compiled_definition"] is None
+    assert {
+        (issue["code"], issue.get("handler_id"))
+        for issue in compiled["validation_result"]["errors"]
+    } >= {
+        ("profile_output_binding_missing", "sfmea"),
+        ("profile_output_binding_missing", "black_box"),
+    }
 
 
 def test_profile_is_never_inferred_from_name_filename_prompt_or_goal():
@@ -284,7 +682,7 @@ def test_compiled_contract_freezes_execution_fields_and_is_deterministic():
     second = compile_workflow_contract_v3(shuffled, capabilities=_capabilities(), workflow_version_id="wfv_frozen", workflow_version_number=4)
     assert first == second
     analyze = next(node for node in first["compiled_definition"]["nodes"] if node["node_id"] == "analyze")
-    assert analyze == {"node_id": "analyze", "graph_node_id": "analyze", "kind": "agent", "handler_id": "agent", "handler_version": 1, "depends_on": [], "resolved_input_bindings": {"repo_path": {"source_node_id": "repo", "source_port_id": "value", "source_input_id": "repo"}}, "input_ports": [{"id": "repo_path", "type": "directory", "required": True}], "output_ports": [{"id": "report", "type": "artifact", "required": True}], "provider_ref": "provider_codex_default", "provider_capabilities_required": ["cancellation", "streaming"], "mcp_profiles": ["gitnexus"], "skill_ids": ["source-evidence-first"], "skill_instructions": ["Read the user input verbatim."], "goal": "Generate SFMEA and black-box cases only if explicitly declared.", "prompt_template_version": 7, "prompt_template": "{{node_goal}}\n{{bound_inputs}}\n{{output_contract}}", "input_rendering": {"preserve_user_text_verbatim": True, "binding_order": ["repo_path"]}, "timeout_sec": 1200, "idle_timeout_sec": 180, "retry_policy": {"max_attempts": 2, "backoff_seconds": 3}, "failure_policy": "stop", "required_outputs": ["report"]}
+    assert analyze == {"node_id": "analyze", "graph_node_id": "analyze", "kind": "agent", "handler_id": "agent", "handler_version": 1, "depends_on": [], "resolved_input_bindings": {"repo_path": {"source_node_id": "repo", "source_port_id": "value", "source_input_id": "repo"}}, "input_ports": [{"id": "repo_path", "type": "directory", "required": True}], "output_ports": [{"id": "report", "type": "artifact", "required": True}], "provider_ref": "provider_codex_default", "provider_capabilities_required": ["cancellation", "streaming"], "mcp_profiles": ["gitnexus"], "skill_ids": ["source-evidence-first"], "skill_instructions": ["Read the user input verbatim."], "goal": "Generate SFMEA and black-box cases only if explicitly declared.", "prompt_template_version": 7, "prompt_template": "{{node_goal}}\n{{bound_inputs}}\n{{output_contract}}", "input_rendering": {"preserve_user_text_verbatim": True, "binding_order": ["repo_path"]}, "timeout_sec": 1200, "idle_timeout_sec": 180, "retry_policy": {"max_attempts": 2, "backoff_seconds": 3}, "failure_policy": "stop", "blocking": True, "required_outputs": ["report"]}
 
 
 def test_v3_graph_fails_closed_for_cycles_and_duplicate_scalar_bindings():

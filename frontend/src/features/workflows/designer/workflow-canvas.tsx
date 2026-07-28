@@ -534,6 +534,7 @@ const WorkflowEdge = memo((props: EdgeProps<WorkflowFlowEdge>) => {
         <EdgeLabelRenderer>
           <span
             className="ct-v2-edge-label nodrag nopan"
+            data-edge-id={props.id}
             style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY - 7}px)` }}
           >
             {label}

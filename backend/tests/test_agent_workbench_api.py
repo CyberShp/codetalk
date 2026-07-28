@@ -3125,31 +3125,14 @@ async def test_workbench_task_run_execute_workflow_api(workbench_client, tmp_pat
         for item in event_items
         if item["event_type"] == "artifact"
     ]
-    assert {item["artifact"] for item in artifact_events} >= {
+    assert {item["artifact"] for item in artifact_events} == {"result.json"}
+    assert not {
         "agent_invocation.json",
         "capability_manifest.json",
         "execution_input.json",
         "raw_output.txt",
         "execution_result.json",
-    }
-    invocation_event = next(
-        item for item in artifact_events if item["artifact"] == "agent_invocation.json"
-    )
-    from app.services.agent_invocation_contract import agent_invocation_typed_events
-
-    assert invocation_event["runtime"]["provider"] == "local-python"
-    assert invocation_event["execution_contract"]["typed_events"] == agent_invocation_typed_events()
-    assert invocation_event["execution_contract"]["must_receive_full_user_input"] is True
-    assert invocation_event["artifact_contract"]["required_outputs"] == ["result.json"]
-    capability_event = next(
-        item for item in artifact_events if item["artifact"] == "capability_manifest.json"
-    )
-    assert capability_event["artifact_kind"] == "capability_manifest"
-    assert capability_event["related_artifacts"] == ["agent_invocation.json"]
-    assert capability_event["runtime"]["provider"] == "local-python"
-    assert capability_event["input_contract"]["must_receive_full_user_input"] is True
-    assert capability_event["typed_events"] == agent_invocation_typed_events()
-    assert capability_event["outputs"]["required_artifacts"] == ["result.json"]
+    }.intersection(item["artifact"] for item in artifact_events)
     tool_use = next(item for item in event_items if item["event_type"] == "tool_use")
     assert tool_use["payload"]["tool"] == "agent_cli"
     assert tool_use["payload"]["input"]["cwd_label"] == tmp_path.name
@@ -7669,7 +7652,9 @@ async def test_acceptance_quality_rejects_direct_libnvme_call_as_black_box_step(
     assert "white_box_boundary" in _black_box_case_quality_reasons(case)
 
 
-async def test_acceptance_quality_allows_external_protocol_field_fault_injection():
+async def test_acceptance_quality_allows_external_protocol_field_fault_injection(
+    tmp_path,
+):
     from app.api.agent_workbench import _black_box_case_quality_reasons
 
     case = {
@@ -7689,7 +7674,14 @@ async def test_acceptance_quality_allows_external_protocol_field_fault_injection
         "mapped_test_dir": "test/iscsi_tgt/digests/digests.sh",
     }
 
-    assert _black_box_case_quality_reasons(case) == []
+    mapped_test = tmp_path / "test" / "iscsi_tgt" / "digests" / "digests.sh"
+    mapped_test.parent.mkdir(parents=True)
+    mapped_test.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    assert _black_box_case_quality_reasons(
+        case,
+        repo_path=str(tmp_path),
+    ) == []
 
 
 async def test_acceptance_quality_allows_verified_nested_test_mapping_and_state_arrow(
@@ -8200,13 +8192,14 @@ async def test_workbench_task_run_acceptance_audit_rejects_vague_black_box_steps
     assert any("vague_steps" in item["reasons"] for item in quality_check["invalid_cases"])
 
 
-async def test_workbench_task_run_acceptance_audit_rejects_duplicate_black_box_cases(
+async def test_legacy_workbench_task_run_repairs_duplicate_black_box_cases_before_audit(
     workbench_client,
     tmp_path,
     monkeypatch,
 ):
     from app.config import settings
 
+    (tmp_path / "test" / "nvmf").mkdir(parents=True)
     script_path = tmp_path / "agent_duplicate_black_box_cases.py"
     script_path.write_text(
         "import json, os, pathlib, sys\n"
@@ -8274,6 +8267,9 @@ async def test_workbench_task_run_acceptance_audit_rejects_duplicate_black_box_c
 
     assert response.status_code == 200
     body = response.json()
+    # V1 compatibility runs the historical repair stage before acceptance.
+    # The duplicate seed is expanded into distinct canonical cases, so the
+    # final artifact is expected to pass the legacy audit.
     assert body["status"] == "ready"
     checks = {item["id"]: item for item in body["checks"]}
     quality_check = checks["black_box_case_quality:design:black_box_cases.json"]
@@ -8281,7 +8277,9 @@ async def test_workbench_task_run_acceptance_audit_rejects_duplicate_black_box_c
     assert quality_check["invalid_cases"] == []
 
 
-async def test_black_box_case_quality_accepts_test_activity_contract_field_names():
+async def test_black_box_case_quality_accepts_test_activity_contract_field_names(
+    tmp_path,
+):
     from app.api.agent_workbench import (
         _black_box_case_duplicate_key,
         _black_box_case_quality_reasons,
@@ -8299,7 +8297,9 @@ async def test_black_box_case_quality_accepts_test_activity_contract_field_names
         "source_or_test_evidence": ["test/iscsi_tgt/filesystem/filesystem.sh:62"],
     }
 
-    assert _black_box_case_quality_reasons(case) == []
+    (tmp_path / "test" / "iscsi_tgt" / "filesystem").mkdir(parents=True)
+
+    assert _black_box_case_quality_reasons(case, repo_path=str(tmp_path)) == []
     assert _black_box_case_duplicate_key(case)
 
 

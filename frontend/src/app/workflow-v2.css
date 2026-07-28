@@ -258,6 +258,8 @@
 .ct-v2-save-state.is-saved { background: #eaf6ee; color: #177a45; }
 .ct-v2-save-state.is-failed { background: #fff0f0; color: #b91c1c; }
 .ct-v2-designer-actions { display: flex; gap: 6px; }
+.ct-v2-profile-select { display: grid; gap: 2px; min-width: 132px; color: #64748b; font-size: 10px; }
+.ct-v2-profile-select select { height: 34px; border: 1px solid #cbd7e2; border-radius: 5px; background: #fff; padding: 0 26px 0 8px; color: #334155; font-size: 12px; }
 .ct-v2-designer-actions button { display: inline-flex; height: 34px; align-items: center; gap: 5px; border: 1px solid #cbd7e2; border-radius: 5px; background: #fff; padding: 0 10px; color: #334155; }
 .ct-v2-designer-actions button:disabled { opacity: .45; }
 .ct-v2-inline-message { position: absolute; z-index: 20; top: 69px; left: 50%; max-width: 520px; transform: translateX(-50%); border: 1px solid #cbd7e2; border-radius: 5px; background: #fff; padding: 7px 11px; box-shadow: 0 8px 20px rgba(15,23,42,.1); }
@@ -352,6 +354,7 @@
 .ct-v2-toggle { display: flex; align-items: center; gap: 7px; margin: 8px 0; color: #4c5b6b; font-size: 12px; }
 .ct-v2-toggle input { width: 14px; height: 14px; }
 .ct-v2-inspector-note { margin: 0; color: #64748b; line-height: 1.55; }
+.ct-v2-inspector-note.is-warning { color: #9a4f08; }
 .ct-v2-registry-contract { display: grid; gap: 6px; margin: 9px 0 0; }
 .ct-v2-registry-contract div { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 7px; color: #617184; font-size: 10px; }
 .ct-v2-registry-contract dt { color: #8a98a7; }
@@ -934,6 +937,9 @@
   .ct-v2-designer-title h1 { max-width: 118px; font-size: 13px; }
   .ct-v2-designer-title > div > p, .ct-v2-version-chip { display: none; }
   .ct-v2-designer-actions { margin-left: auto; gap: 3px; }
+  .ct-v2-profile-select { min-width: 96px; }
+  .ct-v2-profile-select span { display: none; }
+  .ct-v2-profile-select select { width: 96px; padding-left: 6px; font-size: 11px; }
   .ct-v2-designer-actions button { width: 32px; padding: 0; justify-content: center; font-size: 0; }
   .ct-v2-designer-actions button svg { width: 15px; height: 15px; }
   .ct-v2-designer-grid.has-inspector { grid-template-columns: minmax(0, 1fr); }

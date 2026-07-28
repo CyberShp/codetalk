@@ -382,7 +382,9 @@ async def create_task_attempt(task_id: str, payload: TaskRunCreateRequest) -> di
                 resolved_inputs[str(definition["id"])] = str(repo_path)
         _validate_ready_inputs(effective_definition, resolved_inputs)
         workflow_store = WorkflowStore(settings.data_path / "workbench" / "task_workflows.db")
-        workflow_store.save_workflow(effective_definition)
+        is_v3_contract = effective_definition.get("compiled_contract_version") == 3
+        if not is_v3_contract:
+            workflow_store.save_workflow(effective_definition)
         try:
             prepared = WorkbenchTaskRunPreparer(
                 artifact_root=settings.data_path / "workbench" / "task_runs",
@@ -398,6 +400,9 @@ async def create_task_attempt(task_id: str, payload: TaskRunCreateRequest) -> di
                 attempt_number=attempt_number,
                 parent_task_run_id=parent_run_id,
                 execution_profile_id=execution_profile_id,
+                workflow_snapshot_override=(
+                    effective_definition if is_v3_contract else None
+                ),
             )
         except (FileNotFoundError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=f"任务输入不完整或无效：{exc}") from exc

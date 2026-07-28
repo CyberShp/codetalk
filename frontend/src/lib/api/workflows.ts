@@ -123,6 +123,20 @@ export const workflowsApi = {
       `${workflowPath(workflowId)}/versions/${encodeURIComponent(versionId)}/nodes/${encodeURIComponent(nodeId)}/ports`,
       { method: "POST", body: JSON.stringify({ ...payload, expected_revision: expectedRevision, direction: payload.direction === "input" ? "inputs" : "outputs" }) },
     ),
+  updateValidatorHandler: (
+    workflowId: string,
+    versionId: string,
+    nodeId: string,
+    handlerId: string,
+    expectedRevision: number,
+  ) =>
+    request<{ node: unknown; draft: WorkflowVersion }>(
+      `${workflowPath(workflowId)}/versions/${encodeURIComponent(versionId)}/nodes/${encodeURIComponent(nodeId)}/handler`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ handler_id: handlerId, expected_revision: expectedRevision }),
+      },
+    ),
   updatePort: (
     workflowId: string,
     versionId: string,

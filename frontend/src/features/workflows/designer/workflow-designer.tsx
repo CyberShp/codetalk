@@ -7,6 +7,7 @@ import {
   ArrowLeft,
   CheckCircle2,
   FlaskConical,
+  ListChecks,
   Loader2,
   Save,
   Send,
@@ -24,6 +25,7 @@ import type {
   WorkflowResourceMeta,
   WorkflowValidationResult,
   WorkflowVersion,
+  ValidationProfile,
 } from "@/lib/types/workflow";
 import { NodeInspector, type PortMutation } from "./node-inspector";
 import { WorkflowCanvas } from "./workflow-canvas";
@@ -226,6 +228,17 @@ function LoadedWorkflowDesigner({
   const [action, setAction] = useState<"validate" | "compile" | "publish" | null>(null);
   const [message, setMessage] = useState("");
   const isV3 = state.present.schema_version === 3;
+  const validationProfile = state.present.schema_version === 3
+    ? state.present.settings.validation_profile
+    : "artifact_only";
+  const updateValidationProfile = (profile: ValidationProfile) => {
+    const graph = latestGraph.current;
+    if (graph.schema_version !== 3) return;
+    dispatch({
+      type: "update-settings",
+      settings: { ...graph.settings, validation_profile: profile },
+    });
+  };
 
   const requireServerDraftRevision = () => {
     const revision = serverDraftRevision.current;
@@ -420,6 +433,25 @@ function LoadedWorkflowDesigner({
     });
   };
 
+  const updateValidatorHandler = async (nodeId: string, handlerId: string) => {
+    if (!isV3) throw new Error("旧工作流的 Validator 由兼容编辑器维护。");
+    return enqueueAuthoringMutation(async () => {
+      await persistLatestDraft();
+      const updated = await workflowsApi.updateValidatorHandler(
+        workflowId,
+        version.version_id,
+        nodeId,
+        handlerId,
+        requireServerDraftRevision(),
+      );
+      const graph = updated.draft.authoring_graph as AuthoringGraph;
+      const node = graph.nodes.find((item) => item.id === nodeId);
+      if (!node) throw new Error("后端未返回更新后的 Validator 节点");
+      applyServerGraph(graph, nodeId, updated.draft.draft_revision);
+      return node;
+    });
+  };
+
   const deletePort = async (nodeId: string, portId: string) => {
     if (!isV3) throw new Error("旧工作流的端口由兼容编辑器维护。");
     return enqueueAuthoringMutation(async () => {
@@ -453,6 +485,44 @@ function LoadedWorkflowDesigner({
   const saveNow = async () => {
     await enqueueAuthoringMutation(() => persistLatestDraft(true));
     return isV3 ? requireServerDraftRevision() : undefined;
+  };
+
+  const previewPlan = async () => {
+    setAction("compile");
+    setMessage("");
+    try {
+      await saveNow();
+      const validationResult = await workflowsApi.validate(
+        workflowId,
+        version.version_id,
+        requireServerDraftRevision(),
+      );
+      if (validationResult.draft_revision !== undefined) {
+        serverDraftRevision.current = validationResult.draft_revision;
+      }
+      setValidation(validationResult);
+      if (!validationResult.valid) {
+        setBottomTab("problems");
+        setMessage(`发现 ${validationResult.errors.length} 个阻断问题`);
+        return;
+      }
+      const compiled = await workflowsApi.compile(
+        workflowId,
+        version.version_id,
+        requireServerDraftRevision(),
+      );
+      if (compiled.draft_revision !== undefined) {
+        serverDraftRevision.current = compiled.draft_revision;
+      }
+      setPlan(compiled.compiled_plan);
+      setBottomTab("plan");
+      setMessage("执行计划已更新");
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "执行计划生成失败");
+      setBottomTab("problems");
+    } finally {
+      setAction(null);
+    }
   };
 
   const publishWorkflow = async () => {
@@ -510,7 +580,24 @@ function LoadedWorkflowDesigner({
           </span>
         </div>
         <div className="ct-v2-designer-actions">
+          {isV3 && (
+            <label className="ct-v2-profile-select">
+              <span>验收模式</span>
+              <select
+                aria-label="验收模式"
+                value={validationProfile}
+                onChange={(event) => updateValidationProfile(event.target.value as ValidationProfile)}
+              >
+                <option value="none">不校验</option>
+                <option value="artifact_only">交付件存在</option>
+                <option value="schema">结构校验</option>
+                <option value="source_evidence">源码证据</option>
+                <option value="storage_test_design">存储测试设计</option>
+              </select>
+            </label>
+          )}
           <button type="button" className="is-save" onClick={() => void saveNow()} title="保存草稿"><Save size={15} />保存</button>
+          <button type="button" className="is-trial" onClick={() => void previewPlan()} disabled={Boolean(action)}><ListChecks size={15} />预览执行计划</button>
           <button type="button" className="is-trial" onClick={() => setBottomTab("trial")} disabled={Boolean(action)}><FlaskConical size={15} />试运行</button>
           <button type="button" className="is-primary" onClick={() => void publishWorkflow()} disabled={Boolean(action)}>{action === "publish" ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}发布</button>
         </div>
@@ -528,10 +615,19 @@ function LoadedWorkflowDesigner({
             capabilities={capabilities}
             providers={providers}
             registry={nodeRegistry}
+            declaredOutputs={state.present.nodes
+              .filter((item) => item.kind === "output")
+              .map((item) => ({
+                id: String(item.config.output_id ?? ""),
+                label: item.label,
+                artifact: String(item.config.artifact ?? ""),
+              }))
+              .filter((item) => Boolean(item.id))}
             onChange={updateNode}
             onCreatePort={isV3 ? createPort : undefined}
             onUpdatePort={isV3 ? updatePort : undefined}
             onDeletePort={isV3 ? deletePort : undefined}
+            onUpdateValidatorHandler={isV3 ? updateValidatorHandler : undefined}
             onClose={() => dispatch({ type: "select-node", nodeId: null })}
           />
         )}
@@ -598,6 +694,7 @@ function issueTitle(code: string): string {
     graph_cycle: "工作流存在循环",
     orphan_node: "节点尚未连接",
     unsafe_artifact: "文件名不安全",
+    validator_required_outputs_empty: "未选择验收交付件",
   }[code] ?? "工作流配置问题";
 }
 
@@ -615,6 +712,7 @@ function issueMessage(code: string, message: string): string {
     graph_cycle: "节点连线形成循环，请删除其中一条依赖。",
     orphan_node: "该节点未连接到工作流，请连线或删除节点。",
     unsafe_artifact: "输出文件名包含不安全路径，请使用工作目录内的相对文件名。",
+    validator_required_outputs_empty: "请至少选择一个已声明交付件，否则无法发布。",
   }[code] ?? "工作流配置未通过验证，请检查对应节点。";
 }
 
@@ -622,14 +720,26 @@ function PlanPreview({ plan, graph }: { plan: CompiledWorkflowPlan | null; graph
   if (!plan) return <p className="ct-v2-bottom-empty">发布或试运行完成编译后，这里会展示后端实际执行顺序。</p>;
   const planNodeById = new Map(plan.nodes.map((node) => [node.node_id, node]));
   const graphLabelById = new Map(graph.nodes.map((node) => [node.id, node.label]));
+  const handlerLabels: Record<string, string> = {
+    artifact_exists: "交付件存在校验",
+    json_schema: "结构校验",
+    source_evidence: "源码证据校验",
+    sfmea: "SFMEA 验收",
+    black_box: "黑盒测试验收",
+    independent_review: "独立审查",
+    human_approval: "人工审批",
+    storage_test_design: "存储测试设计",
+  };
   const visibleLabel = (planNodeId: string) => {
     const planNode = planNodeById.get(planNodeId);
-    return graphLabelById.get(planNode?.graph_node_id ?? "") ?? "未命名节点";
+    return graphLabelById.get(planNode?.graph_node_id ?? "")
+      ?? handlerLabels[planNode?.handler_id ?? ""]
+      ?? "未命名节点";
   };
   return <div className="ct-v2-plan-preview">{plan.topological_order.map((nodeId, index) => {
     const node = planNodeById.get(nodeId);
     const dependencies = node?.depends_on.map(visibleLabel) ?? [];
-    return <div key={nodeId}><span>{index + 1}</span><strong>{visibleLabel(nodeId)}</strong><small>{node?.provider || node?.type}</small><em>{dependencies.length ? `依赖 ${dependencies.join("、")}` : "无前置依赖"}</em></div>;
+    return <div key={nodeId} data-testid={node?.handler_id ? `workflow-plan-handler-${node.handler_id}` : undefined}><span>{index + 1}</span><strong>{visibleLabel(nodeId)}</strong><small>{node?.provider || node?.handler_id || node?.type}</small><em>{dependencies.length ? `依赖 ${dependencies.join("、")}` : "无前置依赖"}</em></div>;
   })}</div>;
 }
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import threading
 import time
@@ -69,6 +70,33 @@ def _persist_task_run(root: Path, task_run: PreparedWorkbenchTaskRun) -> None:
         "task_bundle": task_run.task_bundle,
         "agent_runs": task_run.agent_runs,
     }), encoding="utf-8")
+    definition = task_run.task_bundle.get("compiled_definition")
+    plan = task_run.task_bundle.get("compiled_plan")
+    if isinstance(definition, dict) and isinstance(plan, dict):
+        (task_dir / "compiled_definition.json").write_text(
+            json.dumps(definition, sort_keys=True), encoding="utf-8"
+        )
+        (task_dir / "compiled_plan.json").write_text(
+            json.dumps(plan, sort_keys=True), encoding="utf-8"
+        )
+        components = {}
+        for component_id, name in (
+            ("v3_runtime_contract", "compiled_definition.json"),
+            ("execution_plan", "compiled_plan.json"),
+        ):
+            path = task_dir / name
+            components[component_id] = {
+                "path": name,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        (task_dir / "run_snapshot_v3.json").write_text(
+            json.dumps({
+                "schema_version": 3,
+                "snapshot_kind": "codetalk_run_snapshot",
+                "components": components,
+            }, sort_keys=True),
+            encoding="utf-8",
+        )
 
 
 def _complete_agent_step(runner: WorkbenchWorkflowRunner, task_run: PreparedWorkbenchTaskRun) -> None:
@@ -102,6 +130,7 @@ def test_v3_report_success_uses_only_declared_artifact(
             runner_module,
             forbidden,
             lambda *args, **kwargs: pytest.fail(f"V3 must not invoke {forbidden}"),
+            raising=False,
         )
 
     result = runner.execute_task_run(task_run.task_run_id)

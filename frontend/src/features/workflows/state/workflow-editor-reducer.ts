@@ -25,6 +25,7 @@ export type WorkflowEditorAction =
   | { type: "remove-node"; nodeId: string }
   | { type: "add-edge"; edge: WorkflowGraphEdge }
   | { type: "remove-edge"; edgeId: string }
+  | { type: "update-settings"; settings: AuthoringGraph["settings"] }
   | { type: "select-node"; nodeId: string | null }
   | { type: "select-nodes"; nodeIds: string[] }
   | { type: "select-edge"; edgeId: string | null }
@@ -153,6 +154,8 @@ export function workflowEditorReducer(
     next = { ...next, edges: [...next.edges, action.edge] };
   } else if (action.type === "remove-edge") {
     next = { ...next, edges: next.edges.filter((edge) => edge.id !== action.edgeId) };
+  } else if (action.type === "update-settings") {
+    next = { ...next, settings: action.settings } as AuthoringGraph;
   }
   if (next === state.present) return state;
   return {

@@ -112,7 +112,8 @@ test("Canvas First: blank workflow is created entirely in the browser with gener
   await expect(canvas.getByTestId("workflow-palette-input")).toBeVisible();
   await expect(canvas.getByTestId("workflow-palette-agent")).toBeVisible();
   await expect(canvas.getByTestId("workflow-palette-output")).toBeVisible();
-  await expect(canvas.getByTestId("workflow-palette-validator")).toHaveCount(0);
+  await expect(canvas.getByTestId("workflow-palette-validator")).toBeVisible();
+  await expect(canvas.getByTestId("workflow-palette-governance")).toBeVisible();
   await expect(canvas.getByTestId("workflow-palette-human-approval")).toHaveCount(0);
 
   const flow = canvas.locator(".react-flow");
@@ -355,30 +356,37 @@ async function configureCanvasTrialProvider(
     "import json, os, sys",
     "from pathlib import Path",
     "if '--version' in sys.argv: print('canvas-trial-provider 1.0'); raise SystemExit(0)",
-    "payload = json.load(sys.stdin)",
-    "resolved = payload.get('task_bundle', {}).get('resolved_inputs', {})",
+    "stdin_text = sys.stdin.read()",
+    "if 'CODETALK_PROBE_OK' in stdin_text:",
+    "    print(json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'CODETALK_PROBE_OK'}}))",
+    "    print(json.dumps({'type': 'turn.completed'}))",
+    "    raise SystemExit(0)",
+    "payload = json.loads(stdin_text)",
+    "artifact_dir = Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])",
+    "bundle = json.loads((artifact_dir / 'task_bundle.json').read_text(encoding='utf-8'))",
+    "resolved = bundle.get('resolved_inputs', {})",
     "texts = []",
     "for value in resolved.values():",
     "    if not isinstance(value, dict): continue",
     "    candidate = value.get('parsed_text_path') or value.get('copied_path') or value.get('path')",
     "    if candidate and Path(candidate).is_file(): texts.append(Path(candidate).read_text(encoding='utf-8'))",
-    "artifact_dir = Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])",
     "artifact_dir.mkdir(parents=True, exist_ok=True)",
     "received = {'provider_contract': payload.get('runtime', {}).get('provider'), 'resolved_inputs': resolved, 'texts': texts, 'binding_marker': 'design_doc'}",
     "(artifact_dir / 'received_inputs.json').write_text(json.dumps(received, ensure_ascii=False), encoding='utf-8')",
     "(artifact_dir / 'report.md').write_text('# Canvas trial report\\n', encoding='utf-8')",
-    "print('canvas trial provider completed')",
+    "print(json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'canvas trial provider completed'}}))",
+    "print(json.dumps({'type': 'turn.completed'}))",
     "",
   ].join("\n"), "utf8");
   chmodSync(script, 0o755);
   const response = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
     data: {
       name: `Canvas trial runtime ${Date.now()}`,
-      provider: "custom",
+      provider: "codex",
       command: "python3.11",
       args: [script],
-      prompt_transport: "stdin",
-      output_mode: "plain",
+      prompt_transport: "codex_exec_json",
+      output_mode: "stream_json",
       working_dir_mode: "project",
       timeout_seconds: 60,
       completion_mode: "process_exit",

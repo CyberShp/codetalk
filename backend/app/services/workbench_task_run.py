@@ -25,10 +25,7 @@ from app.services.external_agent_discovery import (
     redact_agent_diagnostic_text,
     split_agent_command,
 )
-from app.services.test_activity_contract import build_test_activity_contract
-from app.services.behavior_claim_validator import build_behavior_claim_audit_readiness
-from app.services.test_activity_stage_specs import default_test_activity_stage_specs
-from app.services.artifact_contract_v3 import default_artifact_contract_v3
+from app.services import legacy_workflow_execution as legacy_execution
 from app.services.input_consumption import (
     build_input_consumption_ledger,
     scope_input_consumption_ledger,
@@ -191,8 +188,13 @@ class WorkbenchTaskRunPreparer:
         attempt_number: int = 0,
         parent_task_run_id: str = "",
         execution_profile_id: str = "",
+        workflow_snapshot_override: dict[str, Any] | None = None,
     ) -> PreparedWorkbenchTaskRun:
-        workflow_snapshot = self.workflow_store.freeze_workflow_snapshot(workflow_id)
+        workflow_snapshot = (
+            dict(workflow_snapshot_override)
+            if isinstance(workflow_snapshot_override, dict)
+            else self.workflow_store.freeze_workflow_snapshot(workflow_id)
+        )
         try:
             contract_version = compiled_contract_version(workflow_snapshot)
         except TaskConfigurationError as exc:
@@ -207,10 +209,10 @@ class WorkbenchTaskRunPreparer:
             allowed_hosts=set(settings.intranet_allowed_hosts),
             allowed_cidrs=set(settings.intranet_allowed_cidrs),
         ).snapshot()
-        stage_specs = [] if is_v3_contract else default_test_activity_stage_specs(
+        stage_specs = [] if is_v3_contract else legacy_execution.default_test_activity_stage_specs(
             profile_id=str(execution_profile["id"])
         )
-        artifact_contract_v3 = {} if is_v3_contract else default_artifact_contract_v3(
+        artifact_contract_v3 = {} if is_v3_contract else legacy_execution.default_artifact_contract_v3(
             profile_id=str(execution_profile["id"])
         )
         has_agent_step = any(
@@ -391,7 +393,7 @@ class WorkbenchTaskRunPreparer:
         )
         test_activity_contract: dict[str, Any] | None = None
         if not is_v3_contract:
-            test_activity_contract = build_test_activity_contract(
+            test_activity_contract = legacy_execution.build_test_activity_contract(
                 target=_test_activity_target(
                     workflow_snapshot=workflow_snapshot,
                     input_snapshot=input_snapshot,
@@ -414,7 +416,7 @@ class WorkbenchTaskRunPreparer:
                 "recommended_action": "",
             }
             if is_v3_contract
-            else build_behavior_claim_audit_readiness(
+            else legacy_execution.build_behavior_claim_audit_readiness(
                 required=bool(
                     (test_activity_contract.get("quality_gates") or {}).get(
                         "require_independent_behavior_validation"
@@ -585,7 +587,7 @@ class WorkbenchTaskRunPreparer:
             )
             step_test_activity_contract: dict[str, Any] | None = None
             if not is_v3_contract:
-                step_test_activity_contract = build_test_activity_contract(
+                step_test_activity_contract = legacy_execution.build_test_activity_contract(
                     target=_test_activity_target(
                         workflow_snapshot=workflow_snapshot,
                         input_snapshot=step_input_snapshot,

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 from app.config import settings
 from app.services.agent_runtimes import list_agent_runtimes_sync
@@ -45,8 +45,10 @@ from app.services.workflow_authoring_factory import (
     build_v3_edge,
     build_v3_node,
     build_v3_port,
+    assert_handler_port_mutation_allowed,
     migrate_legacy_graph_to_v3,
     new_workflow_id,
+    switch_v3_validator_handler,
 )
 from app.services.workflow_node_registry import executable_node_definition
 from app.services.provider_adapters.registry import provider_capability_names
@@ -83,6 +85,13 @@ class WorkflowTrialRunRequest(BaseModel):
     inputs: dict[str, Any] = Field(default_factory=dict)
     node_id: str | None = None
     expected_revision: StrictInt | None = None
+
+
+class WorkflowValidatorHandlerUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    handler_id: str = Field(min_length=1)
+    expected_revision: StrictInt
 
 
 def _canvas_error(code: str, message: str, *, status_code: int = 422) -> HTTPException:
@@ -394,6 +403,41 @@ async def add_canvas_node(
     return {"node": node, "draft": _workflow_version_payload(draft)}
 
 
+@router.patch(
+    "/workflows/{workflow_id}/versions/{version_id}/nodes/{node_id}/handler"
+)
+async def update_canvas_validator_handler(
+    workflow_id: str,
+    version_id: str,
+    node_id: str,
+    payload: WorkflowValidatorHandlerUpdateRequest,
+) -> dict[str, Any]:
+    """Switch a Validator only to a registered server-owned Validator handler."""
+    _require_v2()
+    _require_mutable_workflow(workflow_id)
+    version = _require_v3_mutable_draft(workflow_id, version_id)
+    expected_revision = _expected_v3_revision(payload.model_dump())
+    _require_current_v3_revision(version, expected_revision)
+    graph = deepcopy(version.authoring_graph)
+    try:
+        node = switch_v3_validator_handler(
+            graph,
+            node_id=node_id,
+            handler_id=payload.handler_id.strip(),
+        )
+    except CanvasAuthoringError as exc:
+        code = str(exc)
+        if code == "validator_node_not_found":
+            raise HTTPException(status_code=404, detail=f"Unknown workflow node: {node_id}") from exc
+        raise _canvas_error(code, code) from exc
+    draft = _persist_v3_canvas_command(
+        version_id,
+        expected_revision=expected_revision,
+        authoring_graph=graph,
+    )
+    return {"node": node, "draft": _workflow_version_payload(draft)}
+
+
 @router.post("/workflows/{workflow_id}/versions/{version_id}/nodes/{node_id}/ports", status_code=201)
 async def add_canvas_port(
     workflow_id: str, version_id: str, node_id: str, payload: dict[str, Any]
@@ -415,6 +459,12 @@ async def add_canvas_port(
     node = next((item for item in graph.get("nodes") or [] if str(item.get("id") or "") == node_id), None)
     if not isinstance(node, dict):
         raise HTTPException(status_code=404, detail=f"Unknown workflow node: {node_id}")
+    try:
+        assert_handler_port_mutation_allowed(node)
+    except CanvasAuthoringError as exc:
+        raise _canvas_error(
+            str(exc), "处理器端口由系统维护，不能增加、删除或修改。"
+        ) from exc
     port = build_v3_port(
         label=str(payload.get("label") or port_type),
         port_type=port_type,
@@ -451,6 +501,18 @@ async def update_canvas_port(
     if unknown:
         raise _canvas_error("port_update_fields_invalid", f"Unsupported port fields: {', '.join(unknown)}")
     graph = deepcopy(version.authoring_graph)
+    node = next(
+        (item for item in graph.get("nodes") or [] if str(item.get("id") or "") == node_id),
+        None,
+    )
+    if not isinstance(node, dict):
+        raise HTTPException(status_code=404, detail=f"Unknown workflow node: {node_id}")
+    try:
+        assert_handler_port_mutation_allowed(node)
+    except CanvasAuthoringError as exc:
+        raise _canvas_error(
+            str(exc), "处理器端口由系统维护，不能增加、删除或修改。"
+        ) from exc
     port = _find_canvas_port(graph, node_id, port_id)
     if "label" in payload:
         label = str(payload["label"] or "").strip()
@@ -500,6 +562,12 @@ async def delete_canvas_port(
     )
     if node is None:
         raise HTTPException(status_code=404, detail=f"Unknown workflow node: {node_id}")
+    try:
+        assert_handler_port_mutation_allowed(node)
+    except CanvasAuthoringError as exc:
+        raise _canvas_error(
+            str(exc), "处理器端口由系统维护，不能增加、删除或修改。"
+        ) from exc
     found = False
     ports = node.get("ports") if isinstance(node.get("ports"), dict) else {}
     for direction in ("inputs", "outputs"):
