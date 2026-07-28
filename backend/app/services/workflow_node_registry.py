@@ -309,10 +309,94 @@ _NODE_REGISTRY: tuple[dict[str, Any], ...] = (
 )
 
 
-SUPPORTED_NODE_KINDS = frozenset(item["kind"] for item in _NODE_REGISTRY)
+_PHASE6_NODE_REGISTRY: tuple[dict[str, Any], ...] = (
+    _node(
+        kind="tool",
+        label="工具调用",
+        palette_label="工具调用",
+        palette_group="execution",
+        description="调用 CodeTalk 管理的本地工具，并由运行编排器校验权限和参数。",
+        default_inputs=[{"id": "arguments", "type": "structured_json", "required": True}],
+        default_outputs=[{"id": "result", "type": "structured_json", "required": True}],
+        default_config={
+            "handler_id": "tool",
+            "handler_version": 1,
+            "tool_id": "",
+            "required_permissions": [],
+            "timeout_sec": 300,
+            "idle_timeout_sec": 0,
+            "retry_policy": {"max_attempts": 1, "backoff_seconds": 0},
+            "failure_policy": "stop",
+        },
+        config_schema={
+            "tool_id": {"type": "string", "required": True, "label": "工具"},
+            "required_permissions": {"type": "string_list", "label": "所需权限"},
+            "timeout_sec": {"type": "integer", "minimum": 1, "label": "超时（秒）"},
+            "idle_timeout_sec": {"type": "integer", "minimum": 0, "label": "无输出超时（秒）"},
+            "failure_policy": _BUILTIN_STEP_SCHEMA["failure_policy"],
+        },
+    ),
+    _node(
+        kind="human_approval",
+        label="人工审批",
+        palette_label="人工审批",
+        palette_group="quality",
+        description="显式等待审批；批准或拒绝后从该节点继续。",
+        default_inputs=[{"id": "context", "type": "any", "required": True}],
+        default_config={
+            "handler_id": "human_approval",
+            "handler_version": 1,
+            "approval_timeout_sec": 86400,
+            "timeout_sec": 60,
+            "idle_timeout_sec": 0,
+            "retry_policy": {"max_attempts": 1, "backoff_seconds": 0},
+            "failure_policy": "stop",
+        },
+        config_schema={
+            "approval_timeout_sec": {"type": "integer", "minimum": 1, "label": "审批期限（秒）"},
+            "failure_policy": _BUILTIN_STEP_SCHEMA["failure_policy"],
+        },
+    ),
+    _node(
+        kind="subagent",
+        label="子智能体",
+        palette_label="子智能体",
+        palette_group="execution",
+        description="在父节点下创建可追踪的子 Agent 会话，不创建新的工作流任务。",
+        default_inputs=[{"id": "context", "type": "structured_json", "required": True}],
+        default_outputs=[{"id": "result", "type": "artifact", "required": True}],
+        default_config={
+            "handler_id": "subagent",
+            "handler_version": 1,
+            "session_key": "subagent",
+            "provider_ref": "builtin-llm",
+            "provider_capabilities_required": ["cancellation", "streaming"],
+            "goal": "说明子智能体要完成的工作。",
+            "timeout_sec": 900,
+            "idle_timeout_sec": 120,
+            "retry_policy": {"max_attempts": 1, "backoff_seconds": 0},
+            "failure_policy": "stop",
+        },
+        config_schema={
+            "session_key": {"type": "string", "required": True, "label": "子会话标识"},
+            "goal": {"type": "multiline", "required": True, "label": "工作目标"},
+            "provider_ref": {"type": "provider", "required": True, "label": "执行器"},
+            "provider_capabilities_required": {"type": "string_list", "label": "所需执行器能力"},
+            "timeout_sec": {"type": "integer", "minimum": 1, "label": "超时（秒）"},
+            "idle_timeout_sec": {"type": "integer", "minimum": 0, "label": "无输出超时（秒）"},
+            "failure_policy": _BUILTIN_STEP_SCHEMA["failure_policy"],
+        },
+    ),
+)
+
+
+SUPPORTED_NODE_KINDS = frozenset(
+    item["kind"] for item in (*_NODE_REGISTRY, *_PHASE6_NODE_REGISTRY)
+)
 
 
 _BASE_V3_KINDS = frozenset({"input", "output", "agent"})
+_PHASE6_V3_KINDS = frozenset({"tool", "human_approval", "subagent"})
 _TECHNICAL_CONFIG_FIELDS = frozenset({"contract_id", "input_id", "output_id", "step_id", "input_ports", "output_ports"})
 _HANDLER_KIND_FALLBACK = {
     "artifact_exists": "validator",
@@ -344,10 +428,14 @@ def node_registry_payload(
         raise ValueError(f"Unsupported node registry schema_version: {schema_version}")
     handlers = _available_handlers(capabilities)
     nodes: list[dict[str, Any]] = []
-    for item in _NODE_REGISTRY:
+    for item in (*_NODE_REGISTRY, *_PHASE6_NODE_REGISTRY):
         kind = item["kind"]
         if kind in _BASE_V3_KINDS:
             nodes.append(_phase3_node(item))
+            continue
+        if kind in _PHASE6_V3_KINDS:
+            if _fixed_handler_available(item, handlers):
+                nodes.append(_phase3_node(item))
             continue
         if kind not in {"validator", "governance"}:
             continue
@@ -362,7 +450,7 @@ def node_registry_payload(
 
 
 def node_definition(kind: str) -> dict[str, Any] | None:
-    for item in _NODE_REGISTRY:
+    for item in (*_NODE_REGISTRY, *_PHASE6_NODE_REGISTRY):
         if item["kind"] == kind:
             return deepcopy(item)
     return None
@@ -377,6 +465,10 @@ def executable_node_definition(
         return None
     if kind in _BASE_V3_KINDS:
         return _phase3_node(definition)
+    if kind in _PHASE6_V3_KINDS:
+        return _phase3_node(definition) if _fixed_handler_available(
+            definition, _available_handlers(capabilities)
+        ) else None
     if kind not in {"validator", "governance"}:
         return None
     options = _handler_options(_available_handlers(capabilities), kind)
@@ -421,6 +513,12 @@ def _phase3_node(
             "handler_id": "agent",
             "handler_version": 1,
         }
+    elif node["kind"] in {"tool", "human_approval", "subagent"}:
+        node["execution"] = {
+            "available": True,
+            "handler_id": node["default_config"]["handler_id"],
+            "handler_version": node["default_config"]["handler_version"],
+        }
     else:
         node["execution"] = {
             "available": True,
@@ -456,3 +554,14 @@ def _handler_options(
             continue
         result.append({"value": str(handler_id), "label": str(handler_id)})
     return result
+
+
+def _fixed_handler_available(node: dict[str, Any], handlers: dict[str, Any]) -> bool:
+    config = node.get("default_config") if isinstance(node.get("default_config"), dict) else {}
+    handler_id = str(config.get("handler_id") or "")
+    handler_version = config.get("handler_version")
+    descriptor = handlers.get(handler_id)
+    if not isinstance(descriptor, dict) or not isinstance(handler_version, int):
+        return False
+    versions = descriptor.get("versions")
+    return isinstance(versions, list) and handler_version in versions

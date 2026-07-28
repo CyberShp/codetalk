@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.config import settings
+
 
 def workflow_handler_capability_snapshot() -> dict[str, Any]:
     """Return a detached compiler capability snapshot.
@@ -16,9 +18,22 @@ def workflow_handler_capability_snapshot() -> dict[str, Any]:
     )
     from app.services.validators import DEFAULT_VALIDATOR_REGISTRY
 
+    from app.services.managed_tool_runtime import managed_tool_runtime
+
     handlers: dict[str, dict[str, Any]] = {
         "agent": {"versions": [1], "kind": "agent"},
     }
+    if settings.workflow_hitl_enabled:
+        handlers["human_approval"] = {
+            "versions": [1],
+            "kind": "human_approval",
+        }
+    if settings.workflow_subagent_enabled:
+        handlers["subagent"] = {"versions": [1], "kind": "subagent"}
+    if settings.workflow_tool_enabled:
+        tool_capability = managed_tool_runtime().handler_capability()
+        if tool_capability is not None:
+            handlers["tool"] = tool_capability
     handlers.update(
         {
             validator_id: {"versions": [1], "kind": "validator"}

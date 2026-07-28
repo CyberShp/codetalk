@@ -37,6 +37,7 @@ def _task_run(tmp_path: Path, *, contract_version: int | None = 3, profile: str 
         "validation_profile": profile,
         "declared_outputs": declared_outputs,
         "outputs": declared_outputs,
+        "steps": [{"id": "agent", "type": "agent_task"}],
     }
     plan = {
         "compiled_contract_version": contract_version,
@@ -79,10 +80,22 @@ def _persist_task_run(root: Path, task_run: PreparedWorkbenchTaskRun) -> None:
         (task_dir / "compiled_plan.json").write_text(
             json.dumps(plan, sort_keys=True), encoding="utf-8"
         )
+        (task_dir / "input_snapshot.json").write_text(
+            json.dumps(task_run.input_snapshot, sort_keys=True), encoding="utf-8"
+        )
+        (task_dir / "agent_execution_descriptors.json").write_text(
+            json.dumps(
+                {"schema_version": 1, "agent_runs": task_run.agent_runs},
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
         components = {}
         for component_id, name in (
             ("v3_runtime_contract", "compiled_definition.json"),
             ("execution_plan", "compiled_plan.json"),
+            ("input_snapshot", "input_snapshot.json"),
+            ("agent_execution_descriptors", "agent_execution_descriptors.json"),
         ):
             path = task_dir / name
             components[component_id] = {
@@ -159,6 +172,501 @@ def test_v3_report_success_uses_only_declared_artifact(
             "compiled_contract_version": 3,
         },
     )
+
+
+def test_v3_restart_reuses_checkpoint_committed_before_completion_event(
+    tmp_path: Path,
+) -> None:
+    task_run = _task_run(tmp_path)
+    Path(task_run.agent_runs[0]["artifact_dir"], "report.md").write_text(
+        "# Report\n",
+        encoding="utf-8",
+    )
+    _persist_task_run(tmp_path, task_run)
+    executions = 0
+
+    def complete_once(**_: object) -> dict:
+        nonlocal executions
+        executions += 1
+        return {
+            "step_id": "agent",
+            "type": "agent_task",
+            "status": "completed",
+            "artifact_dir": task_run.agent_runs[0]["artifact_dir"],
+        }
+
+    def crash_before_completion_projection(event_type: str, _: dict) -> None:
+        if event_type == "node_completed":
+            raise RuntimeError("simulated crash after checkpoint commit")
+
+    interrupted = WorkbenchWorkflowRunner(
+        tmp_path,
+        event_sink=crash_before_completion_projection,
+    )
+    interrupted._execute_agent_step = complete_once  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="after checkpoint commit"):
+        interrupted.execute_task_run(task_run.task_run_id)
+
+    assert executions == 1
+    assert (tmp_path / task_run.task_run_id / "checkpoints" / "agent.json").is_file()
+    assert not (tmp_path / task_run.task_run_id / "workflow_execution.json").exists()
+
+    recovered_events: list[tuple[str, dict]] = []
+    recovered = WorkbenchWorkflowRunner(
+        tmp_path,
+        event_sink=lambda event_type, payload: recovered_events.append(
+            (event_type, payload)
+        ),
+    )
+    recovered._execute_agent_step = (  # type: ignore[method-assign]
+        lambda **_: pytest.fail("matching completed checkpoint must be reused")
+    )
+
+    result = recovered.execute_task_run(task_run.task_run_id)
+
+    assert executions == 1
+    assert result.execution_status == "completed"
+    assert result.delivery_status == "ready"
+    assert any(
+        event_type == "node_reused" and payload["node_id"] == "agent"
+        for event_type, payload in recovered_events
+    )
+    assert (tmp_path / task_run.task_run_id / "workflow_execution.json").is_file()
+
+
+def test_v3_checkpoint_rollback_keeps_checkpoint_but_executes_node_again(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.config import settings
+
+    task_run = _task_run(tmp_path, profile="none", validators=[])
+    Path(task_run.agent_runs[0]["artifact_dir"], "report.md").write_text(
+        "# Report\n",
+        encoding="utf-8",
+    )
+    _persist_task_run(tmp_path, task_run)
+    executions = 0
+
+    def complete(**_: object) -> dict:
+        nonlocal executions
+        executions += 1
+        return {
+            "step_id": "agent",
+            "type": "agent_task",
+            "status": "completed",
+            "artifact_dir": task_run.agent_runs[0]["artifact_dir"],
+        }
+
+    first = WorkbenchWorkflowRunner(tmp_path)
+    first._execute_agent_step = complete  # type: ignore[method-assign]
+    assert first.execute_task_run(task_run.task_run_id).execution_status == "completed"
+    assert executions == 1
+    assert (tmp_path / task_run.task_run_id / "checkpoints" / "agent.json").is_file()
+
+    monkeypatch.setattr(settings, "workflow_checkpoint_reuse_enabled", False)
+    events: list[tuple[str, dict]] = []
+    second = WorkbenchWorkflowRunner(
+        tmp_path,
+        event_sink=lambda event_type, payload: events.append((event_type, payload)),
+    )
+    second._execute_agent_step = complete  # type: ignore[method-assign]
+
+    assert second.execute_task_run(task_run.task_run_id).execution_status == "completed"
+    assert executions == 2
+    assert not any(event_type == "node_reused" for event_type, _ in events)
+    assert (tmp_path / task_run.task_run_id / "checkpoints" / "agent.json").is_file()
+
+
+def test_v3_human_approval_waits_then_resumes_from_prior_checkpoint(
+    tmp_path: Path,
+) -> None:
+    from app.services.human_approval import HumanApprovalStore
+
+    task_run = _task_run(
+        tmp_path,
+        profile="none",
+        validators=[{
+            "node_id": "approval",
+            "kind": "human_approval",
+            "type": "human_approval",
+            "handler_id": "human_approval",
+            "depends_on": ["agent"],
+            "approval_timeout_sec": 3600,
+            "failure_policy": "stop",
+        }],
+    )
+    agent_node, approval_node = task_run.task_bundle["compiled_plan"]["nodes"]
+    agent_node["output_ports"] = [{"id": "result", "type": "structured_json"}]
+    approval_node["input_ports"] = [{"id": "context", "type": "any", "required": True}]
+    approval_node["resolved_input_bindings"] = {
+        "context": {
+            "source_node_id": "agent",
+            "source_port_id": "result",
+        },
+    }
+    Path(task_run.agent_runs[0]["artifact_dir"], "report.md").write_text(
+        "# Report\n",
+        encoding="utf-8",
+    )
+    _persist_task_run(tmp_path, task_run)
+    first_runner = WorkbenchWorkflowRunner(tmp_path)
+    first_runner._execute_agent_step = lambda **_: {  # type: ignore[method-assign]
+        "step_id": "agent",
+        "type": "agent_task",
+        "status": "completed",
+        "artifact_dir": task_run.agent_runs[0]["artifact_dir"],
+        "result": {"purpose": "durable checkpoint before approval"},
+    }
+
+    waiting = first_runner.execute_task_run(task_run.task_run_id, timeout_sec=30)
+
+    assert waiting.status == "waiting_for_input"
+    assert waiting.execution_status == "waiting_for_input"
+    assert waiting.delivery_status == "pending"
+    assert waiting.step_results[-1]["status"] == "waiting_for_input"
+    approval_store = HumanApprovalStore(Path(task_run.artifact_dir))
+    approval = approval_store.load("approval")
+    assert approval is not None
+    assert approval.status == "waiting_for_input"
+    assert approval.input_context is not None
+    assert "durable checkpoint before approval" in approval.input_context["summary"]
+    assert waiting.step_results[-1]["approval_context"] == approval.input_context
+    assert approval.total_execution_timeout_at is not None
+    assert not (
+        Path(task_run.artifact_dir) / "checkpoints" / "approval.json"
+    ).exists()
+
+    approval_store.decide(
+        "approval",
+        decision="approve",
+        actor="reviewer-1",
+        reason="evidence accepted",
+        decided_at=approval.entered_at,
+    )
+    recovered_events: list[tuple[str, dict]] = []
+    recovered = WorkbenchWorkflowRunner(
+        tmp_path,
+        event_sink=lambda event_type, payload: recovered_events.append(
+            (event_type, payload)
+        ),
+    )
+    recovered._execute_agent_step = (  # type: ignore[method-assign]
+        lambda **_: pytest.fail("approved resume must reuse the completed agent")
+    )
+
+    completed = recovered.execute_task_run(task_run.task_run_id, timeout_sec=30)
+
+    assert completed.status == "completed"
+    assert completed.execution_status == "completed"
+    assert completed.delivery_status == "ready"
+    assert completed.step_results[-1]["status"] == "completed"
+    assert completed.step_results[-1]["approval_status"] == "approved"
+    assert any(
+        event_type == "node_reused" and payload["node_id"] == "agent"
+        for event_type, payload in recovered_events
+    )
+    assert (
+        Path(task_run.artifact_dir) / "checkpoints" / "approval.json"
+    ).is_file()
+
+
+def test_v3_human_approval_freezes_only_remaining_total_timeout_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.human_approval import HumanApprovalStore
+    import app.services.workbench_workflow_runner as runner_module
+
+    task_run = _task_run(
+        tmp_path,
+        profile="none",
+        validators=[{
+            "node_id": "approval",
+            "kind": "human_approval",
+            "type": "human_approval",
+            "handler_id": "human_approval",
+            "depends_on": ["agent"],
+            "approval_timeout_sec": 3600,
+        }],
+    )
+    Path(task_run.agent_runs[0]["artifact_dir"], "report.md").write_text(
+        "# Report\n",
+        encoding="utf-8",
+    )
+    _persist_task_run(tmp_path, task_run)
+    clock = [100.0]
+    monkeypatch.setattr(runner_module.time, "monotonic", lambda: clock[0])
+    runner = WorkbenchWorkflowRunner(tmp_path)
+
+    def complete(**_: object) -> dict:
+        clock[0] = 104.0
+        return {
+            "step_id": "agent",
+            "type": "agent_task",
+            "status": "completed",
+            "artifact_dir": task_run.agent_runs[0]["artifact_dir"],
+        }
+
+    runner._execute_agent_step = complete  # type: ignore[method-assign]
+
+    result = runner.execute_task_run(task_run.task_run_id, timeout_sec=10)
+
+    assert result.status == "waiting_for_input"
+    record = HumanApprovalStore(Path(task_run.artifact_dir)).load("approval")
+    assert record is not None
+    assert record.total_execution_timeout_at is not None
+    assert (
+        record.total_execution_timeout_at - record.entered_at
+    ).total_seconds() == 6
+
+
+def test_v3_subagent_runs_in_parent_child_session_and_checkpoints_snapshot(
+    tmp_path: Path,
+) -> None:
+    task_run = _task_run(tmp_path, profile="none", validators=[])
+    plan_node = task_run.task_bundle["compiled_plan"]["nodes"][0]
+    plan_node.update({
+        "kind": "subagent",
+        "type": "agent_task",
+        "provider_ref": "builtin",
+    })
+    _persist_task_run(tmp_path, task_run)
+    observed_artifact_dirs: list[Path] = []
+    runner = WorkbenchWorkflowRunner(tmp_path)
+
+    def execute_child(**kwargs: object) -> dict:
+        agent_run = kwargs["agent_run"]
+        artifact_dir = Path(agent_run["artifact_dir"])
+        observed_artifact_dirs.append(artifact_dir)
+        (artifact_dir / "report.md").write_text("# Child report\n", encoding="utf-8")
+        return {
+            "step_id": "agent",
+            "type": "agent_task",
+            "status": "completed",
+            "artifact_dir": str(artifact_dir),
+        }
+
+    runner._execute_agent_step = execute_child  # type: ignore[method-assign]
+
+    result = runner.execute_task_run(task_run.task_run_id)
+
+    assert result.execution_status == "completed"
+    assert result.delivery_status == "ready"
+    assert len(observed_artifact_dirs) == 1
+    child_artifact_dir = observed_artifact_dirs[0]
+    assert child_artifact_dir.is_relative_to(
+        Path(task_run.artifact_dir) / "nodes" / "agent" / "child_sessions"
+    )
+    assert child_artifact_dir.name == "artifacts"
+    assert not list(tmp_path.glob("task_run_child_*"))
+    child_snapshot = result.step_results[0]["child_session"]
+    assert child_snapshot["parent_attempt_id"] == task_run.task_run_id
+    assert child_snapshot["parent_node_id"] == "agent"
+    checkpoint = json.loads(
+        (Path(task_run.artifact_dir) / "checkpoints" / "agent.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert checkpoint["provider_session"]["child_session"] == child_snapshot
+
+
+def test_v3_subagent_reuses_completed_child_when_parent_checkpoint_was_not_committed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.node_checkpoint import NodeCheckpointStore
+
+    task_run = _task_run(tmp_path, profile="none", validators=[])
+    plan_node = task_run.task_bundle["compiled_plan"]["nodes"][0]
+    plan_node.update({
+        "kind": "subagent",
+        "type": "agent_task",
+        "provider_ref": "builtin",
+    })
+    _persist_task_run(tmp_path, task_run)
+    executions = 0
+    first = WorkbenchWorkflowRunner(tmp_path)
+
+    def execute_child(**kwargs: object) -> dict:
+        nonlocal executions
+        executions += 1
+        artifact_dir = Path(kwargs["agent_run"]["artifact_dir"])
+        (artifact_dir / "report.md").write_text("# Child report\n", encoding="utf-8")
+        return {
+            "step_id": "agent",
+            "type": "agent_task",
+            "status": "completed",
+            "artifact_dir": str(artifact_dir),
+        }
+
+    first._execute_agent_step = execute_child  # type: ignore[method-assign]
+    original_commit = NodeCheckpointStore.commit_completed
+    monkeypatch.setattr(
+        NodeCheckpointStore,
+        "commit_completed",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("crash before parent checkpoint")
+        ),
+    )
+
+    interrupted = first.execute_task_run(task_run.task_run_id)
+
+    assert executions == 1
+    assert interrupted.execution_status == "failed"
+    assert not (Path(task_run.artifact_dir) / "checkpoints" / "agent.json").exists()
+    monkeypatch.setattr(NodeCheckpointStore, "commit_completed", original_commit)
+    recovered = WorkbenchWorkflowRunner(tmp_path)
+    recovered._execute_agent_step = lambda **_: pytest.fail(  # type: ignore[method-assign]
+        "completed child session must not execute its provider twice"
+    )
+
+    result = recovered.execute_task_run(task_run.task_run_id)
+
+    assert result.execution_status == "completed"
+    assert executions == 1
+    assert result.step_results[0]["child_session"]["status"] == "completed"
+    assert result.step_results[0]["child_outputs"]
+
+
+def test_v3_tool_node_uses_controlled_dispatcher_and_frozen_permissions(
+    tmp_path: Path,
+) -> None:
+    from app.services.tool_dispatch import ToolDefinition, ToolDispatcher
+
+    task_run = _task_run(tmp_path, profile="none", validators=[])
+    plan_node = task_run.task_bundle["compiled_plan"]["nodes"][0]
+    plan_node.update({
+        "kind": "tool",
+        "type": "tool",
+        "handler_id": "tool",
+        "tool_id": "text.preview",
+        "required_permissions": ["workspace.read"],
+        "resolved_input_bindings": {
+            "arguments": {
+                "source_node_id": "request",
+                "source_input_id": "request",
+                "source_port_id": "value",
+            }
+        },
+        "input_ports": [{"id": "arguments", "type": "structured_json"}],
+        "output_ports": [{"id": "result", "type": "structured_json"}],
+    })
+    task_run.input_snapshot["request"] = {"text": "hello"}
+    task_run.workflow_snapshot["steps"] = []
+    _persist_task_run(tmp_path, task_run)
+    dispatcher = ToolDispatcher([
+        ToolDefinition(
+            tool_id="text.preview",
+            input_schema={
+                "type": "object",
+                "required": ["text"],
+                "properties": {"text": {"type": "string"}},
+                "additionalProperties": False,
+            },
+            required_permissions=("workspace.read",),
+            handler=lambda arguments: {"preview": arguments["text"][:4]},
+        )
+    ])
+    events: list[tuple[str, dict]] = []
+    runner = WorkbenchWorkflowRunner(
+        tmp_path,
+        event_sink=lambda event_type, payload: events.append((event_type, payload)),
+        tool_dispatcher=dispatcher,
+        granted_tool_permissions=("workspace.read",),
+    )
+
+    result = runner.execute_task_run(task_run.task_run_id)
+
+    assert result.execution_status == "completed"
+    assert result.step_results[0]["result"] == {"preview": "hell"}
+    assert result.step_results[0]["validated_outputs"]["result"] == {
+        "preview": "hell"
+    }
+    assert any(event_type == "tool_requested" for event_type, _ in events)
+    assert any(event_type == "tool_completed" for event_type, _ in events)
+
+
+def test_v3_tool_reuses_durable_action_when_parent_checkpoint_commit_failed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.node_checkpoint import NodeCheckpointStore
+    from app.services.tool_dispatch import ToolDefinition, ToolDispatcher
+
+    task_run = _task_run(tmp_path, profile="none", validators=[])
+    node = task_run.task_bundle["compiled_plan"]["nodes"][0]
+    node.update({
+        "kind": "tool",
+        "type": "tool",
+        "handler_id": "tool",
+        "tool_id": "state.increment",
+        "required_permissions": ["state.write"],
+        "resolved_input_bindings": {
+            "arguments": {
+                "source_node_id": "request",
+                "source_input_id": "request",
+                "source_port_id": "value",
+            }
+        },
+        "input_ports": [{"id": "arguments", "type": "structured_json"}],
+        "output_ports": [{"id": "result", "type": "structured_json"}],
+    })
+    task_run.input_snapshot["request"] = {"amount": 1}
+    task_run.workflow_snapshot["steps"] = []
+    _persist_task_run(tmp_path, task_run)
+    effects = 0
+
+    def increment(arguments: dict) -> dict:
+        nonlocal effects
+        effects += arguments["amount"]
+        return {"value": effects}
+
+    dispatcher = ToolDispatcher([
+        ToolDefinition(
+            tool_id="state.increment",
+            input_schema={
+                "type": "object",
+                "required": ["amount"],
+                "properties": {"amount": {"type": "integer"}},
+                "additionalProperties": False,
+            },
+            required_permissions=("state.write",),
+            handler=increment,
+        )
+    ])
+    original_commit = NodeCheckpointStore.commit_completed
+    monkeypatch.setattr(
+        NodeCheckpointStore,
+        "commit_completed",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("crash before tool parent checkpoint")
+        ),
+    )
+    first = WorkbenchWorkflowRunner(
+        tmp_path,
+        tool_dispatcher=dispatcher,
+        granted_tool_permissions=("state.write",),
+    )
+
+    interrupted = first.execute_task_run(task_run.task_run_id)
+
+    assert interrupted.execution_status == "failed"
+    assert effects == 1
+    assert list((Path(task_run.artifact_dir) / "tool-actions").glob("*.json"))
+    monkeypatch.setattr(NodeCheckpointStore, "commit_completed", original_commit)
+    recovered = WorkbenchWorkflowRunner(
+        tmp_path,
+        tool_dispatcher=dispatcher,
+        granted_tool_permissions=("state.write",),
+    )
+
+    result = recovered.execute_task_run(task_run.task_run_id)
+
+    assert result.execution_status == "completed"
+    assert result.step_results[0]["result"] == {"value": 1}
+    assert effects == 1
 
 
 def test_v3_missing_declared_artifact_blocks_delivery_without_failing_execution(tmp_path: Path) -> None:
@@ -915,7 +1423,8 @@ def test_v3_runner_maps_provider_unsupported_to_actionable_blocked_result(
     assert result.execution_status == "failed"
     assert result.delivery_status == "blocked"
     assert step["status"] == "error"
-    assert step["error"] == "provider_unsupported"
+    assert step["error"] == "节点执行失败，请重试。"
+    assert step["technical_diagnostics"]["error"] == "provider_unsupported"
     assert step["unsupported"] == {
         "operation": "run",
         "capability": "structured_output",
@@ -929,6 +1438,9 @@ def test_v3_runner_maps_provider_unsupported_to_actionable_blocked_result(
         kind in {"artifact_created", "completed", "step_completed"}
         for kind, _payload in events
     )
+    failed_event = next(payload for kind, payload in events if kind == "node_failed")
+    assert failed_event["error"] == "节点执行失败，请重试。"
+    assert "technical_diagnostics" not in failed_event
 
 
 def test_v3_builtin_timeout_keeps_late_production_writes_inside_session_staging(

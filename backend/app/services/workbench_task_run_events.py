@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
+import hashlib
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from app.services.external_agent_discovery import redact_agent_diagnostic_text
+from app.services.interprocess_file_lock import exclusive_file_lock
 from app.services.workflow_run_status import validate_status_axes
 
 
@@ -33,18 +37,37 @@ class WorkbenchTaskRunEventStore:
     ) -> dict[str, Any]:
         with _LOCK:
             events_path = self._events_path(task_run_id)
-            event = {
-                "event_id": self._next_event_id(events_path),
-                "task_run_id": task_run_id,
-                "event_type": str(event_type),
-                "payload": _redact_public_payload(dict(payload or {})),
-                "created_at": _now(),
-            }
-            event = _with_public_event_metadata(event)
-            events_path.parent.mkdir(parents=True, exist_ok=True)
-            with events_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
-            return event
+            with _file_lock(self._lock_path(task_run_id, "events")):
+                return self._append_locked(task_run_id, event_type, payload)
+
+    def append_once(
+        self,
+        task_run_id: str,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        deduplication_key: str,
+    ) -> tuple[dict[str, Any], bool]:
+        """Append one projection event per durable deduplication key.
+
+        The key is persisted inside the public event payload so a later process
+        can recover the same event without introducing a separate event index.
+        """
+        clean_key = str(deduplication_key or "").strip()
+        if not clean_key:
+            raise ValueError("deduplication_key is required")
+        clean_payload = dict(payload or {})
+        supplied_key = clean_payload.get("deduplication_key")
+        if supplied_key not in (None, clean_key):
+            raise ValueError("payload deduplication_key must match the argument")
+        clean_payload["deduplication_key"] = clean_key
+        with _LOCK:
+            events_path = self._events_path(task_run_id)
+            with _file_lock(self._lock_path(task_run_id, "events")):
+                existing = self._find_by_deduplication_key(events_path, clean_key)
+                if existing is not None:
+                    return _public_event(existing), False
+                return self._append_locked(task_run_id, event_type, clean_payload), True
 
     def list_after(
         self,
@@ -117,24 +140,25 @@ class WorkbenchTaskRunEventStore:
     def mark_status(self, task_run_id: str, status: str, **extra: Any) -> dict[str, Any]:
         with _LOCK:
             task_path = self._task_path(task_run_id)
-            payload = _read_json(task_path)
-            if not isinstance(payload, dict):
-                raise KeyError(task_run_id)
-            runtime = dict(payload.get("runtime") or {})
-            runtime.update({
-                "status": str(status),
-                "updated_at": _now(),
-                **extra,
-            })
-            payload["status"] = str(status)
-            payload["execution_status"] = str(status)
-            if extra.get("started_at"):
-                payload["started_at"] = str(extra["started_at"])
-            if extra.get("completed_at"):
-                payload["completed_at"] = str(extra["completed_at"])
-            payload["runtime"] = runtime
-            _write_json(task_path, payload)
-            return payload
+            with _file_lock(self._lock_path(task_run_id, "task")):
+                payload = _read_json(task_path)
+                if not isinstance(payload, dict):
+                    raise KeyError(task_run_id)
+                runtime = dict(payload.get("runtime") or {})
+                runtime.update({
+                    "status": str(status),
+                    "updated_at": _now(),
+                    **extra,
+                })
+                payload["status"] = str(status)
+                payload["execution_status"] = str(status)
+                if extra.get("started_at"):
+                    payload["started_at"] = str(extra["started_at"])
+                if extra.get("completed_at"):
+                    payload["completed_at"] = str(extra["completed_at"])
+                payload["runtime"] = runtime
+                _write_json(task_path, payload)
+                return payload
 
     def mark_status_unless(
         self,
@@ -147,31 +171,32 @@ class WorkbenchTaskRunEventStore:
         """Atomically avoid replacing an authoritative terminal status."""
         with _LOCK:
             task_path = self._task_path(task_run_id)
-            payload = _read_json(task_path)
-            if not isinstance(payload, dict):
-                raise KeyError(task_run_id)
-            current = str(payload.get("status") or "").strip()
-            if not current:
-                runtime = payload.get("runtime")
-                if isinstance(runtime, dict):
-                    current = str(runtime.get("status") or "").strip()
-            if current in blocked_statuses:
-                return False, payload
-            runtime = dict(payload.get("runtime") or {})
-            runtime.update({
-                "status": str(status),
-                "updated_at": _now(),
-                **extra,
-            })
-            payload["status"] = str(status)
-            payload["execution_status"] = str(status)
-            if extra.get("started_at"):
-                payload["started_at"] = str(extra["started_at"])
-            if extra.get("completed_at"):
-                payload["completed_at"] = str(extra["completed_at"])
-            payload["runtime"] = runtime
-            _write_json(task_path, payload)
-            return True, payload
+            with _file_lock(self._lock_path(task_run_id, "task")):
+                payload = _read_json(task_path)
+                if not isinstance(payload, dict):
+                    raise KeyError(task_run_id)
+                current = str(payload.get("status") or "").strip()
+                if not current:
+                    runtime = payload.get("runtime")
+                    if isinstance(runtime, dict):
+                        current = str(runtime.get("status") or "").strip()
+                if current in blocked_statuses:
+                    return False, payload
+                runtime = dict(payload.get("runtime") or {})
+                runtime.update({
+                    "status": str(status),
+                    "updated_at": _now(),
+                    **extra,
+                })
+                payload["status"] = str(status)
+                payload["execution_status"] = str(status)
+                if extra.get("started_at"):
+                    payload["started_at"] = str(extra["started_at"])
+                if extra.get("completed_at"):
+                    payload["completed_at"] = str(extra["completed_at"])
+                payload["runtime"] = runtime
+                _write_json(task_path, payload)
+                return True, payload
 
     def current_status(self, task_run_id: str) -> str:
         payload = _read_json(self._task_path(task_run_id))
@@ -199,13 +224,14 @@ class WorkbenchTaskRunEventStore:
             raise ValueError(f"invalid delivery status: {delivery_status}")
         with _LOCK:
             task_path = self._task_path(task_run_id)
-            payload = _read_json(task_path)
-            if not isinstance(payload, dict):
-                raise KeyError(task_run_id)
-            payload["quality_status"] = quality_status
-            payload["delivery_status"] = delivery_status
-            _write_json(task_path, payload)
-            return payload
+            with _file_lock(self._lock_path(task_run_id, "task")):
+                payload = _read_json(task_path)
+                if not isinstance(payload, dict):
+                    raise KeyError(task_run_id)
+                payload["quality_status"] = quality_status
+                payload["delivery_status"] = delivery_status
+                _write_json(task_path, payload)
+                return payload
 
     def mark_v3_outcomes(
         self,
@@ -236,36 +262,102 @@ class WorkbenchTaskRunEventStore:
             raise ValueError(f"invalid legacy delivery status: {legacy_delivery_status}")
         with _LOCK:
             task_path = self._task_path(task_run_id)
-            payload = _read_json(task_path)
-            if not isinstance(payload, dict):
-                raise KeyError(task_run_id)
-            payload.update({
-                "execution_status": execution_status,
-                "artifact_validation_status": artifact_validation_status,
-                "governance_status": governance_status,
-                "delivery_status": delivery_status,
-                "legacy_delivery_status": legacy_delivery_status,
-                "quality_status": quality_status,
-            })
-            runtime = dict(payload.get("runtime") or {})
-            runtime.update({
-                "execution_status": execution_status,
-                "artifact_validation_status": artifact_validation_status,
-                "governance_status": governance_status,
-                "delivery_status": delivery_status,
-                "legacy_delivery_status": legacy_delivery_status,
-                "quality_status": quality_status,
-                "updated_at": _now(),
-            })
-            payload["runtime"] = runtime
-            _write_json(task_path, payload)
-            return payload
+            with _file_lock(self._lock_path(task_run_id, "task")):
+                payload = _read_json(task_path)
+                if not isinstance(payload, dict):
+                    raise KeyError(task_run_id)
+                payload.update({
+                    "execution_status": execution_status,
+                    "artifact_validation_status": artifact_validation_status,
+                    "governance_status": governance_status,
+                    "delivery_status": delivery_status,
+                    "legacy_delivery_status": legacy_delivery_status,
+                    "quality_status": quality_status,
+                })
+                runtime = dict(payload.get("runtime") or {})
+                runtime.update({
+                    "execution_status": execution_status,
+                    "artifact_validation_status": artifact_validation_status,
+                    "governance_status": governance_status,
+                    "delivery_status": delivery_status,
+                    "legacy_delivery_status": legacy_delivery_status,
+                    "quality_status": quality_status,
+                    "updated_at": _now(),
+                })
+                payload["runtime"] = runtime
+                _write_json(task_path, payload)
+                return payload
+
+    def replace_checkpoint_projection(
+        self,
+        task_run_id: str,
+        projection: dict[str, Any],
+    ) -> bool:
+        """Atomically replace only the checkpoint-derived task projection."""
+        with _LOCK:
+            task_path = self._task_path(task_run_id)
+            with _file_lock(self._lock_path(task_run_id, "task")):
+                payload = _read_json(task_path)
+                if not isinstance(payload, dict):
+                    raise KeyError(task_run_id)
+                if payload.get("checkpoint_projection") == projection:
+                    return False
+                payload["checkpoint_projection"] = projection
+                _write_json(task_path, payload)
+                return True
 
     def _events_path(self, task_run_id: str) -> Path:
         return self.artifact_root / _safe_segment(task_run_id) / "task_run_events.jsonl"
 
     def _task_path(self, task_run_id: str) -> Path:
         return self.artifact_root / _safe_segment(task_run_id) / "task_run.json"
+
+    def _lock_path(self, task_run_id: str, kind: str) -> Path:
+        """Keep durable coordination files outside the Attempt artifact root."""
+        clean_id = _safe_segment(task_run_id)
+        digest = hashlib.sha256(
+            f"{clean_id}:{kind}".encode("utf-8")
+        ).hexdigest()
+        return self.artifact_root / ".locks" / f"{digest}.lock"
+
+    def _append_locked(
+        self,
+        task_run_id: str,
+        event_type: str,
+        payload: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        events_path = self._events_path(task_run_id)
+        event = {
+            "event_id": self._next_event_id(events_path),
+            "task_run_id": task_run_id,
+            "event_type": str(event_type),
+            "payload": _redact_public_payload(dict(payload or {})),
+            "created_at": _now(),
+        }
+        event = _with_public_event_metadata(event)
+        events_path.parent.mkdir(parents=True, exist_ok=True)
+        with events_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        return event
+
+    @staticmethod
+    def _find_by_deduplication_key(
+        events_path: Path,
+        deduplication_key: str,
+    ) -> dict[str, Any] | None:
+        if not events_path.exists():
+            return None
+        for line in events_path.read_text(encoding="utf-8").splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            payload = event.get("payload") if isinstance(event, dict) else None
+            if isinstance(payload, dict) and payload.get("deduplication_key") == deduplication_key:
+                return event
+        return None
 
     @staticmethod
     def _next_event_id(events_path: Path) -> int:
@@ -278,9 +370,14 @@ class WorkbenchTaskRunEventStore:
         return count + 1
 
 
-def reconcile_interrupted_task_runs(artifact_root: str | Path) -> dict[str, Any]:
+def reconcile_interrupted_task_runs(
+    artifact_root: str | Path,
+    *,
+    exclude_task_run_ids: set[str] | None = None,
+) -> dict[str, Any]:
     root = Path(artifact_root)
     store = WorkbenchTaskRunEventStore(root)
+    excluded = {str(value) for value in (exclude_task_run_ids or set())}
     reconciled: list[dict[str, str]] = []
     if not root.exists():
         return {"status": "ok", "interrupted_count": 0, "task_runs": []}
@@ -288,6 +385,8 @@ def reconcile_interrupted_task_runs(artifact_root: str | Path) -> dict[str, Any]
         if not task_dir.is_dir():
             continue
         task_run_id = task_dir.name
+        if task_run_id in excluded:
+            continue
         payload = _read_json(task_dir / "task_run.json")
         if not isinstance(payload, dict):
             continue
@@ -364,6 +463,12 @@ def _write_json(path: Path, payload: Any) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
     tmp.replace(path)
+
+
+@contextmanager
+def _file_lock(lock_path: Path):
+    with exclusive_file_lock(lock_path):
+        yield
 
 
 def _safe_segment(value: str) -> str:

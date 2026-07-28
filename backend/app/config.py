@@ -264,6 +264,30 @@ class Settings(BaseSettings):
     # switch must not resurrect a second mutable workflow experience.
     workbench_v2_enabled: Literal[True] = True
 
+    # Phase 6 features are independently reversible. Disabling a capability
+    # removes it from authoring/publish contracts; runtime paths also enforce
+    # these switches so a frozen plan cannot bypass a deployment rollback.
+    workflow_checkpoint_reuse_enabled: bool = Field(
+        default=True,
+        validation_alias="CODETALK_WORKFLOW_CHECKPOINT_REUSE_ENABLED",
+    )
+    workflow_hitl_enabled: bool = Field(
+        default=True,
+        validation_alias="CODETALK_WORKFLOW_HITL_ENABLED",
+    )
+    workflow_tool_enabled: bool = Field(
+        default=True,
+        validation_alias="CODETALK_WORKFLOW_TOOL_ENABLED",
+    )
+    workflow_managed_tool_manifest_dir: str = Field(
+        default="",
+        validation_alias="CODETALK_WORKFLOW_MANAGED_TOOL_MANIFEST_DIR",
+    )
+    workflow_subagent_enabled: bool = Field(
+        default=True,
+        validation_alias="CODETALK_WORKFLOW_SUBAGENT_ENABLED",
+    )
+
     # CORS — comma-separated origins allowed to call the API
     cors_origins: str = "http://localhost:3003,http://127.0.0.1:3003"
 

@@ -245,6 +245,59 @@ def build_v3_node(
                 **requested,
             },
         }
+    if kind in {"tool", "human_approval", "subagent"}:
+        execution = (
+            definition.get("execution")
+            if isinstance(definition.get("execution"), dict)
+            else {}
+        )
+        handler_id = str(execution.get("handler_id") or "").strip()
+        handler_version = execution.get("handler_version")
+        if not handler_id or isinstance(handler_version, bool) or not isinstance(handler_version, int):
+            raise CanvasAuthoringError(f"node_handler_unavailable:{kind}")
+        default_ports = (
+            definition.get("default_ports")
+            if isinstance(definition.get("default_ports"), dict)
+            else {}
+        )
+
+        def handler_ports(direction: str) -> list[dict[str, Any]]:
+            values = default_ports.get(direction)
+            if not isinstance(values, list):
+                return []
+            return [
+                _port(
+                    str(item.get("label") or item.get("id") or "Port"),
+                    str(item.get("type") or "artifact"),
+                    required=bool(item.get("required", False)),
+                    collection=bool(item.get("collection", False)),
+                    binding_key=str(item.get("id") or ""),
+                )
+                for item in values
+                if isinstance(item, dict) and str(item.get("id") or "")
+            ]
+
+        default_config = (
+            dict(definition.get("default_config"))
+            if isinstance(definition.get("default_config"), dict)
+            else {}
+        )
+        return {
+            "id": node_id,
+            "kind": kind,
+            "label": label or str((definition.get("ui") or {}).get("label") or kind),
+            "position": safe_position,
+            "ports": {
+                "inputs": handler_ports("input_ports"),
+                "outputs": handler_ports("output_ports"),
+            },
+            "config": {
+                **default_config,
+                **requested,
+                "handler_id": handler_id,
+                "handler_version": handler_version,
+            },
+        }
     if kind in {"validator", "governance"}:
         from app.services.workflow_handler_registry import (
             workflow_handler_capability_snapshot,
@@ -431,14 +484,52 @@ def assert_v3_technical_ids_preserved(
 
 def assert_handler_port_mutation_allowed(node: dict[str, Any]) -> None:
     """Only user-owned node kinds expose mutable ports in authoring commands."""
-    if str(node.get("kind") or "") in {"validator", "governance"}:
+    if str(node.get("kind") or "") in {
+        "validator",
+        "governance",
+        "tool",
+        "human_approval",
+        "subagent",
+    }:
         raise CanvasAuthoringError("handler_port_contract_immutable")
 
 
 def assert_handler_owned_port_contract(node: dict[str, Any]) -> None:
     """Raw graph replacement must preserve the registered semantic contract."""
     kind = str(node.get("kind") or "")
-    if kind not in {"validator", "governance"}:
+    if kind not in {"validator", "governance", "tool", "human_approval", "subagent"}:
+        return
+    if kind in {"tool", "human_approval", "subagent"}:
+        from app.services.workflow_node_registry import node_definition
+
+        definition = node_definition(kind)
+        config = node.get("config") if isinstance(node.get("config"), dict) else {}
+        expected_config = (
+            definition.get("default_config")
+            if isinstance(definition, dict) and isinstance(definition.get("default_config"), dict)
+            else {}
+        )
+        if (
+            config.get("handler_id") != expected_config.get("handler_id")
+            or config.get("handler_version") != expected_config.get("handler_version")
+        ):
+            raise CanvasAuthoringError("handler_port_contract_immutable")
+        default_ports = (
+            definition.get("default_ports")
+            if isinstance(definition, dict) and isinstance(definition.get("default_ports"), dict)
+            else {}
+        )
+        ports = node.get("ports") if isinstance(node.get("ports"), dict) else {}
+        for direction, definition_key in (
+            ("inputs", "input_ports"),
+            ("outputs", "output_ports"),
+        ):
+            expected = _handler_semantic_ports(
+                default_ports.get(definition_key), definition_ports=True
+            )
+            actual = _handler_semantic_ports(ports.get(direction), graph_ports=True)
+            if expected != actual:
+                raise CanvasAuthoringError("handler_port_contract_immutable")
         return
     from app.services.workflow_handler_registry import (
         workflow_handler_capability_snapshot,
@@ -460,12 +551,22 @@ def assert_handler_owned_port_contract(node: dict[str, Any]) -> None:
             raise CanvasAuthoringError("handler_port_contract_immutable")
 
 
-def _handler_semantic_ports(value: Any, *, graph_ports: bool = False) -> list[tuple[str, str, bool, bool]]:
+def _handler_semantic_ports(
+    value: Any,
+    *,
+    graph_ports: bool = False,
+    definition_ports: bool = False,
+) -> list[tuple[str, str, bool, bool]]:
     if not isinstance(value, list):
         return []
     return sorted(
         (
-            str(item.get("binding_key" if graph_ports else "key") or ""),
+            str(
+                item.get(
+                    "binding_key" if graph_ports else "id" if definition_ports else "key"
+                )
+                or ""
+            ),
             str(item.get("type") or ""),
             bool(item.get("required", False)),
             bool(item.get("collection", False)),

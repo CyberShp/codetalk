@@ -10,6 +10,7 @@ from app.database import init_db
 from app.services.ai_conversations import AIConversationStore
 from app.services.process_manager import ProcessManager
 from app.services.workbench_task_run_events import reconcile_interrupted_task_runs
+from app.services.workflow_startup_recovery import reconcile_v3_startup_recovery
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
 
@@ -55,6 +56,14 @@ async def lifespan(app: FastAPI):
     task_migration = WorkbenchTaskStore(
         settings.data_path / "workbench" / "workflows.db"
     ).initialize_and_migrate()
+    if settings.workflow_tool_enabled:
+        from app.services.managed_tool_runtime import managed_tool_runtime
+
+        tool_runtime = managed_tool_runtime()
+        logger.info(
+            "Managed workflow Tool runtime ready: tools=%s",
+            sorted(tool_runtime.tools_by_id),
+        )
     logger.info(
         "Workbench V2 migrations ready: workflows=%s builtin_versions=%s retired_builtins=%s tasks=%s",
         workflow_migration,
@@ -65,7 +74,36 @@ async def lifespan(app: FastAPI):
     ai_reconcile = await AIConversationStore().reconcile_interrupted_runs()
     if ai_reconcile.get("interrupted_count"):
         logger.warning("Reconciled interrupted AI conversation runs: %s", ai_reconcile)
-    reconcile = reconcile_interrupted_task_runs(settings.data_path / "workbench" / "task_runs")
+    task_runs_root = settings.data_path / "workbench" / "task_runs"
+    v3_recovery = reconcile_v3_startup_recovery(task_runs_root)
+    from app.api.agent_workbench import (
+        schedule_recovered_v3_task_run,
+        schedule_task_run_human_approval_expiries,
+    )
+
+    scheduled = [
+        decision.task_run_id
+        for decision in v3_recovery
+        if decision.action == "resume"
+        and schedule_recovered_v3_task_run(decision.task_run_id)
+    ]
+    expiry_monitors = [
+        decision.task_run_id
+        for decision in v3_recovery
+        if decision.action == "waiting_for_input"
+        and schedule_task_run_human_approval_expiries(decision.task_run_id)
+    ]
+    reconcile = reconcile_interrupted_task_runs(
+        task_runs_root,
+        exclude_task_run_ids={decision.task_run_id for decision in v3_recovery},
+    )
+    if v3_recovery:
+        logger.info(
+            "Reconciled V3 startup recovery: decisions=%s scheduled=%s expiry_monitors=%s",
+            v3_recovery,
+            scheduled,
+            expiry_monitors,
+        )
     if reconcile.get("interrupted_count"):
         logger.warning("Reconciled interrupted workbench task runs: %s", reconcile)
 
@@ -77,6 +115,9 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    from app.api.agent_workbench import shutdown_task_run_human_approval_expiry_monitors
+
+    await shutdown_task_run_human_approval_expiry_monitors()
     # Graceful shutdown: stop all managed tool processes
     await pm.shutdown_all()
     logger.info("CodeTalk backend shut down")

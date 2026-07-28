@@ -96,6 +96,7 @@ def _task_run(
         "validation_profile": profile,
         "declared_outputs": declared_outputs,
         "outputs": declared_outputs,
+        "steps": workflow_steps or [],
     }
     plan = {
         "compiled_contract_version": 3,
@@ -135,10 +136,22 @@ def _task_run(
     (task_dir / "compiled_plan.json").write_text(
         json.dumps(plan, sort_keys=True), encoding="utf-8"
     )
+    (task_dir / "input_snapshot.json").write_text(
+        json.dumps(task_run.input_snapshot, sort_keys=True), encoding="utf-8"
+    )
+    (task_dir / "agent_execution_descriptors.json").write_text(
+        json.dumps(
+            {"schema_version": 1, "agent_runs": task_run.agent_runs},
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
     components = {}
     for component_id, name in (
         ("v3_runtime_contract", "compiled_definition.json"),
         ("execution_plan", "compiled_plan.json"),
+        ("input_snapshot", "input_snapshot.json"),
+        ("agent_execution_descriptors", "agent_execution_descriptors.json"),
     ):
         path = task_dir / name
         components[component_id] = {
@@ -650,6 +663,7 @@ payload = {
             "validation_profile": "artifact_only",
             "declared_outputs": [declared_output],
             "outputs": [declared_output],
+            "steps": [{"id": "agent", "type": "agent_task"}],
         },
         "compiled_plan": {
             "compiled_contract_version": 3,
@@ -681,10 +695,17 @@ definition = payload["task_bundle"]["compiled_definition"]
 plan = payload["task_bundle"]["compiled_plan"]
 (task_dir / "compiled_definition.json").write_text(json.dumps(definition, sort_keys=True), encoding="utf-8")
 (task_dir / "compiled_plan.json").write_text(json.dumps(plan, sort_keys=True), encoding="utf-8")
+(task_dir / "input_snapshot.json").write_text(json.dumps({}), encoding="utf-8")
+(task_dir / "agent_execution_descriptors.json").write_text(json.dumps({
+    "schema_version": 1,
+    "agent_runs": payload["agent_runs"],
+}, sort_keys=True), encoding="utf-8")
 components = {}
 for component_id, name in (
     ("v3_runtime_contract", "compiled_definition.json"),
     ("execution_plan", "compiled_plan.json"),
+    ("input_snapshot", "input_snapshot.json"),
+    ("agent_execution_descriptors", "agent_execution_descriptors.json"),
 ):
     path = task_dir / name
     components[component_id] = {"path": name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
@@ -1402,7 +1423,10 @@ def test_professional_governance_rejects_invalid_bound_json_without_provider_fai
     governance_result = next(
         item for item in result.step_results if item["step_id"] == "design"
     )
-    assert governance_result["error"] == "governance_input_json_invalid"
+    assert governance_result["error"] == "节点执行失败，请重试。"
+    assert governance_result["technical_diagnostics"]["error"] == (
+        "governance_input_json_invalid"
+    )
     assert governance_result["provider_failed"] is False
 
 
@@ -1449,7 +1473,8 @@ def test_governance_generator_rejects_unsafe_or_undeclared_output(
     assert result.governance_status == "failed"
     assert result.delivery_status == "blocked"
     governance_result = result.step_results[0]
-    assert governance_result["error"] == error_code
+    assert governance_result["error"] == "节点执行失败，请重试。"
+    assert governance_result["technical_diagnostics"]["error"] == error_code
     assert not (tmp_path / "escaped.json").exists()
 
 

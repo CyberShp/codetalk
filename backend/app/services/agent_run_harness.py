@@ -2456,6 +2456,7 @@ def _run_cancellable_subprocess(
     stderr_chunks: list[bytes] = []
     lock = threading.Lock()
     started = time.monotonic()
+    total_deadline = started + float(timeout)
     last_activity = {"at": started}
 
     def _mark_activity() -> None:
@@ -2524,16 +2525,10 @@ def _run_cancellable_subprocess(
             cancelled = True
             _terminate_process_group(process)
             break
-        elapsed = time.monotonic() - started
+        now = time.monotonic()
         with lock:
-            inactive_for = time.monotonic() - last_activity["at"]
-        hard_timeout = max(3600.0, float(timeout) * 4)
-        if elapsed > hard_timeout:
-            timed_out = True
-            timeout_kind = "hard"
-            _terminate_process_group(process)
-            break
-        if inactive_for > max(1, int(timeout)):
+            inactive_for = now - last_activity["at"]
+        if now >= total_deadline:
             timed_out = True
             timeout_kind = "total"
             _terminate_process_group(process)

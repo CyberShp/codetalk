@@ -7263,6 +7263,140 @@ body {
   background: #eef3f6;
 }
 
+.ct-v2-run-notices {
+  z-index: 3;
+  grid-row: 2;
+  border-bottom: 1px solid #d7e1e9;
+  background: #ffffff;
+}
+
+.ct-v2-run-notices .ct-v2-run-error {
+  grid-row: auto;
+}
+
+.ct-v2-human-approval {
+  display: grid;
+  grid-template-columns: minmax(160px, 0.8fr) minmax(240px, 1.2fr) minmax(220px, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+  padding: 9px 14px;
+  background: #f0f9fb;
+  color: #1d4f5b;
+}
+
+.ct-v2-human-approval-context {
+  min-width: 0;
+}
+
+.ct-v2-human-approval-context h3 {
+  margin: 0 0 4px;
+  color: #53727a;
+  font-size: 11px;
+}
+
+.ct-v2-human-approval-context pre {
+  max-height: 64px;
+  margin: 0;
+  overflow: auto;
+  color: #173b45;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.ct-v2-human-approval > div:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.ct-v2-human-approval span {
+  color: #08758c;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.ct-v2-human-approval strong,
+.ct-v2-human-approval small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ct-v2-human-approval strong {
+  color: #173b45;
+  font-size: 13px;
+}
+
+.ct-v2-human-approval small {
+  color: #53727a;
+}
+
+.ct-v2-human-approval label {
+  display: grid;
+  gap: 4px;
+  color: #53727a;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.ct-v2-human-approval input {
+  min-width: 0;
+  height: 32px;
+  border: 1px solid #9fc5ce;
+  border-radius: 4px;
+  background: #ffffff;
+  padding: 0 8px;
+  color: #173b45;
+  font-size: 12px;
+}
+
+.ct-v2-human-approval-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.ct-v2-human-approval-actions button {
+  display: inline-flex;
+  height: 32px;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid #ccd7df;
+  border-radius: 4px;
+  background: #ffffff;
+  padding: 0 9px;
+  color: #344651;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.ct-v2-human-approval-actions button.is-primary {
+  border-color: #087e96;
+  background: #087e96;
+  color: #ffffff;
+}
+
+.ct-v2-human-approval-actions button.is-reject {
+  border-color: #d99b9b;
+  color: #a52a2a;
+}
+
+.ct-v2-human-approval-actions button:disabled,
+.ct-v2-human-approval input:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+@media (max-width: 760px) {
+  .ct-v2-human-approval {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+    padding: 10px;
+  }
+}
+
 .ct-v2-run-header,
 .ct-v2-run-main,
 .ct-v2-node-inspector > header {

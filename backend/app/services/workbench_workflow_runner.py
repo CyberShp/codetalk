@@ -7,6 +7,7 @@ import ast
 import io
 import json
 import hashlib
+import math
 import multiprocessing
 import os
 import re
@@ -17,7 +18,7 @@ import tokenize
 import traceback
 import uuid
 from dataclasses import asdict, dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Iterable
@@ -46,6 +47,8 @@ from app.services.provider_adapters.registry import (
     create_provider_adapter,
     missing_provider_capabilities,
 )
+from app.services.tool_dispatch import ToolCallRequest, ToolDispatcher
+from app.services.managed_tool_runtime import ManagedToolRuntime, managed_tool_runtime
 from app.services.input_consumption import (
     record_external_agent_artifact_consumption,
     record_external_agent_input_delivery,
@@ -53,7 +56,12 @@ from app.services.input_consumption import (
 )
 from app.services.workbench_artifact_manifest import write_task_artifact_manifest
 from app.services.workbench_task_run import BUILTIN_LLM_PROVIDER_ID
-from app.services.workbench_task_run import WorkbenchTaskRunStore, validate_run_snapshot_v3
+from app.services.workbench_task_run import (
+    FrozenV3ExecutionAuthorityError,
+    WorkbenchTaskRunStore,
+    load_frozen_v3_execution_authority,
+    validate_run_snapshot_v3,
+)
 from app.services.workflow_run_status import (
     derive_delivery_status,
     legacy_delivery_status as _legacy_v3_delivery_status,
@@ -81,6 +89,38 @@ _BUILTIN_HARNESS_INTERNAL_ARTIFACTS = [
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _v3_total_execution_deadline_monotonic(
+    task_run: Any,
+    *,
+    timeout_sec: int,
+) -> float | None:
+    """Restore one absolute run deadline onto the current monotonic clock."""
+
+    payload = _read_json(Path(task_run.artifact_dir) / "task_run.json")
+    runtime = payload.get("runtime") if isinstance(payload, dict) else None
+    raw_deadline = (
+        runtime.get("total_execution_timeout_at")
+        if isinstance(runtime, dict)
+        else None
+    )
+    if raw_deadline not in (None, ""):
+        try:
+            deadline = datetime.fromisoformat(
+                str(raw_deadline).replace("Z", "+00:00")
+            )
+        except ValueError:
+            return time.monotonic() - 1.0
+        if deadline.tzinfo is None:
+            return time.monotonic() - 1.0
+        remaining = (
+            deadline.astimezone(timezone.utc) - datetime.now(timezone.utc)
+        ).total_seconds()
+        return time.monotonic() + remaining
+    if timeout_sec > 0:
+        return time.monotonic() + timeout_sec
+    return None
 
 
 def _append_nested_black_box_delivery_issues(
@@ -1110,12 +1150,44 @@ class WorkbenchWorkflowRunner:
         event_sink: Callable[[str, dict[str, Any]], None] | None = None,
         is_cancelled: Callable[[], bool] | None = None,
         handler_dispatcher: WorkflowHandlerDispatcher | None = None,
+        tool_dispatcher: ToolDispatcher | None = None,
+        granted_tool_permissions: Iterable[str] = (),
+        managed_tool_runtime_instance: ManagedToolRuntime | None = None,
     ) -> None:
         self.artifact_root = Path(artifact_root)
         self.store = WorkbenchTaskRunStore(self.artifact_root)
         self._event_sink = event_sink
         self._is_cancelled_callback = is_cancelled
         self._handler_dispatcher = handler_dispatcher or WorkflowHandlerDispatcher()
+        requested_tool_permissions = tuple(
+            str(permission) for permission in granted_tool_permissions
+        )
+        managed_runtime = managed_tool_runtime_instance
+        if (
+            settings.workflow_tool_enabled
+            and managed_runtime is None
+            and tool_dispatcher is None
+        ):
+            managed_runtime = managed_tool_runtime()
+        if not settings.workflow_tool_enabled:
+            managed_runtime = None
+            tool_dispatcher = None
+            requested_tool_permissions = ()
+        self._managed_tool_runtime = managed_runtime
+        self._tool_dispatcher = (
+            tool_dispatcher
+            if tool_dispatcher is not None
+            else managed_runtime.dispatcher
+            if managed_runtime is not None
+            else None
+        )
+        self._granted_tool_permissions = (
+            requested_tool_permissions
+            if tool_dispatcher is not None or requested_tool_permissions
+            else managed_runtime.granted_permissions
+            if managed_runtime is not None
+            else ()
+        )
 
     def execute_task_run(
         self,
@@ -1143,12 +1215,24 @@ class WorkbenchWorkflowRunner:
                     task_run=task_run,
                     snapshot_errors=snapshot_errors,
                 )
-        contract_version = _frozen_compiled_contract_version(task_run)
+        contract_version = _frozen_snapshot_contract_version(snapshot_root)
+        if contract_version is None:
+            contract_version = _frozen_compiled_contract_version(task_run)
         if contract_version == 3:
+            try:
+                execution_authority = load_frozen_v3_execution_authority(
+                    task_run.artifact_dir
+                )
+            except FrozenV3ExecutionAuthorityError:
+                return self._finalize_invalid_run_snapshot(
+                    task_run=task_run,
+                    snapshot_errors=["运行快照缺少完整的 V3 执行权威。"],
+                )
             return self._execute_v3_task_run(
                 task_run=task_run,
                 timeout_sec=timeout_sec,
                 stop_on_error=stop_on_error,
+                execution_authority=execution_authority,
             )
         if contract_version is not None:
             return self._finalize_unsupported_compiled_contract(
@@ -1261,6 +1345,12 @@ class WorkbenchWorkflowRunner:
         task_run: Any,
         timeout_sec: int,
         stop_on_error: bool,
+        execution_authority: tuple[
+            dict[str, Any],
+            dict[str, Any],
+            dict[str, Any],
+            list[dict[str, Any]],
+        ],
     ) -> WorkbenchWorkflowExecutionResult:
         """Run only nodes frozen in a V3 compiled contract.
 
@@ -1270,27 +1360,46 @@ class WorkbenchWorkflowRunner:
         the user's delivery contract.
         """
         started_at = _now()
-        compiled_definition, compiled_plan = _v3_frozen_contract(task_run)
+        execution_deadline_monotonic = _v3_total_execution_deadline_monotonic(
+            task_run,
+            timeout_sec=timeout_sec,
+        )
+        (
+            compiled_definition,
+            compiled_plan,
+            frozen_input_snapshot,
+            frozen_agent_runs,
+        ) = execution_authority
         declared_outputs = _v3_declared_outputs(compiled_definition)
         plan_nodes = _v3_plan_nodes(compiled_plan)
         plan_by_id = {str(node.get("node_id") or ""): node for node in plan_nodes}
 
         steps_by_id = {
             str(step.get("id") or ""): step
-            for step in task_run.workflow_snapshot.get("steps") or []
+            for step in compiled_definition.get("steps") or []
             if isinstance(step, dict) and str(step.get("id") or "")
         }
         agent_runs = {
             str(item.get("step_id") or ""): item
-            for item in task_run.agent_runs
+            for item in frozen_agent_runs
             if isinstance(item, dict) and str(item.get("step_id") or "")
         }
+        frozen_workflow_identity = str(
+            compiled_plan.get("workflow_version_id")
+            or compiled_definition.get("version_id")
+            or compiled_definition.get("id")
+            or ""
+        )
         step_results: list[dict[str, Any]] = []
         execution_results: list[dict[str, Any]] = []
         validator_results: list[dict[str, Any]] = []
         governance_results: list[dict[str, Any]] = []
         results_by_node: dict[str, dict[str, Any]] = {}
-        from app.services.workflow_scheduler import WorkflowDagScheduler
+        from app.services.node_checkpoint import (
+            NodeCheckpointStore,
+            compute_node_idempotency_key,
+        )
+        from app.services.workflow_scheduler import SUCCESS_STATUSES, WorkflowDagScheduler
 
         effective_plan = json.loads(json.dumps(compiled_plan))
         for node in effective_plan.get("nodes") or []:
@@ -1298,6 +1407,102 @@ class WorkbenchWorkflowRunner:
                 node["failure_policy"] = (
                     "stop" if stop_on_error else "continue_independent"
                 )
+        effective_plan_by_id = {
+            str(node.get("node_id") or ""): node
+            for node in effective_plan.get("nodes") or []
+            if isinstance(node, dict) and str(node.get("node_id") or "")
+        }
+        disabled_features = [
+            {
+                "node_id": node_id,
+                "kind": str(node.get("kind") or ""),
+            }
+            for node_id, node in effective_plan_by_id.items()
+            if (
+                str(node.get("kind") or "") == "human_approval"
+                and not settings.workflow_hitl_enabled
+            )
+            or (
+                str(node.get("kind") or "") == "tool"
+                and not settings.workflow_tool_enabled
+            )
+            or (
+                str(node.get("kind") or "") == "subagent"
+                and not settings.workflow_subagent_enabled
+            )
+        ]
+        if disabled_features:
+            return self._finalize_v3_feature_disabled(
+                task_run=task_run,
+                started_at=started_at,
+                disabled_features=disabled_features,
+            )
+        if self._managed_tool_runtime is not None:
+            tool_contract_errors = self._managed_tool_runtime.validate_frozen_plan_nodes(
+                list(effective_plan_by_id.values())
+            )
+            if tool_contract_errors:
+                return self._finalize_v3_tool_contract_failure(
+                    task_run=task_run,
+                    started_at=started_at,
+                    errors=tool_contract_errors,
+                )
+
+        checkpoint_store = NodeCheckpointStore(Path(task_run.artifact_dir))
+        checkpoint_output_hashes: dict[str, dict[str, str]] = {}
+        seed_results: dict[str, dict[str, Any]] = {}
+        for node_id in (
+            effective_plan.get("topological_order") or []
+            if settings.workflow_checkpoint_reuse_enabled
+            else []
+        ):
+            node = effective_plan_by_id.get(str(node_id)) or {}
+            dependencies = [str(value) for value in node.get("depends_on") or []]
+            if any(dependency not in seed_results for dependency in dependencies):
+                continue
+            direct_outputs = {
+                dependency: dict(seed_results[dependency].get("validated_outputs") or {})
+                for dependency in dependencies
+            }
+            resolved_inputs = _resolve_plan_node_inputs(
+                plan_node=node,
+                input_snapshot=frozen_input_snapshot,
+                direct_dependency_outputs=direct_outputs,
+            )
+            upstream_hashes = _v3_checkpoint_upstream_hashes(
+                dependencies=dependencies,
+                hashes_by_node=checkpoint_output_hashes,
+            )
+            key = compute_node_idempotency_key(
+                node_definition=_v3_checkpoint_node_definition(
+                    workflow_identity=frozen_workflow_identity,
+                    node=node,
+                ),
+                frozen_inputs=resolved_inputs,
+                upstream_artifact_hashes=upstream_hashes,
+            )
+            checkpoint = checkpoint_store.load(str(node_id))
+            seed = checkpoint_store.load_reusable_seed(
+                str(node_id),
+                expected_idempotency_key=key,
+            )
+            if (
+                checkpoint is None
+                or seed is None
+                or not _v3_checkpoint_artifacts_match(
+                    result=seed,
+                    node_id=str(node_id),
+                    declared_outputs=declared_outputs,
+                    expected_hashes=checkpoint.output_artifact_hashes,
+                )
+            ):
+                continue
+            seed_results[str(node_id)] = seed
+            checkpoint_output_hashes[str(node_id)] = dict(
+                checkpoint.output_artifact_hashes
+            )
+
+        results_by_node.update(seed_results)
 
         def execute_node(
             node: dict[str, Any],
@@ -1306,9 +1511,47 @@ class WorkbenchWorkflowRunner:
             node_id = str(node.get("node_id") or "")
             kind = str(node.get("kind") or "")
             handler_id = str(node.get("handler_id") or "")
-            if self._is_cancelled():
+            node_timeout_sec = 0
+            if execution_deadline_monotonic is not None:
+                node_timeout_sec = max(
+                    0,
+                    math.ceil(execution_deadline_monotonic - time.monotonic()),
+                )
+            resolved_inputs: dict[str, Any] = {}
+            cancelled = self._is_cancelled()
+            if not cancelled:
+                resolved_inputs = _resolve_plan_node_inputs(
+                    plan_node=node,
+                    input_snapshot=frozen_input_snapshot,
+                    direct_dependency_outputs=direct_dependency_outputs,
+                )
+            if cancelled:
                 result = _cancelled_step_result(
                     {"id": node_id, "type": str(node.get("type") or kind)}
+                )
+            elif execution_deadline_monotonic is not None and node_timeout_sec <= 0:
+                result = {
+                    "step_id": node_id,
+                    "type": str(node.get("type") or kind),
+                    "status": "timed_out",
+                    "error": "total_execution_timeout",
+                }
+            elif kind == "tool":
+                result = self._execute_v3_tool_node(
+                    task_run=task_run,
+                    node=node,
+                    resolved_inputs=resolved_inputs,
+                )
+            elif kind == "human_approval":
+                self._emit_event(
+                    "step_started",
+                    _v3_handler_started_event_payload(node),
+                )
+                result = _v3_human_approval_step_result(
+                    task_run=task_run,
+                    node=node,
+                    timeout_sec=node_timeout_sec,
+                    resolved_inputs=resolved_inputs,
                 )
             elif kind in {"validator", "governance"}:
                 self._emit_event(
@@ -1327,7 +1570,7 @@ class WorkbenchWorkflowRunner:
             else:
                 step = steps_by_id.get(node_id)
                 if (
-                    kind not in {"agent", "builtin_model"}
+                    kind not in {"agent", "builtin_model", "subagent"}
                     or not step
                     or str(node.get("type") or "") != "agent_task"
                 ):
@@ -1353,41 +1596,188 @@ class WorkbenchWorkflowRunner:
                             for dependency_id in node.get("depends_on") or []
                             if dependency_id in results_by_node
                         }
-                        resolved_inputs = _resolve_plan_node_inputs(
-                            plan_node=node,
-                            input_snapshot=task_run.input_snapshot,
-                            direct_dependency_outputs=direct_dependency_outputs,
-                        )
-                        started_payload = _step_started_event_payload(
-                            task_run=task_run,
-                            step=step,
-                            agent_run=agent_run,
-                        )
-                        started_payload.update({
-                            "handler_id": handler_id,
-                            "handler_version": int(node.get("handler_version") or 1),
-                        })
-                        self._emit_event("step_started", started_payload)
-                        result = self._execute_agent_step(
-                            task_run_id=task_run.task_run_id,
-                            step=step,
-                            agent_run=agent_run,
-                            prior_step_results=list(dependency_results.values()),
-                            resolved_inputs=resolved_inputs,
-                            timeout_sec=timeout_sec,
-                        )
+                        execution_agent_run = agent_run
+                        child_store = None
+                        child_session = None
+                        child_claim = None
+                        if kind == "subagent":
+                            from app.services.child_session import ChildSessionStore
+
+                            input_hash = _v3_checkpoint_value_hash(resolved_inputs)
+                            child_store = ChildSessionStore(
+                                Path(task_run.artifact_dir),
+                                parent_attempt_id=task_run.task_run_id,
+                                parent_node_id=node_id,
+                            )
+                            child_claim = child_store.claim_or_inspect(
+                                session_key=(
+                                    f"{str(node.get('session_key') or node_id)}:"
+                                    f"{input_hash.removeprefix('sha256:')[:16]}"
+                                ),
+                                provider=str(
+                                    node.get("provider_ref")
+                                    or agent_run.get("provider")
+                                    or "builtin"
+                                ),
+                                input_summary={
+                                    "input_keys": sorted(resolved_inputs),
+                                    "input_hash": input_hash,
+                                },
+                            )
+                            child_session = child_claim.session
+                            execution_agent_run = dict(agent_run)
+                            execution_agent_run["artifact_dir"] = str(
+                                Path(task_run.artifact_dir) / child_session.artifact_dir
+                            )
+                        if child_claim is not None and child_claim.disposition == "completed":
+                            persisted = child_claim.output
+                            persisted_result = (
+                                persisted.get("result_snapshot")
+                                if isinstance(persisted, dict)
+                                else None
+                            )
+                            if not isinstance(persisted_result, dict):
+                                result = {
+                                    "step_id": node_id,
+                                    "type": "agent_task",
+                                    "status": "error",
+                                    "error": "subagent_completed_result_invalid",
+                                }
+                            else:
+                                result = dict(persisted_result)
+                                child_store.append_event(
+                                    child_session.session_id,
+                                    "child_reused",
+                                    {"node_id": node_id},
+                                )
+                        elif child_claim is not None and child_claim.disposition != "claimed":
+                            result = {
+                                "step_id": node_id,
+                                "type": "agent_task",
+                                "status": "error",
+                                "error": f"subagent_session_{child_claim.disposition}",
+                                "child_session_reason": child_claim.reason,
+                            }
+                        else:
+                            if child_store is not None and child_session is not None:
+                                child_store.append_event(
+                                    child_session.session_id,
+                                    "child_started",
+                                    {"node_id": node_id},
+                                )
+                            started_payload = _step_started_event_payload(
+                                task_run=task_run,
+                                step=step,
+                                agent_run=execution_agent_run,
+                            )
+                            started_payload.update({
+                                "handler_id": handler_id,
+                                "handler_version": int(node.get("handler_version") or 1),
+                            })
+                            self._emit_event("step_started", started_payload)
+                            result = self._execute_agent_step(
+                                task_run_id=task_run.task_run_id,
+                                step=step,
+                                agent_run=execution_agent_run,
+                                prior_step_results=list(dependency_results.values()),
+                                resolved_inputs=resolved_inputs,
+                                timeout_sec=node_timeout_sec,
+                            )
+                        if child_store is not None and child_session is not None:
+                            child_status = (
+                                "completed"
+                                if str(result.get("status") or "")
+                                in {"completed", "completed_empty", "needs_review"}
+                                else str(result.get("status") or "failed")
+                            )
+                            declared_child_outputs = [
+                                str(declaration.get("artifact") or "")
+                                for declaration in declared_outputs
+                                if str(declaration.get("producer_step_id") or "")
+                                == node_id
+                                and str(declaration.get("artifact") or "")
+                            ]
+                            result["child_outputs"] = child_store.collect_declared_outputs(
+                                child_session.session_id,
+                                declared_child_outputs,
+                            )
+                            if child_claim is not None and child_claim.disposition == "claimed":
+                                if child_status == "completed":
+                                    child_session = child_store.complete(
+                                        child_session.session_id,
+                                        {
+                                            "result_snapshot": dict(result),
+                                            "child_outputs": dict(result["child_outputs"]),
+                                        },
+                                    )
+                                else:
+                                    child_session = child_store.update_status(
+                                        child_session.session_id,
+                                        child_status,
+                                    )
+                                child_store.append_event(
+                                    child_session.session_id,
+                                    "child_finished",
+                                    {"status": child_status},
+                                )
+                            result["child_session"] = child_session.to_snapshot()
+                            result["provider_session"] = {
+                                **dict(result.get("provider_session") or {}),
+                                "child_session": child_session.to_snapshot(),
+                            }
             result["validated_outputs"] = _validated_step_outputs(
                 result,
                 plan_node=node,
                 declared_outputs=declared_outputs,
             )
             results_by_node[node_id] = result
+            if str(result.get("status") or "") in SUCCESS_STATUSES:
+                dependencies = [str(value) for value in node.get("depends_on") or []]
+                upstream_hashes = _v3_checkpoint_upstream_hashes(
+                    dependencies=dependencies,
+                    hashes_by_node=checkpoint_output_hashes,
+                )
+                key = compute_node_idempotency_key(
+                    node_definition=_v3_checkpoint_node_definition(
+                        workflow_identity=frozen_workflow_identity,
+                        node=node,
+                    ),
+                    frozen_inputs=resolved_inputs,
+                    upstream_artifact_hashes=upstream_hashes,
+                )
+                output_hashes = _v3_checkpoint_output_hashes(
+                    result=result,
+                    node_id=node_id,
+                    declared_outputs=declared_outputs,
+                )
+                checkpoint = checkpoint_store.commit_completed(
+                    task_id=str(getattr(task_run, "task_id", "") or task_run.task_run_id),
+                    attempt_id=task_run.task_run_id,
+                    node_id=node_id,
+                    idempotency_key=key,
+                    input_hash=_v3_checkpoint_value_hash(resolved_inputs),
+                    output_artifact_hashes=output_hashes,
+                    provider_session=dict(result.get("provider_session") or {}),
+                    result_snapshot=result,
+                )
+                checkpoint_output_hashes[node_id] = output_hashes
+                self._emit_event(
+                    "node_checkpoint_committed",
+                    {
+                        "node_id": node_id,
+                        "revision": checkpoint.revision,
+                        "deduplication_key": (
+                            f"checkpoint:{node_id}:{checkpoint.revision}"
+                        ),
+                    },
+                )
             self._emit_step_finished(result)
             return result
 
         scheduled = WorkflowDagScheduler(event_sink=self._emit_event).run(
             effective_plan,
             execute_node=execute_node,
+            seed_results=seed_results,
         )
         step_results = []
         results_by_node = {}
@@ -1462,7 +1852,15 @@ class WorkbenchWorkflowRunner:
         )
         result = WorkbenchWorkflowExecutionResult(
             task_run_id=task_run.task_run_id,
-            status="completed" if execution_status == "completed" else "cancelled" if execution_status == "cancelled" else "error",
+            status=(
+                "completed"
+                if execution_status == "completed"
+                else "waiting_for_input"
+                if execution_status == "waiting_for_input"
+                else "cancelled"
+                if execution_status == "cancelled"
+                else "error"
+            ),
             started_at=started_at,
             completed_at=_now(),
             execution_status=execution_status,
@@ -1489,6 +1887,165 @@ class WorkbenchWorkflowRunner:
         self._write_v3_execution_artifact(task_run.task_run_id, result)
         self._emit_event("v3_status_updated", _v3_status_event_payload(result))
         return result
+
+    def _execute_v3_tool_node(
+        self,
+        *,
+        task_run: Any,
+        node: dict[str, Any],
+        resolved_inputs: dict[str, Any],
+    ) -> dict[str, Any]:
+        node_id = str(node.get("node_id") or "")
+        tool_id = str(node.get("tool_id") or "")
+        arguments = resolved_inputs.get("arguments", resolved_inputs)
+        required_permissions = {
+            str(permission) for permission in node.get("required_permissions") or []
+        }
+        granted_permissions = set(self._granted_tool_permissions)
+        missing_permissions = sorted(required_permissions - granted_permissions)
+        self._emit_event(
+            "tool_requested",
+            {"node_id": node_id, "tool_id": tool_id, "arguments": arguments},
+        )
+        if missing_permissions:
+            error = {
+                "code": "permission_denied",
+                "message": "Call lacks frozen workflow tool permissions.",
+                "details": {"missing_permissions": missing_permissions},
+            }
+            self._emit_event(
+                "tool_failed",
+                {"node_id": node_id, "tool_id": tool_id, "error": error},
+            )
+            return {
+                "step_id": node_id,
+                "type": "tool",
+                "status": "failed",
+                "error": error["code"],
+                "tool_error": error,
+            }
+        if self._tool_dispatcher is None:
+            error = {
+                "code": "tool_dispatch_unavailable",
+                "message": "No CodeTalk tool dispatcher is configured.",
+                "details": {},
+            }
+            self._emit_event(
+                "tool_failed",
+                {"node_id": node_id, "tool_id": tool_id, "error": error},
+            )
+            return {
+                "step_id": node_id,
+                "type": "tool",
+                "status": "failed",
+                "error": error["code"],
+                "tool_error": error,
+            }
+        if not isinstance(arguments, dict):
+            error = {
+                "code": "invalid_arguments",
+                "message": "Tool arguments must be an object.",
+                "details": {},
+            }
+            self._emit_event(
+                "tool_failed",
+                {"node_id": node_id, "tool_id": tool_id, "error": error},
+            )
+            return {
+                "step_id": node_id,
+                "type": "tool",
+                "status": "failed",
+                "error": error["code"],
+                "tool_error": error,
+            }
+        from app.services.tool_action_journal import ToolActionJournal
+
+        journal = ToolActionJournal(Path(task_run.artifact_dir))
+        action = journal.begin(
+            task_id=str(getattr(task_run, "task_id", "") or task_run.task_run_id),
+            attempt_id=task_run.task_run_id,
+            node_id=node_id,
+            tool_id=tool_id,
+            frozen_arguments=arguments,
+        )
+        if action.disposition == "completed":
+            dispatched_output = action.record.output
+            self._emit_event(
+                "tool_action_reused",
+                {"node_id": node_id, "tool_id": tool_id, "action_key": action.record.action_key},
+            )
+        elif action.disposition in {"failed", "indeterminate"}:
+            error = (
+                dict(action.record.error or {})
+                if action.disposition == "failed"
+                else {
+                    "code": "tool_action_indeterminate",
+                    "message": "A prior Tool action may have executed before interruption.",
+                    "details": {"action_key": action.record.action_key},
+                }
+            )
+            self._emit_event(
+                "tool_failed",
+                {"node_id": node_id, "tool_id": tool_id, "error": error},
+            )
+            return {
+                "step_id": node_id,
+                "type": "tool",
+                "status": "failed",
+                "error": str(error.get("code") or "tool_execution_failed"),
+                "tool_error": error,
+            }
+        else:
+            dispatched = self._tool_dispatcher.dispatch(ToolCallRequest(
+                tool_id=tool_id,
+                arguments=arguments,
+                granted_permissions=self._granted_tool_permissions,
+            ))
+            if dispatched.status == "completed":
+                journal.complete(action.record, output=dispatched.output)
+                dispatched_output = dispatched.output
+            else:
+                dispatched_error = (
+                    asdict(dispatched.error)
+                    if dispatched.error is not None
+                    else {
+                        "code": "tool_execution_failed",
+                        "message": "Tool execution failed.",
+                        "details": {},
+                    }
+                )
+                journal.fail(action.record, error=dispatched_error)
+                dispatched_output = None
+        if action.disposition == "execute" and dispatched.status != "completed":
+            error = dispatched_error
+            self._emit_event(
+                "tool_failed",
+                {"node_id": node_id, "tool_id": tool_id, "error": error},
+            )
+            return {
+                "step_id": node_id,
+                "type": "tool",
+                "status": "failed",
+                "error": str(error.get("code") or "tool_execution_failed"),
+                "tool_error": error,
+            }
+        output_ports = [
+            str(port.get("id") or "")
+            for port in node.get("output_ports") or []
+            if isinstance(port, dict) and str(port.get("id") or "")
+        ]
+        output_port = output_ports[0] if output_ports else "result"
+        self._emit_event(
+            "tool_completed",
+            {"node_id": node_id, "tool_id": tool_id, "status": "completed"},
+        )
+        return {
+            "step_id": node_id,
+            "type": "tool",
+            "status": "completed",
+            "tool_id": tool_id,
+            output_port: dispatched_output,
+        }
 
     def _finalize_invalid_run_snapshot(
         self,
@@ -1517,6 +2074,68 @@ class WorkbenchWorkflowRunner:
                 "status": "invalid",
                 "error": "; ".join(snapshot_errors),
             }],
+        )
+        self._write_v3_execution_artifact(task_run.task_run_id, result)
+        self._emit_event("v3_status_updated", _v3_status_event_payload(result))
+        return result
+
+    def _finalize_v3_tool_contract_failure(
+        self,
+        *,
+        task_run: Any,
+        started_at: str,
+        errors: list[dict[str, Any]],
+    ) -> WorkbenchWorkflowExecutionResult:
+        result = WorkbenchWorkflowExecutionResult(
+            task_run_id=task_run.task_run_id,
+            status="error",
+            started_at=started_at,
+            completed_at=_now(),
+            execution_status="failed",
+            artifact_validation_status="not_requested",
+            governance_status="not_requested",
+            delivery_status="blocked",
+            legacy_delivery_status="none",
+            quality_status="blocked",
+            compiled_contract_version=3,
+            step_results=[{
+                "step_id": str(error.get("node_id") or "tool"),
+                "type": "tool",
+                "status": "error",
+                "error": str(error.get("code") or "tool_contract_invalid"),
+                "tool_error": error,
+            } for error in errors],
+        )
+        self._write_v3_execution_artifact(task_run.task_run_id, result)
+        self._emit_event("v3_status_updated", _v3_status_event_payload(result))
+        return result
+
+    def _finalize_v3_feature_disabled(
+        self,
+        *,
+        task_run: Any,
+        started_at: str,
+        disabled_features: list[dict[str, str]],
+    ) -> WorkbenchWorkflowExecutionResult:
+        result = WorkbenchWorkflowExecutionResult(
+            task_run_id=task_run.task_run_id,
+            status="error",
+            started_at=started_at,
+            completed_at=_now(),
+            execution_status="failed",
+            artifact_validation_status="not_requested",
+            governance_status="not_requested",
+            delivery_status="blocked",
+            legacy_delivery_status="none",
+            quality_status="blocked",
+            compiled_contract_version=3,
+            step_results=[{
+                "step_id": item["node_id"],
+                "type": item["kind"],
+                "status": "error",
+                "error": "phase6_feature_disabled",
+                "feature": item["kind"],
+            } for item in disabled_features],
         )
         self._write_v3_execution_artifact(task_run.task_run_id, result)
         self._emit_event("v3_status_updated", _v3_status_event_payload(result))
@@ -2325,6 +2944,8 @@ class WorkbenchWorkflowRunner:
         event_type = (
             "step_completed"
             if status in {"completed", "completed_empty", "needs_review"}
+            else "waiting_for_input"
+            if status == "waiting_for_input"
             else "step_partial"
             if status == "partial"
             else "cancelled"
@@ -2609,6 +3230,17 @@ class WorkbenchWorkflowRunner:
         task_root = self.artifact_root / _safe_segment(
             str((quality_retry_bundle or {}).get("task_run_id") or task_run_id)
         )
+        from app.services.tool_action_journal import ToolActionContext, ToolActionJournal
+
+        task_projection = _read_json(task_root / "task_run.json")
+        tool_action_context = ToolActionContext(
+            task_id=str(
+                (task_projection or {}).get("task_id")
+                or task_run_id
+            ),
+            attempt_id=task_run_id,
+            node_id=step_id,
+        )
 
         def emit_agent_event(event_type: str, event_payload: dict[str, Any]) -> None:
             if event_type in {"artifact", "tool_use"} and str(
@@ -2648,6 +3280,8 @@ class WorkbenchWorkflowRunner:
                     run_id=run_id,
                     timeout_sec=effective_timeout,
                     idle_timeout_sec=effective_idle_timeout,
+                    tool_action_journal=ToolActionJournal(task_root),
+                    tool_action_context=tool_action_context,
                 )
             )
             if missing_capabilities:
@@ -2903,6 +3537,8 @@ class WorkbenchWorkflowRunner:
         run_id: str,
         timeout_sec: int,
         idle_timeout_sec: float | None,
+        tool_action_journal: Any = None,
+        tool_action_context: Any = None,
     ) -> tuple[AgentHarnessFacade, str, list[str]]:
         """Rehydrate one frozen run at the provider-neutral execution boundary."""
 
@@ -3033,9 +3669,21 @@ class WorkbenchWorkflowRunner:
         if adapter is None:
             if not legacy_contract:
                 raise ValueError(f"unsupported_provider_adapter: {provider}")
-            return AgentHarnessFacade(artifact_dir), run_id, []
+            return AgentHarnessFacade(
+                artifact_dir,
+                tool_dispatcher=self._tool_dispatcher,
+                granted_tool_permissions=self._granted_tool_permissions,
+                tool_action_journal=tool_action_journal,
+                tool_action_context=tool_action_context,
+            ), run_id, []
         if legacy_contract and provider != BUILTIN_LLM_PROVIDER_ID:
-            return AgentHarnessFacade(artifact_dir), run_id, []
+            return AgentHarnessFacade(
+                artifact_dir,
+                tool_dispatcher=self._tool_dispatcher,
+                granted_tool_permissions=self._granted_tool_permissions,
+                tool_action_journal=tool_action_journal,
+                tool_action_context=tool_action_context,
+            ), run_id, []
 
         missing = missing_provider_capabilities(
             adapter,
@@ -3043,7 +3691,14 @@ class WorkbenchWorkflowRunner:
             if isinstance(step.get("provider_capabilities_required"), list)
             else [],
         )
-        facade = AgentHarnessFacade(artifact_dir, adapter=adapter)
+        facade = AgentHarnessFacade(
+            artifact_dir,
+            adapter=adapter,
+            tool_dispatcher=self._tool_dispatcher,
+            granted_tool_permissions=self._granted_tool_permissions,
+            tool_action_journal=tool_action_journal,
+            tool_action_context=tool_action_context,
+        )
         request = HarnessRunRequest(
             provider=provider,
             command=run_record.command,
@@ -10160,6 +10815,19 @@ def _frozen_compiled_contract_version(task_run: Any) -> int | str | None:
     return None
 
 
+def _frozen_snapshot_contract_version(root: Path) -> int | str | None:
+    snapshot = _read_frozen_json(root / "run_snapshot_v3.json")
+    contract = snapshot.get("execution_contract") if isinstance(snapshot, dict) else None
+    if not isinstance(contract, dict) or "compiled_contract_version" not in contract:
+        return None
+    value = contract.get("compiled_contract_version")
+    if value is None or value == "":
+        return None
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return str(value)
+
+
 def _task_run_declares_v3_contract(task_run: Any) -> bool:
     bundle = task_run.task_bundle if isinstance(task_run.task_bundle, dict) else {}
     candidates = (
@@ -10177,15 +10845,6 @@ def _task_run_declares_v3_contract(task_run: Any) -> bool:
         if str(value or "").strip() == "3":
             return True
     return False
-
-
-def _v3_frozen_contract(task_run: Any) -> tuple[dict[str, Any], dict[str, Any]]:
-    root = Path(str(getattr(task_run, "artifact_dir", "") or ""))
-    frozen_definition = _read_frozen_json(root / "compiled_definition.json")
-    frozen_plan = _read_frozen_json(root / "compiled_plan.json")
-    if isinstance(frozen_definition, dict) and isinstance(frozen_plan, dict):
-        return frozen_definition, frozen_plan
-    raise ValueError("V3 run is missing its frozen compiled contract")
 
 
 def _read_frozen_json(path: Path) -> Any:
@@ -10209,8 +10868,165 @@ def _v3_plan_nodes(compiled_plan: dict[str, Any]) -> list[dict[str, Any]]:
     return [dict(item) for item in nodes if isinstance(item, dict) and str(item.get("node_id") or "")]
 
 
+def _v3_human_approval_step_result(
+    *,
+    task_run: Any,
+    node: dict[str, Any],
+    timeout_sec: int,
+    resolved_inputs: dict[str, Any],
+) -> dict[str, Any]:
+    from app.services.human_approval import HumanApprovalStore, project_approval
+
+    node_id = str(node.get("node_id") or "")
+    now = datetime.now(timezone.utc)
+    approval_timeout_sec = max(1, int(node.get("approval_timeout_sec") or 86400))
+    store = HumanApprovalStore(Path(task_run.artifact_dir))
+    record = store.load(node_id)
+    if record is None:
+        record = store.enter_waiting(
+            task_id=str(getattr(task_run, "task_id", "") or task_run.task_run_id),
+            attempt_id=task_run.task_run_id,
+            node_id=node_id,
+            entered_at=now,
+            total_execution_timeout_at=(
+                now + timedelta(seconds=timeout_sec)
+                if timeout_sec > 0
+                else None
+            ),
+            approval_deadline_at=now + timedelta(seconds=approval_timeout_sec),
+            input_context=_v3_approval_input_context(resolved_inputs),
+        )
+    projection = project_approval(record, now=now)
+    approval_status = str(projection.get("approval_status") or "")
+    result: dict[str, Any] = {
+        "step_id": node_id,
+        "type": "human_approval",
+        "handler_id": "human_approval",
+        "handler_version": int(node.get("handler_version") or 1),
+        "approval_status": approval_status,
+        "approval_deadline_at": projection.get("approval_deadline_at"),
+        "total_execution_timeout_paused": bool(
+            projection.get("total_execution_timeout_paused")
+        ),
+        "approval_context": record.input_context,
+    }
+    if approval_status == "pending":
+        result["status"] = "waiting_for_input"
+    elif approval_status == "approved":
+        result["status"] = "completed"
+        result["decision"] = projection.get("decision")
+    elif approval_status == "rejected":
+        result.update({
+            "status": "failed",
+            "error": "human_approval_rejected",
+            "decision": projection.get("decision"),
+        })
+    else:
+        result.update({
+            "status": "timed_out",
+            "error": "human_approval_expired",
+        })
+    return result
+
+
+def _v3_checkpoint_node_definition(
+    *,
+    workflow_identity: str,
+    node: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "compiled_contract_version": 3,
+        "workflow_identity": workflow_identity,
+        "node": node,
+    }
+
+
+def _v3_approval_input_context(resolved_inputs: dict[str, Any]) -> dict[str, Any]:
+    encoded = json.dumps(
+        resolved_inputs,
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    preview_limit = 4096
+    return {
+        "summary": encoded[:preview_limit].decode("utf-8", errors="ignore"),
+        "sha256": "sha256:" + hashlib.sha256(encoded).hexdigest(),
+        "truncated": len(encoded) > preview_limit,
+    }
+
+
+def _v3_checkpoint_value_hash(value: Any) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=True,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _v3_checkpoint_output_hashes(
+    *,
+    result: dict[str, Any],
+    node_id: str,
+    declared_outputs: Iterable[dict[str, Any]],
+) -> dict[str, str]:
+    hashes: dict[str, str] = {}
+    artifact_root = Path(str(result.get("artifact_dir") or ""))
+    for declaration in declared_outputs:
+        if str(declaration.get("producer_step_id") or "") != node_id:
+            continue
+        artifact = str(declaration.get("artifact") or "")
+        output_id = str(declaration.get("output_id") or artifact)
+        artifact_path = (
+            _resolve_artifact_path(artifact_root, artifact)
+            if artifact_root and artifact
+            else None
+        )
+        if artifact_path is not None and artifact_path.is_file():
+            hashes[output_id] = "sha256:" + hashlib.sha256(
+                artifact_path.read_bytes()
+            ).hexdigest()
+    if not hashes:
+        validated_outputs = result.get("validated_outputs")
+        if isinstance(validated_outputs, dict) and validated_outputs:
+            hashes["$validated_outputs"] = _v3_checkpoint_value_hash(validated_outputs)
+    return hashes
+
+
+def _v3_checkpoint_artifacts_match(
+    *,
+    result: dict[str, Any],
+    node_id: str,
+    declared_outputs: Iterable[dict[str, Any]],
+    expected_hashes: dict[str, str],
+) -> bool:
+    return _v3_checkpoint_output_hashes(
+        result=result,
+        node_id=node_id,
+        declared_outputs=declared_outputs,
+    ) == expected_hashes
+
+
+def _v3_checkpoint_upstream_hashes(
+    *,
+    dependencies: Iterable[str],
+    hashes_by_node: dict[str, dict[str, str]],
+) -> dict[str, str]:
+    return {
+        f"{dependency}:{output_id}": digest
+        for dependency in dependencies
+        for output_id, digest in sorted(hashes_by_node.get(dependency, {}).items())
+    }
+
+
 def _v3_execution_status(step_results: list[dict[str, Any]]) -> str:
     statuses = {str(item.get("status") or "") for item in step_results}
+    if "waiting_for_input" in statuses:
+        return "waiting_for_input"
     if "cancelled" in statuses:
         return "cancelled"
     if statuses.intersection({"timed_out", "timeout"}):

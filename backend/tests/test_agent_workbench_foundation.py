@@ -1194,6 +1194,33 @@ def test_idle_timeout_observes_output_without_newlines(tmp_path):
     assert result.stdout == "........"
 
 
+def test_total_timeout_stops_continuous_output_at_wall_clock_deadline(tmp_path):
+    from app.services.agent_run_harness import _run_cancellable_subprocess
+
+    script = (
+        "import sys,time\n"
+        "for _ in range(30):\n"
+        " sys.stdout.write('.')\n"
+        " sys.stdout.flush()\n"
+        " time.sleep(0.05)\n"
+    )
+    started = time.monotonic()
+    result = _run_cancellable_subprocess(
+        [sys.executable, "-c", script],
+        cwd=str(tmp_path),
+        input_bytes=None,
+        timeout=1,
+        idle_timeout=0.25,
+        env=dict(os.environ),
+    )
+    elapsed = time.monotonic() - started
+
+    assert result.timed_out is True
+    assert result.timeout_kind == "total"
+    assert 0.8 <= elapsed < 1.4
+    assert result.stdout
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX process-group semantics")
 def test_workflow_subprocess_cleans_descendant_after_parent_exits(tmp_path):
     from app.services.agent_run_harness import _run_cancellable_subprocess

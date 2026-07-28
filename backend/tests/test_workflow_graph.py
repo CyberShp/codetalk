@@ -359,7 +359,11 @@ def test_node_registry_is_the_authoritative_graph_kind_and_ui_schema_source():
     registry = node_registry_payload(schema_version=2)
 
     assert registry["schema_version"] == 1
-    assert {item["kind"] for item in registry["nodes"]} == SUPPORTED_NODE_KINDS
+    assert {item["kind"] for item in registry["nodes"]} == SUPPORTED_NODE_KINDS - {
+        "tool",
+        "human_approval",
+        "subagent",
+    }
     agent = next(item for item in registry["nodes"] if item["kind"] == "agent")
     assert agent["ui"]["palette_label"] == "智能体模块"
     assert agent["config_schema"]["input_ports"]["type"] == "port_list"

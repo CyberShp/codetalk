@@ -1251,6 +1251,11 @@ export interface WorkbenchRunUiNodeSummary {
   active_tools?: string[];
   inputs?: Array<{ id: string; role?: string; type?: string }>;
   received_inputs?: Array<{ id: string; role?: string; type?: string; value_summary?: string }>;
+  approval_context?: {
+    summary?: string;
+    sha256?: string;
+    truncated?: boolean;
+  };
   mcp_profiles?: string[];
   mcp_availability?: {
     status?: string;

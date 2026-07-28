@@ -8,6 +8,7 @@ import hmac
 import io
 import json
 import logging
+import math
 import mimetypes
 import os
 import re
@@ -24,7 +25,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, Body, File, Form, HTTPException, Query, Request, Response, UploadFile
@@ -68,6 +69,8 @@ from app.services.workbench_artifact_manifest import (
 )
 from app.services.workbench_task_run import WorkbenchTaskRunPreparer
 from app.services.workbench_task_run import WorkbenchTaskRunStore
+from app.services.workbench_task_run import FrozenCompiledPlanAuthorityError
+from app.services.workbench_task_run import load_frozen_compiled_plan
 from app.services.workbench_task_run import BUILTIN_LLM_PROVIDER_ID
 from app.services.workbench_task_run import agent_runtime_id_from_provider
 from app.services.workbench_task_run import _agent_runtime_provider_snapshot_item
@@ -105,6 +108,11 @@ from app.services.workflow_run_status import (
     legacy_delivery_status as project_v3_legacy_delivery_status,
     legacy_quality_status as project_v3_quality_status,
 )
+from app.services.workflow_execution_lease import (
+    ExecutionLeaseLost,
+    ExecutionLeaseValidationError,
+    WorkflowExecutionLeaseStore,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +134,9 @@ _TASK_RUN_TERMINAL_STATUSES = {
     "timed_out",
 }
 _ACTIVE_TASK_RUN_IDS: set[str] = set()
+_HUMAN_APPROVAL_EXPIRY_TASKS: dict[tuple[str, str], asyncio.Task[None]] = {}
+_EXECUTION_LEASE_TTL = timedelta(seconds=60)
+_EXECUTION_LEASE_HEARTBEAT_SECONDS = 10.0
 _DESIGNER_RESOURCE_FAULTS: dict[str, int] = {}
 
 
@@ -176,6 +187,13 @@ class AgentRunExecuteRequest(BaseModel):
 class TaskRunExecuteRequest(BaseModel):
     timeout_sec: int = Field(default=0, ge=0, le=3600)
     stop_on_error: bool = True
+
+
+class HumanApprovalDecisionRequest(BaseModel):
+    decision: Literal["approve", "reject"]
+    actor: str = Field(min_length=1, max_length=256)
+    reason: str = Field(min_length=1, max_length=4000)
+    decided_at: datetime
 
 
 class InputUploadReleaseRequest(BaseModel):
@@ -1106,9 +1124,23 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
         for item in compiled_plan.get("nodes") or []
         if isinstance(item, dict) and str(item.get("node_id") or "")
     }
+    step_ids = {str(step.get("id") or "") for step in steps}
+    steps.extend(
+        {
+            "id": node_id,
+            "label": str(plan_node.get("label") or "").strip(),
+            "kind": str(plan_node.get("kind") or "").strip(),
+            "type": str(plan_node.get("type") or plan_node.get("kind") or ""),
+        }
+        for node_id, plan_node in plan_nodes.items()
+        if node_id not in step_ids
+    )
     event_context = _task_run_ui_event_context(task_root)
     step_labels = {
-        str(step.get("id") or ""): str(step.get("name") or step.get("label") or step.get("id") or "")
+        str(step.get("id") or ""): _task_run_ui_node_label(
+            step=step,
+            plan_node=plan_nodes.get(str(step.get("id") or ""), {}),
+        )
         for step in steps
     }
     next_by_step: dict[str, list[str]] = {}
@@ -1132,6 +1164,29 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
         )
         for step in steps
     ]
+    if task_status == "waiting_for_input":
+        waiting_approval_ids = {
+            node_id
+            for node_id, plan_node in plan_nodes.items()
+            if str(plan_node.get("kind") or "") == "human_approval"
+            and str(
+                (_read_json(task_root / "approvals" / f"{node_id}.json") or {}).get(
+                    "status"
+                )
+                or ""
+            )
+            == "waiting_for_input"
+        }
+        nodes = [
+            {
+                **node,
+                "status": "waiting_for_input",
+                "status_label": _task_run_ui_status_label("waiting_for_input"),
+            }
+            if str(node.get("id") or "") in waiting_approval_ids
+            else node
+            for node in nodes
+        ]
     active_step_id = _task_run_ui_active_step_id(task_root)
     interrupted_step_id = _task_run_ui_interrupted_step_id(task_root)
     if active_step_id:
@@ -1229,7 +1284,14 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
         )
     )
     running_node = next((node for node in nodes if node.get("status_label") == "运行中"), None)
-    waiting_node = next((node for node in nodes if node.get("status_label") == "等待运行"), None)
+    waiting_node = next(
+        (
+            node
+            for node in nodes
+            if node.get("status_label") in {"等待人工审批", "等待运行"}
+        ),
+        None,
+    )
     current_node = failed_node or running_node or waiting_node or (nodes[-1] if nodes else {})
     failure_reasons = _task_run_ui_failure_reasons(failed_node) if failed_node else []
     if task_status == "interrupted":
@@ -1266,7 +1328,7 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
         "user_message": execution_metadata["user_message"],
         "workflow": {
             "id": str(workflow.get("id") or task_run.workflow_id),
-            "name": str(workflow.get("name") or task_run.workflow_id),
+            "name": _task_run_ui_workflow_name(workflow),
             "version": workflow.get("version", 1),
             "execution_subject": execution_metadata["execution_subject"],
             "execution_label": execution_metadata["execution_label"],
@@ -1427,11 +1489,13 @@ def _task_run_ui_node_summary(
         str(item) for item in plan_node.get("depends_on") or step.get("depends_on") or []
         if str(item)
     ]
+    label = _task_run_ui_node_label(step=step, plan_node=plan_node)
     goal = str(
-        step.get("goal")
+        plan_node.get("goal")
+        or step.get("goal")
         or (plan_node.get("config") or {}).get("goal")
         or step.get("description")
-        or f"完成 {step.get('name') or step_id}"
+        or f"完成 {label}"
     ).strip()
     input_rows = _task_run_ui_step_inputs(
         workflow_contract=workflow_contract,
@@ -1446,9 +1510,20 @@ def _task_run_ui_node_summary(
         }
         for input_row in input_rows
     ]
+    approval_payload = (
+        _read_json(task_root / "approvals" / f"{step_id}.json")
+        if str(plan_node.get("kind") or "") == "human_approval"
+        else None
+    )
+    approval_context = (
+        dict(approval_payload.get("input_context") or {})
+        if isinstance(approval_payload, dict)
+        and isinstance(approval_payload.get("input_context"), dict)
+        else None
+    )
     return {
         "id": step_id,
-        "label": str(step.get("name") or step_id),
+        "label": label,
         "type": str(step.get("type") or ""),
         "status": status_value,
         "status_label": _task_run_ui_status_label(status_value),
@@ -1464,15 +1539,22 @@ def _task_run_ui_node_summary(
             else "这是工作流的起始阶段，用于建立后续节点所需的输入和证据。"
         )),
         "depends_on": dependencies,
-        "dependency_labels": [step_labels.get(item, item) for item in dependencies],
+        "dependency_labels": [
+            step_labels.get(item) or _task_run_ui_kind_label("")
+            for item in dependencies
+        ],
         "next_node_ids": next_node_ids,
-        "next_node_labels": [step_labels.get(item, item) for item in next_node_ids],
+        "next_node_labels": [
+            step_labels.get(item) or _task_run_ui_kind_label("")
+            for item in next_node_ids
+        ],
         "started_at": str(event_context.get("started_at") or ""),
         "completed_at": str(event_context.get("completed_at") or ""),
         "duration_ms": int(event_context.get("duration_ms") or 0),
         "active_tools": [str(item) for item in event_context.get("tools") or []],
         "inputs": input_rows,
         "received_inputs": received_inputs,
+        "approval_context": approval_context,
         "mcp_profiles": _task_run_ui_step_mcp_profiles(
             step=step,
             execution_contract=execution_contract,
@@ -1567,6 +1649,49 @@ def _task_run_ui_input_value_summary(value: Any) -> str:
     if Path(text).is_absolute():
         return Path(text).name or "已选择工作空间"
     return text if len(text) <= 160 else f"{text[:157]}..."
+
+
+_TASK_RUN_UI_KIND_LABELS = {
+    "agent": "智能体",
+    "agent_task": "智能体",
+    "builtin_llm": "内置模型",
+    "builtin_model": "内置模型",
+    "evidence_validate": "交付件校验",
+    "governance": "治理节点",
+    "human_approval": "人工审批",
+    "input": "输入",
+    "llm_task": "内置模型",
+    "local_scope_discover": "本地范围分析",
+    "output": "输出",
+    "report_render": "报告生成",
+    "semantic_retrieve": "语义检索",
+    "subagent": "子智能体",
+    "tool": "工具",
+    "validator": "验收节点",
+}
+
+
+def _task_run_ui_kind_label(kind: str) -> str:
+    return _TASK_RUN_UI_KIND_LABELS.get(str(kind or "").strip().lower(), "工作流节点")
+
+
+def _task_run_ui_node_label(*, step: dict[str, Any], plan_node: dict[str, Any]) -> str:
+    for candidate in (
+        plan_node.get("label"),
+        step.get("label"),
+        step.get("name"),
+    ):
+        value = str(candidate or "").strip()
+        if value:
+            return value
+    return _task_run_ui_kind_label(
+        str(plan_node.get("kind") or plan_node.get("type") or step.get("kind") or step.get("type") or "")
+    )
+
+
+def _task_run_ui_workflow_name(workflow: dict[str, Any]) -> str:
+    name = str(workflow.get("name") or "").strip()
+    return name or "工作流"
 
 
 def _task_run_ui_failure_class(reasons: list[str]) -> str:
@@ -1877,7 +2002,12 @@ def _task_run_ui_deliverables(
         definition = output_defs.get(key, {})
         deliverables.append({
             "id": str(output.get("id") or ""),
-            "label": str(definition.get("name") or definition.get("id") or output.get("id") or ""),
+            "label": str(
+                definition.get("label")
+                or definition.get("name")
+                or output.get("label")
+                or "交付件"
+            ),
             "from": str(output.get("from") or ""),
             "artifact": str(output.get("artifact") or ""),
             "path": str(output.get("path") or ""),
@@ -1891,6 +2021,8 @@ def _task_run_ui_status(*, execution: dict[str, Any], nodes: list[dict[str, Any]
     status = str(execution.get("status") or "")
     if status in {"cancelled", "canceled"}:
         return {"status": "cancelled", "label": "已取消"}
+    if status == "waiting_for_input":
+        return {"status": "waiting_for_input", "label": "等待人工审批"}
     if any(node.get("status_label") == "运行失败" for node in nodes):
         return {"status": "failed", "label": "运行失败"}
     if status in {"completed", "ok", "ready", "success"}:
@@ -1914,6 +2046,8 @@ def _task_run_ui_status(*, execution: dict[str, Any], nodes: list[dict[str, Any]
 
 def _task_run_ui_status_label(status: str) -> str:
     normalized = str(status or "").strip().lower()
+    if normalized == "waiting_for_input":
+        return "等待人工审批"
     if normalized in {"completed", "ok", "ready", "success"}:
         return "已完成"
     if normalized in {"completed_empty"}:
@@ -3195,7 +3329,12 @@ async def execute_task_run_workflow(
         return _scheduled_task_run_response(task_run=task_run, status=current_status)
 
     try:
-        event_store.mark_status(task_run_id, "queued")
+        total_execution_timeout_at = _persist_task_run_total_execution_deadline(
+            task_run_id,
+            timeout_sec=payload.timeout_sec,
+            event_store=event_store,
+            status="queued",
+        )
         _mark_task_run_lifecycle_outcomes(
             event_store,
             task_run_id,
@@ -3209,6 +3348,7 @@ async def execute_task_run_workflow(
             "queued",
             {
                 "timeout_sec": payload.timeout_sec,
+                "total_execution_timeout_at": total_execution_timeout_at,
                 "stop_on_error": payload.stop_on_error,
             },
         )
@@ -3315,6 +3455,28 @@ async def _execute_task_run_background(
     payload: TaskRunExecuteRequest,
 ) -> None:
     event_store = WorkbenchTaskRunEventStore(_task_runs_dir())
+    task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    lease_store = WorkflowExecutionLeaseStore(
+        Path(task_run.artifact_dir),
+        attempt_id=task_run_id,
+    )
+    lease = await _acquire_task_run_execution_lease(
+        task_run_id=task_run_id,
+        event_store=event_store,
+        lease_store=lease_store,
+    )
+    if lease is None:
+        return
+    lease_stop = asyncio.Event()
+    lease_lost = threading.Event()
+    heartbeat_task = asyncio.create_task(
+        _heartbeat_task_run_execution_lease(
+            lease_store=lease_store,
+            lease=lease,
+            stop=lease_stop,
+            lost=lease_lost,
+        )
+    )
     _ACTIVE_TASK_RUN_IDS.add(task_run_id)
     try:
         if event_store.current_status(task_run_id) == "cancelled":
@@ -3376,7 +3538,16 @@ async def _execute_task_run_background(
             _execute_task_run_with_closure,
             task_run_id=task_run_id,
             payload=payload,
+            lease_lost_event=lease_lost,
         )
+        if lease_lost.is_set():
+            event_store.append_once(
+                task_run_id,
+                "execution_lease_lost",
+                {"status": event_store.current_status(task_run_id)},
+                deduplication_key="workflow-execution-lease:lost",
+            )
+            return
         status = _terminal_execution_status(result)
         # ``quality_blocked`` means the executor finished but the resulting
         # delivery did not clear its quality contract.  It is a public quality
@@ -3389,7 +3560,11 @@ async def _execute_task_run_background(
             task_run_id,
             persisted_execution_status,
             blocked_statuses={"cancelled"},
-            completed_at=datetime.now(timezone.utc).isoformat(),
+            **(
+                {"completed_at": datetime.now(timezone.utc).isoformat()}
+                if persisted_execution_status != "waiting_for_input"
+                else {}
+            ),
         )
         if not updated:
             event_store.append(
@@ -3407,6 +3582,8 @@ async def _execute_task_run_background(
                 if status == "partial"
                 else "quality_blocked"
                 if status == "quality_blocked"
+                else "waiting_for_input"
+                if status == "waiting_for_input"
                 else "step_failed"
             ),
             {
@@ -3421,6 +3598,8 @@ async def _execute_task_run_background(
                 ),
             },
         )
+        if status == "waiting_for_input":
+            schedule_task_run_human_approval_expiries(task_run_id)
     except asyncio.CancelledError:
         # A task cancellation can arrive while the blocking workflow thread is
         # still unwinding. Persist a visible terminal state before preserving
@@ -3508,7 +3687,118 @@ async def _execute_task_run_background(
         except KeyError:
             return
     finally:
+        lease_stop.set()
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
+        lease_store.release(lease)
         _ACTIVE_TASK_RUN_IDS.discard(task_run_id)
+
+
+async def _acquire_task_run_execution_lease(
+    *,
+    task_run_id: str,
+    event_store: WorkbenchTaskRunEventStore,
+    lease_store: WorkflowExecutionLeaseStore,
+) -> Any:
+    contended_event_written = False
+    while True:
+        status = event_store.current_status(task_run_id)
+        if status in _TASK_RUN_TERMINAL_STATUSES or status == "waiting_for_input":
+            return None
+        lease = lease_store.acquire(ttl=_EXECUTION_LEASE_TTL)
+        if lease is not None:
+            return lease
+        if not contended_event_written:
+            event_store.append_once(
+                task_run_id,
+                "execution_lease_contended",
+                {"status": status},
+                deduplication_key="workflow-execution-lease:contended",
+            )
+            contended_event_written = True
+        existing = lease_store.load()
+        if existing is None:
+            await asyncio.sleep(0)
+            continue
+        delay = max(
+            0.05,
+            min(
+                _EXECUTION_LEASE_HEARTBEAT_SECONDS,
+                (existing.expires_at - datetime.now(timezone.utc)).total_seconds(),
+            ),
+        )
+        await asyncio.sleep(delay)
+
+
+async def _heartbeat_task_run_execution_lease(
+    *,
+    lease_store: WorkflowExecutionLeaseStore,
+    lease: Any,
+    stop: asyncio.Event,
+    lost: threading.Event,
+) -> None:
+    current = lease
+    while not stop.is_set():
+        await asyncio.sleep(_EXECUTION_LEASE_HEARTBEAT_SECONDS)
+        if stop.is_set():
+            return
+        try:
+            current = lease_store.heartbeat(current, ttl=_EXECUTION_LEASE_TTL)
+        except (ExecutionLeaseLost, ExecutionLeaseValidationError):
+            lost.set()
+            return
+
+
+def schedule_recovered_v3_task_run(task_run_id: str) -> bool:
+    """Queue one validated recovered Attempt on the normal execution lifecycle."""
+    if not settings.workflow_checkpoint_reuse_enabled:
+        return False
+    event_store = WorkbenchTaskRunEventStore(_task_runs_dir())
+    try:
+        task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    except KeyError:
+        return False
+    if task_run_id in _ACTIVE_TASK_RUN_IDS:
+        return False
+    queued, _ = event_store.mark_status_unless(
+        task_run_id,
+        "queued",
+        blocked_statuses={
+            "cancelled",
+            "completed",
+            "failed",
+            "timed_out",
+            "waiting_for_input",
+        },
+    )
+    if not queued:
+        return False
+    _mark_task_run_lifecycle_outcomes(
+        event_store,
+        task_run_id,
+        execution_status="queued",
+        legacy_quality_status="pending",
+        legacy_delivery_status="none",
+    )
+    event_store.append_once(
+        task_run_id,
+        "queued",
+        {"source": "startup_recovery"},
+        deduplication_key="v3-startup-recovery:queued",
+    )
+    _ACTIVE_TASK_RUN_IDS.add(task_run_id)
+    asyncio.create_task(
+        _execute_task_run_background(
+            task_run_id=task_run_id,
+            payload=TaskRunExecuteRequest(
+                timeout_sec=_task_run_resume_timeout_sec(task_run)
+            ),
+        )
+    )
+    return True
 
 
 async def _preflight_task_run_agent_runtimes(task_run_id: str) -> dict[str, Any]:
@@ -3647,7 +3937,15 @@ def _terminal_execution_status(result: dict[str, Any]) -> str:
         # contract. That terminal task state must never be shown as green.
         return "quality_blocked"
     explicit = str(result.get("execution_status") or "").strip().lower()
-    if explicit in {"completed", "partial", "failed", "cancelled", "timed_out", "interrupted"}:
+    if explicit in {
+        "completed",
+        "partial",
+        "failed",
+        "cancelled",
+        "timed_out",
+        "interrupted",
+        "waiting_for_input",
+    }:
         return explicit
     legacy = str(result.get("status") or "completed").strip().lower()
     if legacy in {
@@ -3662,6 +3960,531 @@ def _terminal_execution_status(result: dict[str, Any]) -> str:
     return "failed"
 
 
+def _task_run_human_approval_node(task_run: Any, node_id: str) -> dict[str, Any] | None:
+    """Find an explicit Human Approval node from the frozen task-run contract."""
+    plan = _task_run_frozen_compiled_plan(task_run)
+    nodes = plan.get("nodes") if isinstance(plan, dict) else []
+    for node in nodes if isinstance(nodes, list) else []:
+        if not isinstance(node, dict) or str(node.get("node_id") or "") != node_id:
+            continue
+        if (
+            str(node.get("kind") or "") == "human_approval"
+            and str(node.get("handler_id") or "") == "human_approval"
+        ):
+            return node
+    return None
+
+
+def _task_run_frozen_compiled_plan(task_run: Any) -> dict[str, Any]:
+    try:
+        return load_frozen_compiled_plan(task_run.artifact_dir)
+    except FrozenCompiledPlanAuthorityError:
+        return {}
+
+
+def _approval_total_execution_budget_sec(record: Any) -> int:
+    deadline = getattr(record, "total_execution_timeout_at", None)
+    entered_at = getattr(record, "entered_at", None)
+    if deadline is None or entered_at is None:
+        return 0
+    return max(0, math.ceil((deadline - entered_at).total_seconds()))
+
+
+def _total_execution_deadline_text(timeout_sec: int) -> str | None:
+    if timeout_sec <= 0:
+        return None
+    return (
+        datetime.now(timezone.utc) + timedelta(seconds=timeout_sec)
+    ).isoformat()
+
+
+def _persist_task_run_total_execution_deadline(
+    task_run_id: str,
+    *,
+    timeout_sec: int,
+    event_store: WorkbenchTaskRunEventStore | None = None,
+    status: str | None = None,
+) -> str | None:
+    store = event_store or WorkbenchTaskRunEventStore(_task_runs_dir())
+    deadline_text = _total_execution_deadline_text(timeout_sec)
+    store.mark_status(
+        task_run_id,
+        status or store.current_status(task_run_id),
+        total_execution_timeout_at=deadline_text,
+        total_execution_timeout_rearm_count=0,
+    )
+    return deadline_text
+
+
+def _task_run_runtime_payload(task_run: Any) -> dict[str, Any]:
+    payload = _read_json(Path(task_run.artifact_dir) / "task_run.json")
+    runtime = payload.get("runtime") if isinstance(payload, dict) else None
+    return dict(runtime) if isinstance(runtime, dict) else {}
+
+
+def _task_run_persisted_total_execution_deadline(task_run: Any) -> datetime | None:
+    runtime = _task_run_runtime_payload(task_run)
+    raw_deadline = runtime.get("total_execution_timeout_at")
+    if raw_deadline in (None, ""):
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(raw_deadline).replace("Z", "+00:00"))
+    except ValueError:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    if parsed.tzinfo is None:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _task_run_resume_timeout_sec(task_run: Any) -> int:
+    from app.services.human_approval import HumanApprovalStore
+
+    plan = _task_run_frozen_compiled_plan(task_run)
+    budgets: list[int] = []
+    store = HumanApprovalStore(Path(task_run.artifact_dir))
+    for node in plan.get("nodes") or [] if isinstance(plan, dict) else []:
+        if not isinstance(node, dict) or str(node.get("kind") or "") != "human_approval":
+            continue
+        record = store.load(str(node.get("node_id") or ""))
+        if record is None or record.decision is None:
+            continue
+        budget = _approval_total_execution_budget_sec(record)
+        if record.total_execution_timeout_at is not None:
+            budgets.append(budget)
+    if budgets:
+        budget = min(budgets)
+        runtime = _task_run_runtime_payload(task_run)
+        try:
+            rearm_count = max(
+                0,
+                int(runtime.get("total_execution_timeout_rearm_count") or 0),
+            )
+        except (TypeError, ValueError):
+            rearm_count = 0
+        if rearm_count >= len(budgets):
+            persisted_deadline = _task_run_persisted_total_execution_deadline(task_run)
+            if persisted_deadline is not None:
+                remaining = math.ceil(
+                    (persisted_deadline - datetime.now(timezone.utc)).total_seconds()
+                )
+                return max(1, remaining)
+        event_store = WorkbenchTaskRunEventStore(_task_runs_dir())
+        event_store.mark_status(
+            task_run.task_run_id,
+            event_store.current_status(task_run.task_run_id),
+            total_execution_timeout_at=(
+                datetime.now(timezone.utc) + timedelta(seconds=budget)
+            ).isoformat(),
+            total_execution_timeout_rearm_count=len(budgets),
+        )
+        return max(1, budget)
+
+    persisted_deadline = _task_run_persisted_total_execution_deadline(task_run)
+    if persisted_deadline is not None:
+        remaining = math.ceil(
+            (persisted_deadline - datetime.now(timezone.utc)).total_seconds()
+        )
+        return max(1, remaining)
+    return 0
+
+
+def _task_run_pending_human_approval_node_ids(task_run: Any) -> list[str]:
+    from app.services.human_approval import HumanApprovalStore
+
+    store = HumanApprovalStore(Path(task_run.artifact_dir))
+    pending: list[str] = []
+    for node_id in _task_run_human_approval_node_ids(task_run):
+        record = store.load(node_id)
+        if (
+            record is not None
+            and record.decision is None
+            and store.load_expiry_receipt(node_id) is None
+            and store.load_cancellation_receipt(node_id) is None
+        ):
+            pending.append(node_id)
+    return pending
+
+
+def _task_run_human_approval_node_ids(task_run: Any) -> list[str]:
+    plan = _task_run_frozen_compiled_plan(task_run)
+    return [
+        str(node.get("node_id") or "")
+        for node in ((plan.get("nodes") or []) if isinstance(plan, dict) else [])
+        if isinstance(node, dict)
+        and str(node.get("kind") or "") == "human_approval"
+        and str(node.get("node_id") or "")
+    ]
+
+
+def schedule_task_run_human_approval_expiries(task_run_id: str) -> int:
+    """Schedule one live, durable expiry claimant for each waiting approval."""
+    try:
+        task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    except KeyError:
+        return 0
+    scheduled = 0
+    for node_id in _task_run_pending_human_approval_node_ids(task_run):
+        key = (task_run_id, node_id)
+        existing = _HUMAN_APPROVAL_EXPIRY_TASKS.get(key)
+        if existing is not None and not existing.done():
+            continue
+        monitor = asyncio.create_task(
+            _monitor_task_run_human_approval_expiry(task_run_id=task_run_id, node_id=node_id)
+        )
+        _HUMAN_APPROVAL_EXPIRY_TASKS[key] = monitor
+        monitor.add_done_callback(lambda _task, key=key: _HUMAN_APPROVAL_EXPIRY_TASKS.pop(key, None))
+        scheduled += 1
+    return scheduled
+
+
+def _cancel_task_run_human_approval_expiry_monitors(task_run_id: str) -> None:
+    for key, monitor in tuple(_HUMAN_APPROVAL_EXPIRY_TASKS.items()):
+        if key[0] == task_run_id:
+            monitor.cancel()
+            _HUMAN_APPROVAL_EXPIRY_TASKS.pop(key, None)
+
+
+async def shutdown_task_run_human_approval_expiry_monitors() -> None:
+    """Cancel and settle all long-lived approval monitors during app shutdown."""
+    monitors = list(_HUMAN_APPROVAL_EXPIRY_TASKS.values())
+    _HUMAN_APPROVAL_EXPIRY_TASKS.clear()
+    for monitor in monitors:
+        monitor.cancel()
+    if monitors:
+        await asyncio.gather(*monitors, return_exceptions=True)
+
+
+def _claim_waiting_human_approval_cancellation(task_run: Any) -> Literal[
+    "cancelled", "expired", "decided", "none"
+]:
+    """Record cancellation under the same approval lock used by expiry and decisions."""
+    from app.services.human_approval import ApprovalNotFound, HumanApprovalStore
+
+    store = HumanApprovalStore(Path(task_run.artifact_dir))
+    claimed = False
+    historical_decision = False
+    for node_id in _task_run_human_approval_node_ids(task_run):
+        try:
+            record = store.load(node_id)
+            if record is None:
+                continue
+            if store.load_expiry_receipt(node_id) is not None:
+                return "expired"
+            if record.decision is not None:
+                historical_decision = True
+                continue
+            cancellation = store.claim_cancellation(
+                node_id,
+                now=datetime.now(timezone.utc),
+            )
+            if cancellation is not None:
+                claimed = True
+                continue
+            if store.load_expiry_receipt(node_id) is not None:
+                return "expired"
+            if (store.load(node_id) or record).decision is not None:
+                return "decided"
+        except ApprovalNotFound:
+            continue
+    if claimed:
+        return "cancelled"
+    return "decided" if historical_decision else "none"
+
+
+async def _monitor_task_run_human_approval_expiry(*, task_run_id: str, node_id: str) -> None:
+    try:
+        task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+        from app.services.human_approval import HumanApprovalStore
+
+        record = HumanApprovalStore(Path(task_run.artifact_dir)).load(node_id)
+        if record is None or record.decision is not None:
+            return
+        delay = (record.approval_deadline_at - datetime.now(timezone.utc)).total_seconds()
+        if delay > 0:
+            await asyncio.sleep(delay)
+        _expire_task_run_human_approval(task_run_id=task_run_id, node_id=node_id)
+    except asyncio.CancelledError:
+        raise
+    except (KeyError, OSError, ValueError) as exc:  # pragma: no cover - diagnostic guard.
+        logger.warning("human approval expiry monitor stopped", exc_info=exc)
+
+
+def _expire_task_run_human_approval(*, task_run_id: str, node_id: str) -> bool:
+    """Persist a claimed expiry as the terminal attempt outcome exactly once."""
+    from app.services.human_approval import ApprovalNotFound, HumanApprovalStore
+
+    try:
+        task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+        approval_store = HumanApprovalStore(Path(task_run.artifact_dir))
+        receipt = approval_store.claim_expiry(node_id, now=datetime.now(timezone.utc))
+    except (KeyError, ApprovalNotFound):
+        return False
+    if receipt is None:
+        return False
+    event_store = WorkbenchTaskRunEventStore(_task_runs_dir())
+    transitioned, _ = event_store.mark_status_unless(
+        task_run_id,
+        "timed_out",
+        blocked_statuses={
+            "prepared", "queued", "running", "cancelled", "completed", "failed",
+            "timed_out", "interrupted", "partial", "quality_blocked",
+        },
+        completed_at=datetime.now(timezone.utc).isoformat(),
+        error="human_approval_expired",
+    )
+    if not transitioned:
+        return False
+    _mark_task_run_lifecycle_outcomes(
+        event_store,
+        task_run_id,
+        execution_status="timed_out",
+        legacy_quality_status="blocked",
+        legacy_delivery_status="none",
+    )
+    event_store.append_once(
+        task_run_id,
+        "human_approval_timed_out",
+        {
+            "status": "timed_out",
+            "reason": "approval_deadline_expired",
+            "user_message": "人工审批已超时，本次工作流运行已结束。",
+        },
+        deduplication_key="human-approval:timed-out",
+    )
+    return True
+
+
+def _human_approval_decision_error(
+    *,
+    status_code: int,
+    detail: str,
+    error_code: str,
+    task_run_id: str,
+    node_id: str,
+    cause: Exception | None = None,
+) -> HTTPException:
+    diagnostic: dict[str, str] = {
+        "error_code": error_code,
+        "task_run_id": task_run_id,
+        "node_id": node_id,
+    }
+    if cause is not None:
+        diagnostic["cause"] = type(cause).__name__
+    logger.warning("human approval decision rejected", extra={"diagnostic": diagnostic})
+    return HTTPException(status_code=status_code, detail=detail)
+
+
+@router.post("/task-runs/{task_run_id}/approvals/{node_id}/decision")
+async def submit_task_run_human_approval_decision(
+    task_run_id: str,
+    node_id: str,
+    payload: HumanApprovalDecisionRequest,
+    response: Response,
+) -> dict[str, Any]:
+    """Commit one approval decision and resume the frozen task-run lifecycle."""
+    if not settings.workflow_hitl_enabled:
+        raise HTTPException(
+            status_code=503,
+            detail="Human approval is disabled by deployment policy.",
+        )
+    from app.services.human_approval import (
+        ApprovalConflict,
+        ApprovalExpired,
+        ApprovalNotFound,
+        ApprovalValidationError,
+        HumanApprovalStore,
+    )
+
+    try:
+        task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    except KeyError:
+        raise _human_approval_decision_error(
+            status_code=404,
+            detail="任务运行不存在。",
+            error_code="task_run_not_found",
+            task_run_id=task_run_id,
+            node_id=node_id,
+        )
+    if _task_run_human_approval_node(task_run, node_id) is None:
+        raise _human_approval_decision_error(
+            status_code=404,
+            detail="当前审批节点不可用。",
+            error_code="approval_node_unavailable",
+            task_run_id=task_run_id,
+            node_id=node_id,
+        )
+
+    approval_store = HumanApprovalStore(Path(task_run.artifact_dir))
+    try:
+        existing = approval_store.load(node_id)
+    except ApprovalValidationError as exc:
+        raise _human_approval_decision_error(
+            status_code=409,
+            detail="人工审批记录无效，请联系管理员查看诊断信息。",
+            error_code="approval_record_invalid",
+            task_run_id=task_run_id,
+            node_id=node_id,
+            cause=exc,
+        ) from exc
+    if existing is None:
+        raise _human_approval_decision_error(
+            status_code=404,
+            detail="当前审批节点未在等待输入。",
+            error_code="approval_not_waiting",
+            task_run_id=task_run_id,
+            node_id=node_id,
+        )
+    expected_task_id = str(task_run.task_id or task_run.task_run_id)
+    if existing.task_id != expected_task_id or existing.attempt_id != task_run.task_run_id:
+        raise HTTPException(
+            status_code=409,
+            detail="Approval record does not belong to this task-run attempt.",
+        )
+
+    event_store = WorkbenchTaskRunEventStore(_task_runs_dir())
+    current_status = event_store.current_status(task_run_id)
+    if existing.decision is None:
+        if current_status != "waiting_for_input":
+            raise _human_approval_decision_error(
+                status_code=409,
+                detail="当前任务状态无法继续人工审批。",
+                error_code="approval_task_run_not_waiting",
+                task_run_id=task_run_id,
+                node_id=node_id,
+            )
+
+    try:
+        record, created = approval_store.decide_with_outcome(
+            node_id,
+            decision=payload.decision,
+            actor=payload.actor,
+            reason=payload.reason,
+            decided_at=payload.decided_at,
+            received_at=datetime.now(timezone.utc),
+        )
+    except ApprovalNotFound as exc:
+        raise _human_approval_decision_error(
+            status_code=404,
+            detail="当前审批节点未在等待输入。",
+            error_code="approval_not_found",
+            task_run_id=task_run_id,
+            node_id=node_id,
+            cause=exc,
+        ) from exc
+    except ApprovalExpired as exc:
+        _expire_task_run_human_approval(task_run_id=task_run_id, node_id=node_id)
+        raise _human_approval_decision_error(
+            status_code=410,
+            detail="人工审批已过期，请重新发起运行。",
+            error_code="approval_expired",
+            task_run_id=task_run_id,
+            node_id=node_id,
+            cause=exc,
+        ) from exc
+    except ApprovalConflict as exc:
+        raise _human_approval_decision_error(
+            status_code=409,
+            detail="Approval is already decided.",
+            error_code="approval_already_decided",
+            task_run_id=task_run_id,
+            node_id=node_id,
+            cause=exc,
+        ) from exc
+    except ApprovalValidationError as exc:
+        raise _human_approval_decision_error(
+            status_code=422,
+            detail="人工审批决定无效。",
+            error_code="approval_decision_invalid",
+            task_run_id=task_run_id,
+            node_id=node_id,
+            cause=exc,
+        ) from exc
+
+    idempotent = not created
+    _cancel_task_run_human_approval_expiry_monitors(task_run_id)
+    decision_payload = record.decision.to_payload() if record.decision is not None else {}
+    event_store.append_once(
+        task_run_id,
+        "human_approval_decided",
+        {"node_id": node_id, **decision_payload},
+        deduplication_key=f"human-approval:{node_id}:decided",
+    )
+    frozen_timeout_budget_sec = _approval_total_execution_budget_sec(record)
+    timeout_was_enabled = record.total_execution_timeout_at is not None
+    resumed_timeout_sec = (
+        max(1, frozen_timeout_budget_sec) if timeout_was_enabled else 0
+    )
+    resumed_timeout_deadline = (
+        datetime.now(timezone.utc)
+        + timedelta(seconds=frozen_timeout_budget_sec)
+        if timeout_was_enabled
+        else None
+    )
+    resumed_timeout_rearm_count = sum(
+        1
+        for approval_node_id in _task_run_human_approval_node_ids(task_run)
+        if (
+            (approval_record := approval_store.load(approval_node_id))
+            is not None
+            and approval_record.decision is not None
+            and approval_record.total_execution_timeout_at is not None
+        )
+    )
+    queued, _ = event_store.mark_status_unless(
+        task_run_id,
+        "queued",
+        blocked_statuses={
+            "prepared", "queued", "running", "cancelled", "completed", "failed",
+            "timed_out", "interrupted", "partial", "quality_blocked",
+        },
+        total_execution_timeout_at=(
+            resumed_timeout_deadline.isoformat()
+            if resumed_timeout_deadline is not None
+            else None
+        ),
+        total_execution_timeout_rearm_count=resumed_timeout_rearm_count,
+    )
+    if queued:
+        _mark_task_run_lifecycle_outcomes(
+            event_store,
+            task_run_id,
+            execution_status="queued",
+            legacy_quality_status="pending",
+            legacy_delivery_status="none",
+        )
+        event_store.append_once(
+            task_run_id,
+            "queued",
+            {"resumed_from_human_approval": node_id},
+            deduplication_key=f"human-approval:{node_id}:queued",
+        )
+        asyncio.create_task(
+            _execute_task_run_background(
+                task_run_id=task_run_id,
+                payload=TaskRunExecuteRequest(
+                    timeout_sec=resumed_timeout_sec
+                ),
+            )
+        )
+    elif event_store.current_status(task_run_id) not in {"queued", "running"}:
+        raise HTTPException(
+            status_code=409,
+            detail="Task run was cancelled or completed before its approval decision could resume it.",
+        )
+
+    refreshed = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    response.status_code = 202
+    return {
+        **_scheduled_task_run_response(
+            task_run=refreshed,
+            status=event_store.current_status(task_run_id),
+        ),
+        "node_id": node_id,
+        "decision": record.decision.to_payload() if record.decision is not None else {},
+        "idempotent": idempotent,
+    }
+
+
 @router.post("/task-runs/{task_run_id}/cancel")
 async def cancel_task_run(task_run_id: str) -> dict[str, Any]:
     try:
@@ -3670,7 +4493,7 @@ async def cancel_task_run(task_run_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
     event_store = WorkbenchTaskRunEventStore(_task_runs_dir())
     current_status = event_store.current_status(task_run_id)
-    if current_status not in {"queued", "running"}:
+    if current_status not in {"queued", "running", "waiting_for_input"}:
         return {
             "task_run_id": task_run_id,
             "status": current_status,
@@ -3678,11 +4501,35 @@ async def cancel_task_run(task_run_id: str) -> dict[str, Any]:
             "reason": "task run is not queued or running",
             "run_ui_summary": _build_task_run_ui_summary(task_run, Path(task_run.artifact_dir)),
         }
-    event_store.mark_status(
+    if current_status == "waiting_for_input":
+        winner = _claim_waiting_human_approval_cancellation(task_run)
+        if winner == "expired":
+            for node_id in _task_run_human_approval_node_ids(task_run):
+                _expire_task_run_human_approval(task_run_id=task_run_id, node_id=node_id)
+            repaired = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+            return {
+                "task_run_id": task_run_id,
+                "status": event_store.current_status(task_run_id),
+                "cancelled": False,
+                "reason": "approval expiry already won",
+                "run_ui_summary": _build_task_run_ui_summary(repaired, Path(repaired.artifact_dir)),
+            }
+        if winner == "decided":
+            refreshed = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+            return {
+                "task_run_id": task_run_id,
+                "status": event_store.current_status(task_run_id),
+                "cancelled": False,
+                "reason": "approval decision already won",
+                "run_ui_summary": _build_task_run_ui_summary(refreshed, Path(refreshed.artifact_dir)),
+            }
+    event_store.mark_status_unless(
         task_run_id,
         "cancelled",
+        blocked_statuses={"completed", "failed", "timed_out", "cancelled", "interrupted"},
         completed_at=datetime.now(timezone.utc).isoformat(),
     )
+    _cancel_task_run_human_approval_expiry_monitors(task_run_id)
     _mark_task_run_lifecycle_outcomes(
         event_store,
         task_run_id,
@@ -3812,17 +4659,41 @@ def _execute_task_run_with_closure(
     *,
     task_run_id: str,
     payload: TaskRunExecuteRequest,
+    lease_lost_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     try:
         event_store = WorkbenchTaskRunEventStore(_task_runs_dir())
+        from app.services.managed_tool_runtime import managed_tool_runtime
+
+        tool_runtime = (
+            managed_tool_runtime()
+            if settings.workflow_tool_enabled
+            else None
+        )
+        def append_runner_event(event_type: str, event_payload: dict[str, Any]) -> None:
+            deduplication_key = str(event_payload.get("deduplication_key") or "").strip()
+            if deduplication_key:
+                event_store.append_once(
+                    task_run_id,
+                    event_type,
+                    event_payload,
+                    deduplication_key=deduplication_key,
+                )
+                return
+            event_store.append(task_run_id, event_type, event_payload)
+
         result = WorkbenchWorkflowRunner(
             _task_runs_dir(),
-            event_sink=lambda event_type, event_payload: event_store.append(
-                task_run_id,
-                event_type,
-                event_payload,
+            event_sink=append_runner_event,
+            is_cancelled=lambda: (
+                event_store.current_status(task_run_id) == "cancelled"
+                or lease_lost_event is not None and lease_lost_event.is_set()
             ),
-            is_cancelled=lambda: event_store.current_status(task_run_id) == "cancelled",
+            tool_dispatcher=tool_runtime.dispatcher if tool_runtime is not None else None,
+            granted_tool_permissions=(
+                tool_runtime.granted_permissions if tool_runtime is not None else ()
+            ),
+            managed_tool_runtime_instance=tool_runtime,
         ).execute_task_run(
             task_run_id,
             timeout_sec=payload.timeout_sec,

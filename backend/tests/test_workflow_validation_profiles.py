@@ -171,6 +171,8 @@ def test_v3_default_profile_is_artifact_only_and_declared_outputs_are_authoritat
     runtime_step = next(step for step in definition["steps"] if step["id"] == "analyze")
     assert runtime_step == {
         "id": "analyze",
+        "label": "Analyze source",
+        "name": "Analyze source",
         "type": "agent_task",
         "handler_id": "agent",
         "handler_version": 1,
@@ -682,7 +684,7 @@ def test_compiled_contract_freezes_execution_fields_and_is_deterministic():
     second = compile_workflow_contract_v3(shuffled, capabilities=_capabilities(), workflow_version_id="wfv_frozen", workflow_version_number=4)
     assert first == second
     analyze = next(node for node in first["compiled_definition"]["nodes"] if node["node_id"] == "analyze")
-    assert analyze == {"node_id": "analyze", "graph_node_id": "analyze", "kind": "agent", "handler_id": "agent", "handler_version": 1, "depends_on": [], "resolved_input_bindings": {"repo_path": {"source_node_id": "repo", "source_port_id": "value", "source_input_id": "repo"}}, "input_ports": [{"id": "repo_path", "type": "directory", "required": True}], "output_ports": [{"id": "report", "type": "artifact", "required": True}], "provider_ref": "provider_codex_default", "provider_capabilities_required": ["cancellation", "streaming"], "mcp_profiles": ["gitnexus"], "skill_ids": ["source-evidence-first"], "skill_instructions": ["Read the user input verbatim."], "goal": "Generate SFMEA and black-box cases only if explicitly declared.", "prompt_template_version": 7, "prompt_template": "{{node_goal}}\n{{bound_inputs}}\n{{output_contract}}", "input_rendering": {"preserve_user_text_verbatim": True, "binding_order": ["repo_path"]}, "timeout_sec": 1200, "idle_timeout_sec": 180, "retry_policy": {"max_attempts": 2, "backoff_seconds": 3}, "failure_policy": "stop", "blocking": True, "required_outputs": ["report"]}
+    assert analyze == {"node_id": "analyze", "graph_node_id": "analyze", "kind": "agent", "label": "Analyze source", "handler_id": "agent", "handler_version": 1, "depends_on": [], "resolved_input_bindings": {"repo_path": {"source_node_id": "repo", "source_port_id": "value", "source_input_id": "repo"}}, "input_ports": [{"id": "repo_path", "type": "directory", "required": True}], "output_ports": [{"id": "report", "type": "artifact", "required": True}], "provider_ref": "provider_codex_default", "provider_capabilities_required": ["cancellation", "streaming"], "mcp_profiles": ["gitnexus"], "skill_ids": ["source-evidence-first"], "skill_instructions": ["Read the user input verbatim."], "goal": "Generate SFMEA and black-box cases only if explicitly declared.", "prompt_template_version": 7, "prompt_template": "{{node_goal}}\n{{bound_inputs}}\n{{output_contract}}", "input_rendering": {"preserve_user_text_verbatim": True, "binding_order": ["repo_path"]}, "timeout_sec": 1200, "idle_timeout_sec": 180, "retry_policy": {"max_attempts": 2, "backoff_seconds": 3}, "failure_policy": "stop", "blocking": True, "required_outputs": ["report"]}
 
 
 def test_v3_graph_fails_closed_for_cycles_and_duplicate_scalar_bindings():

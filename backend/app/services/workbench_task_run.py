@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import posixpath
 import re
 import shutil
 import subprocess
@@ -700,6 +701,11 @@ class WorkbenchTaskRunPreparer:
             delivery_status="pending" if is_v3_contract else "none",
             agent_runs=agent_runs,
         )
+        if is_v3_contract:
+            _write_json(
+                artifact_dir / "agent_execution_descriptors.json",
+                {"schema_version": 1, "agent_runs": agent_runs},
+            )
         _write_json(artifact_dir / "task_run.json", asdict(result))
         _write_json(artifact_dir / "workflow_snapshot.json", workflow_snapshot)
         if is_v3_contract:
@@ -4563,6 +4569,9 @@ def build_run_snapshot_v3(
     }
     if is_v3_contract:
         component_paths["v3_runtime_contract"] = "compiled_definition.json"
+        component_paths["agent_execution_descriptors"] = (
+            "agent_execution_descriptors.json"
+        )
     else:
         component_paths.update({
             "stage_specs": "stage_specs.json",
@@ -4589,6 +4598,9 @@ def build_run_snapshot_v3(
     return {
         "schema_version": 3,
         "snapshot_kind": "codetalk_run_snapshot",
+        "execution_contract": {
+            "compiled_contract_version": compiled_contract_version(workflow_snapshot),
+        },
         "created_at": _now(),
         "identity": {
             "task_run_id": task_run_id,
@@ -4621,6 +4633,19 @@ def refresh_run_snapshot_v3(artifact_dir: str | Path) -> dict[str, Any]:
         _write_json(root / "compiled_plan.json", task_bundle["compiled_plan"])
     if isinstance(task_bundle, dict) and isinstance(task_bundle.get("compiled_definition"), dict):
         _write_json(root / "compiled_definition.json", task_bundle["compiled_definition"])
+    agent_descriptors_path = root / "agent_execution_descriptors.json"
+    if not agent_descriptors_path.is_file():
+        _write_json(
+            agent_descriptors_path,
+            {
+                "schema_version": 1,
+                "agent_runs": [
+                    dict(item)
+                    for item in task_run.get("agent_runs") or []
+                    if isinstance(item, dict)
+                ],
+            },
+        )
     prior_identity = existing.get("identity") if isinstance(existing, dict) else {}
     snapshot = build_run_snapshot_v3(
         artifact_dir=root,
@@ -4669,6 +4694,120 @@ def validate_run_snapshot_v3(artifact_dir: str | Path) -> list[str]:
         if len(expected_sha256) != 64 or actual_sha256 != expected_sha256:
             errors.append(f"运行快照组件校验失败：{component_id}（{relative_path}）")
     return errors
+
+
+class FrozenCompiledPlanAuthorityError(ValueError):
+    """Raised when a frozen compiled plan cannot be safely accepted."""
+
+    def __init__(self) -> None:
+        super().__init__("Frozen compiled plan is unavailable or invalid.")
+
+
+class FrozenV3ExecutionAuthorityError(ValueError):
+    """Raised when a V3 attempt lacks a complete snapshot-authorized contract."""
+
+    def __init__(self) -> None:
+        super().__init__("Frozen V3 execution authority is unavailable or invalid.")
+
+
+def load_frozen_v3_execution_authority(
+    artifact_dir: str | Path,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+    """Load every immutable value that may influence V3 execution."""
+    required = {
+        "v3_runtime_contract": "compiled_definition.json",
+        "execution_plan": "compiled_plan.json",
+        "input_snapshot": "input_snapshot.json",
+        "agent_execution_descriptors": "agent_execution_descriptors.json",
+    }
+    try:
+        if validate_run_snapshot_v3(artifact_dir):
+            raise FrozenV3ExecutionAuthorityError()
+        root = Path(artifact_dir)
+        snapshot = _read_json(root / "run_snapshot_v3.json")
+        components = snapshot.get("components") if isinstance(snapshot, dict) else None
+        if not isinstance(components, dict):
+            raise FrozenV3ExecutionAuthorityError()
+        loaded: dict[str, Any] = {}
+        for component_id, expected_path in required.items():
+            descriptor = components.get(component_id)
+            if not isinstance(descriptor, dict):
+                raise FrozenV3ExecutionAuthorityError()
+            relative_path = _normalized_snapshot_component_path(descriptor.get("path"))
+            expected_sha256 = descriptor.get("sha256")
+            if (
+                relative_path != expected_path
+                or not isinstance(expected_sha256, str)
+                or len(expected_sha256) != 64
+            ):
+                raise FrozenV3ExecutionAuthorityError()
+            component_bytes = (root / expected_path).read_bytes()
+            if hashlib.sha256(component_bytes).hexdigest() != expected_sha256.lower():
+                raise FrozenV3ExecutionAuthorityError()
+            loaded[component_id] = json.loads(component_bytes)
+        definition = loaded["v3_runtime_contract"]
+        plan = loaded["execution_plan"]
+        inputs = loaded["input_snapshot"]
+        descriptors = loaded["agent_execution_descriptors"]
+        if (
+            not isinstance(definition, dict)
+            or not isinstance(plan, dict)
+            or not isinstance(inputs, dict)
+            or not isinstance(descriptors, dict)
+            or descriptors.get("schema_version") != 1
+            or not isinstance(descriptors.get("agent_runs"), list)
+            or any(not isinstance(item, dict) for item in descriptors["agent_runs"])
+        ):
+            raise FrozenV3ExecutionAuthorityError()
+        if definition.get("compiled_contract_version") != 3 or plan.get("compiled_contract_version") != 3:
+            raise FrozenV3ExecutionAuthorityError()
+        return definition, plan, inputs, [dict(item) for item in descriptors["agent_runs"]]
+    except FrozenV3ExecutionAuthorityError:
+        raise
+    except (OSError, TypeError, UnicodeError, json.JSONDecodeError, ValueError):
+        raise FrozenV3ExecutionAuthorityError() from None
+
+
+def load_frozen_compiled_plan(artifact_dir: str | Path) -> dict[str, Any]:
+    """Return the snapshot-authorized compiled plan, or a safe failure.
+
+    Consumers must use this instead of reading ``compiled_plan.json`` directly
+    when the frozen snapshot is the execution authority.
+    """
+    try:
+        if validate_run_snapshot_v3(artifact_dir):
+            raise FrozenCompiledPlanAuthorityError()
+        root = Path(artifact_dir)
+        snapshot = _read_json(root / "run_snapshot_v3.json")
+        components = snapshot.get("components") if isinstance(snapshot, dict) else None
+        descriptor = components.get("execution_plan") if isinstance(components, dict) else None
+        if not isinstance(descriptor, dict):
+            raise FrozenCompiledPlanAuthorityError()
+        relative_path = _normalized_snapshot_component_path(descriptor.get("path"))
+        expected_sha256 = descriptor.get("sha256")
+        if (
+            relative_path != "compiled_plan.json"
+            or not isinstance(expected_sha256, str)
+            or len(expected_sha256) != 64
+        ):
+            raise FrozenCompiledPlanAuthorityError()
+        plan_bytes = (root / "compiled_plan.json").read_bytes()
+        if hashlib.sha256(plan_bytes).hexdigest() != expected_sha256.lower():
+            raise FrozenCompiledPlanAuthorityError()
+        plan = json.loads(plan_bytes)
+        if not isinstance(plan, dict):
+            raise FrozenCompiledPlanAuthorityError()
+        return plan
+    except FrozenCompiledPlanAuthorityError:
+        raise
+    except (OSError, TypeError, UnicodeError, json.JSONDecodeError, ValueError):
+        raise FrozenCompiledPlanAuthorityError() from None
+
+
+def _normalized_snapshot_component_path(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return posixpath.normpath(value.strip().replace("\\", "/"))
 
 
 def _read_json(path: Path) -> Any:

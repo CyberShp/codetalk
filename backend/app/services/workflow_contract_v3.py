@@ -915,7 +915,7 @@ def _validate_provider_capability_requirements(
         # capabilities. Publish and trial-run routes always supply this snapshot.
         return
     for node_id, node in sorted(nodes.items()):
-        if node.get("kind") not in {"agent", "builtin_model"}:
+        if node.get("kind") not in {"agent", "builtin_model", "subagent"}:
             continue
         config = _config(node)
         required = sorted(set(_strings(config.get("provider_capabilities_required"))))
@@ -1131,10 +1131,13 @@ def _bindings(node_id: str, edges: list[dict[str, Any]], nodes: dict[str, dict[s
 
 def _compiled_node(node: dict[str, Any], node_id: str, depends_on: list[str], bindings: dict[str, Any], required_outputs: list[str]) -> dict[str, Any]:
     config = _config(node)
-    return {
+    compiled = {
         "node_id": node_id,
         "graph_node_id": node_id,
         "kind": str(node.get("kind")),
+        # The compiled plan is frozen with the graph's presentation label so
+        # run summaries never need to recover it from mutable authoring data.
+        "label": str(node.get("label") or "").strip(),
         "handler_id": str(config.get("handler_id") or config.get("validator_type") or node.get("kind")),
         "handler_version": _positive_int(config.get("handler_version"), 1),
         "depends_on": depends_on,
@@ -1157,6 +1160,16 @@ def _compiled_node(node: dict[str, Any], node_id: str, depends_on: list[str], bi
         "blocking": bool(config.get("blocking", True)),
         "required_outputs": required_outputs,
     }
+    if node.get("kind") == "tool":
+        compiled["tool_id"] = str(config.get("tool_id") or "")
+        compiled["required_permissions"] = sorted(_strings(config.get("required_permissions")))
+    elif node.get("kind") == "subagent":
+        compiled["session_key"] = str(config.get("session_key") or "")
+    elif node.get("kind") == "human_approval":
+        compiled["approval_timeout_sec"] = _positive_int(
+            config.get("approval_timeout_sec"), 86400
+        )
+    return compiled
 
 
 def _profile_nodes(profile: str, outputs: list[dict[str, Any]], prior_nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1229,6 +1242,8 @@ def _profile_nodes(profile: str, outputs: list[dict[str, Any]], prior_nodes: lis
             "generated_by_validation_profile": True,
             "validation_profile": profile,
         })
+        if kind == "human_approval":
+            generated_nodes[-1]["approval_timeout_sec"] = 86400
         previous_profile_node_id = node_id
     return generated_nodes
 
@@ -1273,6 +1288,8 @@ def _runtime_step(node: dict[str, Any], outputs: list[dict[str, Any]]) -> dict[s
     ]
     return {
         "id": node["node_id"],
+        "label": node["label"],
+        "name": node["label"],
         "type": _runner_type(node["kind"]),
         "handler_id": node["handler_id"],
         "handler_version": node["handler_version"],
@@ -1298,13 +1315,13 @@ def _runtime_step(node: dict[str, Any], outputs: list[dict[str, Any]]) -> dict[s
 def _plan_node(node: dict[str, Any]) -> dict[str, Any]:
     """Keep plan nodes compatible with the existing scheduler dispatch table."""
     runner_type = _runner_type(node["kind"])
-    # Only agent nodes need a legacy scheduler alias.  Leaving other nodes
-    # unchanged keeps V3 validator definitions and plan entries identical.
+    # Provider-backed agent and subagent nodes share the established scheduler
+    # alias; other V3 node definitions remain unchanged.
     return {**node, "type": runner_type} if runner_type != node["kind"] else dict(node)
 
 
 def _runner_type(kind: str) -> str:
-    return "agent_task" if kind in {"agent", "builtin_model"} else kind
+    return "agent_task" if kind in {"agent", "builtin_model", "subagent"} else kind
 
 
 def _config(node: dict[str, Any]) -> dict[str, Any]:

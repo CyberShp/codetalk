@@ -425,7 +425,37 @@ def test_scheduler_public_event_payloads_redact_exception_secrets(tmp_path):
     )
     serialized = str(event["payload"])
     assert "sk-review-secret" not in serialized
-    assert "<redacted>" in serialized
+    assert event["payload"]["error"] == "节点执行失败，请重试。"
+
+
+def test_scheduler_failure_event_uses_localized_generic_error_and_keeps_diagnostics_private():
+    from app.services.workflow_scheduler import WorkflowDagScheduler
+
+    events: list[tuple[str, dict]] = []
+    raw_error = "provider failed for internal.node.v3 token=sk-review-secret-123456789"
+
+    result = WorkflowDagScheduler(
+        event_sink=lambda event_type, payload: events.append((event_type, payload))
+    ).run(
+        {
+            "plan_version": 1,
+            "topological_order": ["internal.node.v3"],
+            "max_parallelism": 1,
+            "nodes": [
+                {"node_id": "internal.node.v3", "type": "agent_task", "depends_on": []}
+            ],
+        },
+        execute_node=lambda _node, _deps: (_ for _ in ()).throw(RuntimeError(raw_error)),
+    )
+
+    event = next(payload for event_type, payload in events if event_type == "node_failed")
+    assert event["error"] == "节点执行失败，请重试。"
+    assert raw_error not in str(event)
+    assert result.results_by_node["internal.node.v3"]["error"] == "节点执行失败，请重试。"
+    assert result.results_by_node["internal.node.v3"]["technical_diagnostics"] == {
+        "exception_type": "RuntimeError",
+        "message": raw_error,
+    }
 
 
 def test_legacy_event_payloads_are_redacted_at_every_public_read_boundary(tmp_path):

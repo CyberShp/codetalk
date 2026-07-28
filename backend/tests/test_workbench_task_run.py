@@ -468,18 +468,10 @@ def test_phase0_agent_harness_cancels_running_process_group(tmp_path, monkeypatc
     assert not child_finished.exists()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "Harness hard-total-timeout green condition: timeout_sec must terminate a continuously "
-        "active provider at the configured wall-clock budget instead of extending to one hour."
-    ),
-)
 def test_phase0_agent_harness_enforces_total_timeout_during_continuous_output(
     tmp_path, monkeypatch
 ):
-    """Expose the current timeout/idle conflation without changing Harness behavior."""
+    """Continuously active output cannot extend the hard execution deadline."""
     from app.config import settings
     from app.services.agent_run_harness import AgentRunHarness
 
@@ -4539,7 +4531,7 @@ def test_agent_run_harness_keeps_active_process_alive_past_idle_window(tmp_path,
     events = []
     result = harness.execute_run(
         run.run_id,
-        timeout_sec=1,
+        timeout_sec=3,
         idle_timeout_sec=0.5,
         event_sink=lambda event_type, payload: events.append((event_type, payload)),
     )

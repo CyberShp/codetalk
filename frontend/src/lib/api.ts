@@ -1446,6 +1446,34 @@ export const api = {
           method: "POST",
         }),
 
+      decideApproval: (
+        taskRunId: string,
+        nodeId: string,
+        data: {
+          decision: "approve" | "reject";
+          actor: string;
+          reason: string;
+          decided_at: string;
+        },
+      ) =>
+        request<{
+          task_run_id: string;
+          node_id: string;
+          status: string;
+          decision?: {
+            decision: "approve" | "reject";
+            actor: string;
+            reason: string;
+            decided_at: string;
+          };
+        }>(
+          `/api/workbench/task-runs/${encodeURIComponent(taskRunId)}/approvals/${encodeURIComponent(nodeId)}/decision`,
+          {
+            method: "POST",
+            body: JSON.stringify(data),
+          },
+        ),
+
       materializeOutputs: (taskRunId: string) =>
         request<MaterializeWorkflowOutputsResult>(
           `/api/workbench/task-runs/${encodeURIComponent(taskRunId)}/materialize-outputs`,

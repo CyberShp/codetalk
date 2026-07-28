@@ -7,6 +7,8 @@ from typing import Any, Callable
 
 
 SUCCESS_STATUSES = frozenset({"completed", "completed_empty", "needs_review", "succeeded", "success"})
+WAITING_STATUSES = frozenset({"waiting_for_input"})
+_NODE_FAILURE_MESSAGE = "节点执行失败，请重试。"
 
 
 @dataclass(frozen=True)
@@ -85,12 +87,28 @@ class WorkflowDagScheduler:
                 if str(results.get(dependency, {}).get("status") or "") not in SUCCESS_STATUSES
             ]
             if stop_remaining or blocked_by:
+                waiting_blockers = [
+                    dependency
+                    for dependency in blocked_by
+                    if str(results.get(dependency, {}).get("status") or "")
+                    in WAITING_STATUSES
+                ]
                 blocked = {
                     "node_id": node_id,
                     "type": str(node.get("type") or ""),
                     "status": "blocked",
                     "blocked_by": blocked_by or ([stop_source] if stop_source else []),
-                    "reason": "upstream_failed" if blocked_by else "run_stopped_after_failure",
+                    "reason": (
+                        "upstream_waiting"
+                        if waiting_blockers
+                        else "upstream_failed"
+                        if blocked_by
+                        else "run_paused"
+                        if stop_source
+                        and str(results.get(stop_source, {}).get("status") or "")
+                        in WAITING_STATUSES
+                        else "run_stopped_after_failure"
+                    ),
                     "validated_outputs": {},
                     "direct_dependencies": {},
                 }
@@ -110,7 +128,10 @@ class WorkflowDagScheduler:
                     "node_id": node_id,
                     "type": str(node.get("type") or ""),
                     "status": "failed",
-                    "error": str(exc),
+                    "technical_diagnostics": {
+                        "exception_type": type(exc).__name__,
+                        "message": str(exc),
+                    },
                     "validated_outputs": {},
                 }
             result.setdefault("node_id", node_id)
@@ -122,14 +143,32 @@ class WorkflowDagScheduler:
             ordered_results.append(result)
             if str(result["status"]) in SUCCESS_STATUSES:
                 self._emit("node_completed", dict(result))
+            elif str(result["status"]) in WAITING_STATUSES:
+                self._emit("node_waiting", dict(result))
+                stop_remaining = True
+                stop_source = node_id
             else:
-                self._emit("node_failed", dict(result))
+                _normalize_failure_result(result)
+                self._emit("node_failed", _public_failure_event_payload(result))
                 if str(node.get("failure_policy") or "stop") == "stop":
                     stop_remaining = True
                     stop_source = node_id
-        status = "succeeded" if ordered_results and all(
-            str(item.get("status") or "") in SUCCESS_STATUSES for item in ordered_results
-        ) else "succeeded" if not ordered_results else "failed"
+        status = (
+            "waiting_for_input"
+            if any(
+                str(item.get("status") or "") in WAITING_STATUSES
+                for item in ordered_results
+            )
+            else "succeeded"
+            if ordered_results
+            and all(
+                str(item.get("status") or "") in SUCCESS_STATUSES
+                for item in ordered_results
+            )
+            else "succeeded"
+            if not ordered_results
+            else "failed"
+        )
         self._emit("run_completed", {"status": status})
         return WorkflowScheduleResult(
             status=status,
@@ -144,3 +183,20 @@ class WorkflowDagScheduler:
 
 def _dependencies(node: dict[str, Any]) -> list[str]:
     return sorted({str(item) for item in node.get("depends_on") or [] if str(item)})
+
+
+def _normalize_failure_result(result: dict[str, Any]) -> None:
+    diagnostics = result.get("technical_diagnostics")
+    clean_diagnostics = dict(diagnostics) if isinstance(diagnostics, dict) else {}
+    raw_error = result.get("error")
+    if raw_error not in (None, ""):
+        clean_diagnostics.setdefault("error", raw_error)
+    if clean_diagnostics:
+        result["technical_diagnostics"] = clean_diagnostics
+    result["error"] = _NODE_FAILURE_MESSAGE
+
+
+def _public_failure_event_payload(result: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(result)
+    payload.pop("technical_diagnostics", None)
+    return payload

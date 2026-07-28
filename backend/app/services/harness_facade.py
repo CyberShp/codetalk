@@ -6,9 +6,9 @@ import hashlib
 import json
 import shutil
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Literal, Protocol
+from typing import Any, Callable, Iterable, Literal, Protocol
 
 from app.services.provider_adapters.contracts import (
     ArtifactCandidate,
@@ -18,11 +18,18 @@ from app.services.provider_adapters.contracts import (
     ProviderSession,
     ProviderUnsupported,
 )
+from app.services.tool_dispatch import (
+    ToolCallError,
+    ToolCallRequest,
+    ToolCallResult,
+    ToolDispatcher,
+)
+from app.services.tool_action_journal import ToolActionContext, ToolActionJournal
 
 
 HarnessEventKind = Literal[
     "run_started", "session_created", "stage_started", "activity", "thinking_summary",
-    "tool_started", "tool_completed", "source_read", "artifact_progress", "artifact_created",
+    "tool_requested", "tool_started", "tool_completed", "tool_failed", "source_read", "artifact_progress", "artifact_created",
     "validation_started", "validation_failed", "repair_started", "stage_completed", "idle",
     "blocked", "failed", "cancelled", "completed", "network_egress_blocked", "diagnostic",
 ]
@@ -258,9 +265,19 @@ class AgentHarnessFacade:
         artifact_dir: str | Path,
         *,
         adapter: ProviderAdapter | None = None,
+        tool_dispatcher: ToolDispatcher | None = None,
+        granted_tool_permissions: Iterable[str] = (),
+        tool_action_journal: ToolActionJournal | None = None,
+        tool_action_context: ToolActionContext | None = None,
     ) -> None:
         self.artifact_dir = Path(artifact_dir)
         self._adapter: ProviderAdapter = adapter or LocalCliProviderAdapter(self.artifact_dir)
+        self._tool_dispatcher = tool_dispatcher
+        self._granted_tool_permissions = tuple(
+            str(permission) for permission in granted_tool_permissions
+        )
+        self._tool_action_journal = tool_action_journal
+        self._tool_action_context = tool_action_context
         self._sessions: dict[str, ProviderSession] = {}
 
     def capabilities(self) -> ProviderCapabilities:
@@ -314,7 +331,7 @@ class AgentHarnessFacade:
         *,
         event_sink: Callable[[str, dict[str, Any]], None] | None,
         is_cancelled: Callable[[], bool] | None,
-        invoke: Callable[[Callable[[str, dict[str, Any]], None] | None], Any],
+        invoke: Callable[[Callable[[str, dict[str, Any]], Any] | None], Any],
     ) -> HarnessRunResult | ProviderUnsupported:
         session_id = provider_session.session_id
         started = False
@@ -330,8 +347,12 @@ class AgentHarnessFacade:
                 {"session_id": session_id},
             )
 
-        def operation_event_sink(kind: str, payload: dict[str, Any]) -> None:
+        def operation_event_sink(kind: str, payload: dict[str, Any]) -> Any:
             emit_started()
+            if kind == "tool_requested" or str(
+                payload.get("harness_event_kind") or ""
+            ) == "tool_requested":
+                return self._dispatch_tool_request(payload, event_sink=event_sink)
             normalized_kind = str(payload.get("harness_event_kind") or "")
             if not normalized_kind:
                 normalized_kind = normalize_provider_event(kind, payload).kind
@@ -344,10 +365,15 @@ class AgentHarnessFacade:
                 return
             if event_sink is not None:
                 event_sink(kind, payload)
+            return None
 
         baseline = self._snapshot_declared_artifacts(provider_session)
         try:
-            result = invoke(operation_event_sink if event_sink is not None else None)
+            result = invoke(
+                operation_event_sink
+                if event_sink is not None or self._tool_dispatcher is not None
+                else None
+            )
         except Exception:
             self._discard_artifact_baseline(baseline)
             raise
@@ -444,6 +470,120 @@ class AgentHarnessFacade:
             },
         )
         return public_result
+
+    def _dispatch_tool_request(
+        self,
+        payload: dict[str, Any],
+        *,
+        event_sink: Callable[[str, dict[str, Any]], None] | None,
+    ) -> dict[str, Any]:
+        tool_id = str(payload.get("tool_id") or "").strip()
+        arguments = payload.get("arguments")
+        self._emit_lifecycle_event(
+            event_sink,
+            "tool_requested",
+            {"tool_id": tool_id, "arguments": arguments},
+        )
+        if self._tool_dispatcher is None:
+            result = ToolCallResult(
+                tool_id=tool_id,
+                status="failed",
+                error=ToolCallError(
+                    code="tool_dispatch_unavailable",
+                    message="No CodeTalk tool dispatcher is configured.",
+                ),
+            )
+        else:
+            action = None
+            result = None
+            if (
+                self._tool_action_journal is not None
+                and self._tool_action_context is not None
+                and isinstance(arguments, dict)
+            ):
+                provider_call_id = str(payload.get("tool_call_id") or "").strip()
+                if not provider_call_id:
+                    result = ToolCallResult(
+                        tool_id=tool_id,
+                        status="failed",
+                        error=ToolCallError(
+                            code="tool_call_id_required",
+                            message=(
+                                "Provider Tool requests require a stable tool_call_id "
+                                "when durable action replay is enabled."
+                            ),
+                        ),
+                    )
+                else:
+                    call_suffix = hashlib.sha256(
+                        provider_call_id.encode("utf-8")
+                    ).hexdigest()[:16]
+                    action = self._tool_action_journal.begin(
+                        task_id=self._tool_action_context.task_id,
+                        attempt_id=self._tool_action_context.attempt_id,
+                        node_id=f"{self._tool_action_context.node_id}:tool:{call_suffix}",
+                        tool_id=tool_id,
+                        frozen_arguments=arguments,
+                    )
+            if result is None and action is not None and action.disposition == "completed":
+                result = ToolCallResult(
+                    tool_id=tool_id,
+                    status="completed",
+                    output=action.record.output,
+                )
+            elif result is None and action is not None and action.disposition in {"failed", "indeterminate"}:
+                persisted_error = dict(action.record.error or {})
+                result = ToolCallResult(
+                    tool_id=tool_id,
+                    status="failed",
+                    error=ToolCallError(
+                        code=str(
+                            persisted_error.get("code")
+                            or "tool_action_indeterminate"
+                        ),
+                        message=str(
+                            persisted_error.get("message")
+                            or "A prior Tool action may have executed before interruption."
+                        ),
+                        details=dict(persisted_error.get("details") or {}),
+                    ),
+                )
+            elif result is None:
+                result = self._tool_dispatcher.dispatch(ToolCallRequest(
+                    tool_id=tool_id,
+                    arguments=arguments,
+                    granted_permissions=self._granted_tool_permissions,
+                ))
+                if action is not None:
+                    if result.status == "completed":
+                        self._tool_action_journal.complete(
+                            action.record,
+                            output=result.output,
+                        )
+                    else:
+                        self._tool_action_journal.fail(
+                            action.record,
+                            error=(
+                                asdict(result.error)
+                                if result.error is not None
+                                else {
+                                    "code": "tool_execution_failed",
+                                    "message": "Local tool handler failed.",
+                                    "details": {},
+                                }
+                            ),
+                        )
+        response = asdict(result)
+        self._emit_lifecycle_event(
+            event_sink,
+            "tool_completed" if result.status == "completed" else "tool_failed",
+            {
+                "tool_id": tool_id,
+                "status": result.status,
+                "error": asdict(result.error) if result.error is not None else None,
+            },
+        )
+        return response
 
     def resume(
         self,

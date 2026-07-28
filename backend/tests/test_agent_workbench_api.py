@@ -6,6 +6,7 @@ import json
 import sys
 import time
 import zipfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -81,6 +82,24 @@ def _workbench_path(relative_path: str) -> Path:
 
 def _task_run_dir(task_run_id: str) -> Path:
     return settings.data_path / "workbench" / "task_runs" / task_run_id
+
+
+def _write_frozen_plan_authority(task_dir: Path, plan: dict) -> None:
+    plan_path = task_dir / "compiled_plan.json"
+    plan_path.write_text(json.dumps(plan, sort_keys=True), encoding="utf-8")
+    (task_dir / "run_snapshot_v3.json").write_text(
+        json.dumps({
+            "schema_version": 3,
+            "snapshot_kind": "codetalk_run_snapshot",
+            "components": {
+                "execution_plan": {
+                    "path": "compiled_plan.json",
+                    "sha256": hashlib.sha256(plan_path.read_bytes()).hexdigest(),
+                },
+            },
+        }, sort_keys=True),
+        encoding="utf-8",
+    )
 
 
 async def test_public_task_run_payload_loads_stage_level_input_consumption(tmp_path):
@@ -183,6 +202,80 @@ async def test_run_ui_labels_upstream_blocked_nodes_in_chinese():
     assert _task_run_ui_status_label("upstream_blocked") == "因上游门禁阻断"
 
 
+async def test_task_run_ui_summary_uses_frozen_labels_and_localized_node_fallbacks(
+    tmp_path,
+):
+    from types import SimpleNamespace
+
+    from app.api.agent_workbench import _build_task_run_ui_summary
+
+    task_root = tmp_path / "task_run_node_labels"
+    task_root.mkdir()
+    (task_root / "task_run.json").write_text(
+        json.dumps({"status": "prepared"}), encoding="utf-8"
+    )
+    task_run = SimpleNamespace(
+        workflow_id="internal-workflow-id",
+        workflow_snapshot={
+            "id": "internal-workflow-id",
+            "steps": [
+                {"id": "tool-node-internal", "type": "tool"},
+                {"id": "approval-node-internal", "type": "human_approval"},
+            ],
+        },
+        task_bundle={
+            "workflow_contract": {"outputs": []},
+            "compiled_plan": {
+                "nodes": [
+                    {
+                        "node_id": "tool-node-internal",
+                        "kind": "tool",
+                        "label": "检查工作区",
+                        "depends_on": [],
+                    },
+                    {
+                        "node_id": "approval-node-internal",
+                        "kind": "human_approval",
+                        "depends_on": ["tool-node-internal"],
+                    },
+                ]
+            },
+        },
+        input_snapshot={},
+    )
+
+    summary = _build_task_run_ui_summary(task_run, task_root)
+
+    assert summary["workflow"]["name"] == "工作流"
+    assert [node["label"] for node in summary["nodes"]] == [
+        "检查工作区",
+        "人工审批",
+    ]
+    assert [node["goal"] for node in summary["nodes"]] == [
+        "完成 检查工作区",
+        "完成 人工审批",
+    ]
+    assert summary["nodes"][0]["next_node_labels"] == ["人工审批"]
+    assert summary["nodes"][1]["dependency_labels"] == ["检查工作区"]
+    user_facing_text = json.dumps(
+        {
+            "workflow_name": summary["workflow"]["name"],
+            "nodes": [
+                {
+                    "label": node["label"],
+                    "goal": node["goal"],
+                    "dependency_labels": node["dependency_labels"],
+                    "next_node_labels": node["next_node_labels"],
+                }
+                for node in summary["nodes"]
+            ],
+        },
+        ensure_ascii=False,
+    )
+    assert "tool-node-internal" not in user_facing_text
+    assert "approval-node-internal" not in user_facing_text
+
+
 async def test_node_registry_api_returns_backend_owned_designer_metadata(workbench_client):
     response = await workbench_client.get("/api/workbench/node-registry")
 
@@ -192,6 +285,608 @@ async def test_node_registry_api_returns_backend_owned_designer_metadata(workben
     agent = next(item for item in body["nodes"] if item["kind"] == "agent")
     assert agent["ui"]["palette_label"] == "智能体模块"
     assert agent["default_ports"]["input_ports"][0]["id"] == "repo_path"
+
+
+async def test_terminal_execution_status_preserves_human_approval_waiting_state():
+    from app.api.agent_workbench import _terminal_execution_status
+
+    assert _terminal_execution_status({
+        "status": "waiting_for_input",
+        "execution_status": "waiting_for_input",
+    }) == "waiting_for_input"
+
+
+async def test_human_approval_feature_rollback_rejects_before_record_access(
+    workbench_client,
+    monkeypatch,
+):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "workflow_hitl_enabled", False)
+    response = await workbench_client.post(
+        "/api/workbench/task-runs/not-created/approvals/approval/decision",
+        json={
+            "decision": "approve",
+            "actor": "reviewer",
+            "reason": "must not be persisted",
+            "decided_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Human approval is disabled by deployment policy."
+    assert not _task_run_dir("not-created").exists()
+
+
+async def test_background_worker_waits_on_durable_execution_lease_before_preflight(
+    monkeypatch,
+    tmp_path,
+):
+    from types import SimpleNamespace
+    from app.api import agent_workbench
+
+    status = ["queued"]
+    events: list[tuple[str, dict]] = []
+    preflight_calls = 0
+
+    class FakeTaskRunStore:
+        def __init__(self, *_args):
+            pass
+
+        def load(self, task_run_id):
+            return SimpleNamespace(
+                task_run_id=task_run_id,
+                artifact_dir=str(tmp_path / task_run_id),
+            )
+
+    class FakeEventStore:
+        def __init__(self, *_args):
+            pass
+
+        def current_status(self, _task_run_id):
+            return status[0]
+
+        def append_once(self, _task_run_id, event_type, payload, **_kwargs):
+            events.append((event_type, payload))
+
+    class ContendedLeaseStore:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def acquire(self, **_kwargs):
+            return None
+
+        def load(self):
+            return SimpleNamespace(
+                expires_at=datetime.now(timezone.utc) + timedelta(seconds=1)
+            )
+
+    async def complete_owner_during_wait(_delay):
+        status[0] = "completed"
+
+    async def forbidden_preflight(_task_run_id):
+        nonlocal preflight_calls
+        preflight_calls += 1
+        pytest.fail("contended worker must not enter preflight")
+
+    monkeypatch.setattr(agent_workbench, "WorkbenchTaskRunStore", FakeTaskRunStore)
+    monkeypatch.setattr(agent_workbench, "WorkbenchTaskRunEventStore", FakeEventStore)
+    monkeypatch.setattr(
+        agent_workbench,
+        "WorkflowExecutionLeaseStore",
+        ContendedLeaseStore,
+        raising=False,
+    )
+    monkeypatch.setattr(agent_workbench, "_preflight_task_run_agent_runtimes", forbidden_preflight)
+    monkeypatch.setattr(agent_workbench.asyncio, "sleep", complete_owner_during_wait)
+
+    await agent_workbench._execute_task_run_background(
+        task_run_id="attempt-contended",
+        payload=agent_workbench.TaskRunExecuteRequest(),
+    )
+
+    assert preflight_calls == 0
+    assert events == [(
+        "execution_lease_contended",
+        {"status": "queued"},
+    )]
+
+
+async def test_human_approval_decision_api_commits_once_and_resumes_existing_task_run(
+    workbench_client,
+    monkeypatch,
+    tmp_path,
+):
+    from app.api import agent_workbench
+    from app.services.human_approval import HumanApprovalStore
+
+    task_run_id = "task-run-human-approval"
+    task_dir = _task_run_dir(task_run_id)
+    task_dir.mkdir(parents=True)
+    task_dir.joinpath("task_run.json").write_text(
+        json.dumps({
+            "task_run_id": task_run_id,
+            "task_id": "task-human-approval",
+            "attempt_number": 1,
+            "workflow_id": "workflow-human-approval",
+            "workspace_id": "ws-human-approval",
+            "repo_path": str(tmp_path),
+            "artifact_dir": str(task_dir),
+            "workflow_snapshot": {"compiled_contract_version": 3},
+            "input_snapshot": {},
+            "task_bundle": {
+                "compiled_contract_version": 3,
+                "compiled_definition": {"validation_profile": "none"},
+                "compiled_plan": {
+                    "nodes": [{
+                        "node_id": "release-approval",
+                        "kind": "human_approval",
+                        "handler_id": "human_approval",
+                    }],
+                },
+            },
+            "status": "waiting_for_input",
+            "execution_status": "waiting_for_input",
+            "artifact_validation_status": "not_requested",
+            "governance_status": "not_requested",
+            "delivery_status": "pending",
+            "quality_status": "pending",
+            "agent_runs": [],
+            "runtime": {"status": "waiting_for_input"},
+        }),
+        encoding="utf-8",
+    )
+    _write_frozen_plan_authority(
+        task_dir,
+        {
+            "nodes": [{
+                "node_id": "release-approval",
+                "kind": "human_approval",
+                "handler_id": "human_approval",
+            }],
+        },
+    )
+    entered_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    decided_at = entered_at + timedelta(seconds=10)
+    HumanApprovalStore(task_dir).enter_waiting(
+        task_id="task-human-approval",
+        attempt_id=task_run_id,
+        node_id="release-approval",
+        entered_at=entered_at,
+        total_execution_timeout_at=entered_at + timedelta(minutes=5),
+        approval_deadline_at=entered_at + timedelta(hours=1),
+        input_context={
+            "summary": '{"purpose":"durable checkpoint before approval"}',
+            "sha256": "sha256:" + "b" * 64,
+            "truncated": False,
+        },
+    )
+    resumed: list[tuple[str, int]] = []
+
+    async def record_resume(*, task_run_id: str, payload) -> None:
+        resumed.append((task_run_id, payload.timeout_sec))
+
+    monkeypatch.setattr(agent_workbench, "_execute_task_run_background", record_resume)
+    decision = {
+        "decision": "approve",
+        "actor": "reviewer-7",
+        "reason": "release evidence is complete",
+        "decided_at": decided_at.isoformat(),
+    }
+
+    waiting_view = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}"
+    )
+    assert waiting_view.status_code == 200
+    waiting_summary = waiting_view.json()["run_ui_summary"]
+    assert waiting_summary["status"] == "waiting_for_input"
+    assert waiting_summary["status_label"] == "等待人工审批"
+    assert waiting_summary["current_node"]["id"] == "release-approval"
+    assert waiting_summary["current_node"]["status"] == "waiting_for_input"
+    assert waiting_summary["current_node"]["approval_context"] == {
+        "summary": '{"purpose":"durable checkpoint before approval"}',
+        "sha256": "sha256:" + "b" * 64,
+        "truncated": False,
+    }
+
+    submitted = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/approvals/release-approval/decision",
+        json=decision,
+    )
+
+    assert submitted.status_code == 202
+    assert submitted.json()["status"] == "queued"
+    assert submitted.json()["idempotent"] is False
+    await asyncio.sleep(0)
+    assert resumed == [(task_run_id, 300)]
+    runtime_payload = json.loads(
+        (task_dir / "task_run.json").read_text(encoding="utf-8")
+    )["runtime"]
+    assert runtime_payload["total_execution_timeout_rearm_count"] == 1
+    rearmed_deadline = datetime.fromisoformat(
+        runtime_payload["total_execution_timeout_at"]
+    )
+    assert 298 <= (
+        rearmed_deadline - datetime.now(timezone.utc)
+    ).total_seconds() <= 300
+    record = HumanApprovalStore(task_dir).load("release-approval")
+    assert record is not None
+    assert record.status == "approved"
+    assert record.decision is not None
+    assert record.decision.to_payload() == decision
+    events = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}/events")
+    decision_events = [
+        item for item in events.json()["items"] if item["event_type"] == "human_approval_decided"
+    ]
+    assert len(decision_events) == 1
+    assert decision_events[0]["payload"] == {
+        "node_id": "release-approval",
+        **decision,
+        "deduplication_key": "human-approval:release-approval:decided",
+    }
+    assert sorted(path.name for path in _task_run_dir(task_run_id).iterdir()) == [
+        "approvals",
+        "compiled_plan.json",
+        "run_snapshot_v3.json",
+        "task_run.json",
+        "task_run_events.jsonl",
+    ]
+
+    replayed = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/approvals/release-approval/decision",
+        json=decision,
+    )
+
+    assert replayed.status_code == 202
+    assert replayed.json()["idempotent"] is True
+    await asyncio.sleep(0)
+    assert resumed == [(task_run_id, 300)]
+    replay_events = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}/events")
+    assert len([
+        item for item in replay_events.json()["items"]
+        if item["event_type"] == "human_approval_decided"
+    ]) == 1
+
+    from app.services.workbench_task_run_events import WorkbenchTaskRunEventStore
+
+    WorkbenchTaskRunEventStore(agent_workbench._task_runs_dir()).mark_status(
+        task_run_id,
+        "waiting_for_input",
+    )
+    repaired = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/approvals/release-approval/decision",
+        json=decision,
+    )
+
+    assert repaired.status_code == 202
+    assert repaired.json()["status"] == "queued"
+    assert repaired.json()["idempotent"] is True
+    await asyncio.sleep(0)
+    assert resumed == [(task_run_id, 300), (task_run_id, 300)]
+
+    conflict = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/approvals/release-approval/decision",
+        json={**decision, "actor": "different-reviewer"},
+    )
+    assert conflict.status_code == 409
+    assert "already decided" in conflict.json()["detail"]
+
+    invalid = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/approvals/release-approval/decision",
+        json={**decision, "actor": " "},
+    )
+    assert invalid.status_code == 422
+
+
+async def test_human_approval_decision_api_reports_missing_and_expired_approvals(
+    workbench_client,
+    tmp_path,
+):
+    from app.services.human_approval import HumanApprovalStore
+
+    task_run_id = "task-run-human-approval-errors"
+    task_dir = _task_run_dir(task_run_id)
+    task_dir.mkdir(parents=True)
+    task_dir.joinpath("task_run.json").write_text(
+        json.dumps({
+            "task_run_id": task_run_id,
+            "task_id": "task-human-approval-errors",
+            "workflow_id": "workflow-human-approval-errors",
+            "workspace_id": "ws-human-approval-errors",
+            "repo_path": str(tmp_path),
+            "artifact_dir": str(task_dir),
+            "workflow_snapshot": {"compiled_contract_version": 3},
+            "input_snapshot": {},
+            "task_bundle": {
+                "compiled_contract_version": 3,
+                "compiled_definition": {"validation_profile": "none"},
+                "compiled_plan": {
+                    "nodes": [{
+                        "node_id": "release-approval",
+                        "kind": "human_approval",
+                        "handler_id": "human_approval",
+                    }],
+                },
+            },
+            "status": "waiting_for_input",
+            "execution_status": "waiting_for_input",
+            "artifact_validation_status": "not_requested",
+            "governance_status": "not_requested",
+            "delivery_status": "pending",
+            "quality_status": "pending",
+            "agent_runs": [],
+            "runtime": {"status": "waiting_for_input"},
+        }),
+        encoding="utf-8",
+    )
+    _write_frozen_plan_authority(
+        task_dir,
+        {
+            "nodes": [{
+                "node_id": "release-approval",
+                "kind": "human_approval",
+                "handler_id": "human_approval",
+            }],
+        },
+    )
+    decision = {
+        "decision": "reject",
+        "actor": "reviewer-8",
+        "reason": "release evidence is incomplete",
+        "decided_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    missing = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/approvals/release-approval/decision",
+        json=decision,
+    )
+
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == "当前审批节点未在等待输入。"
+    assert task_run_id not in missing.json()["detail"]
+    assert "release-approval" not in missing.json()["detail"]
+
+    unknown_node = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/approvals/internal-approval-node/decision",
+        json=decision,
+    )
+
+    assert unknown_node.status_code == 404
+    assert unknown_node.json()["detail"] == "当前审批节点不可用。"
+    assert task_run_id not in unknown_node.json()["detail"]
+    assert "internal-approval-node" not in unknown_node.json()["detail"]
+
+    unknown_task_run = await workbench_client.post(
+        "/api/workbench/task-runs/internal-missing-task-run/approvals/internal-approval-node/decision",
+        json=decision,
+    )
+
+    assert unknown_task_run.status_code == 404
+    assert unknown_task_run.json()["detail"] == "任务运行不存在。"
+    assert "internal-missing-task-run" not in unknown_task_run.json()["detail"]
+    assert "internal-approval-node" not in unknown_task_run.json()["detail"]
+
+    entered_at = datetime.now(timezone.utc) - timedelta(hours=2)
+    HumanApprovalStore(task_dir).enter_waiting(
+        task_id="task-human-approval-errors",
+        attempt_id=task_run_id,
+        node_id="release-approval",
+        entered_at=entered_at,
+        total_execution_timeout_at=None,
+        approval_deadline_at=entered_at + timedelta(hours=1),
+    )
+    approval_path = task_dir / "approvals" / "release-approval.json"
+    original_approval = approval_path.read_bytes()
+    expired = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/approvals/release-approval/decision",
+        json={**decision, "decided_at": (entered_at + timedelta(minutes=1)).isoformat()},
+    )
+
+    assert expired.status_code == 410
+    assert expired.json()["detail"] == "人工审批已过期，请重新发起运行。"
+    assert task_run_id not in expired.json()["detail"]
+    assert "release-approval" not in expired.json()["detail"]
+    assert approval_path.read_bytes() == original_approval
+    assert (task_dir / "approvals" / "release-approval.receipt.json").is_file()
+
+
+async def test_live_human_approval_expiry_monitor_persists_one_public_timeout_event(
+    workbench_client,
+    tmp_path,
+):
+    from app.api import agent_workbench
+    from app.services.human_approval import HumanApprovalStore
+
+    task_run_id = "task-run-live-approval-expiry"
+    task_dir = _task_run_dir(task_run_id)
+    task_dir.mkdir(parents=True)
+    task_dir.joinpath("task_run.json").write_text(
+        json.dumps({
+            "task_run_id": task_run_id,
+            "task_id": "task-live-approval-expiry",
+            "workflow_id": "workflow-human-approval",
+            "workspace_id": "ws-human-approval",
+            "repo_path": str(tmp_path),
+            "artifact_dir": str(task_dir),
+            "workflow_snapshot": {"compiled_contract_version": 3},
+            "input_snapshot": {},
+            "task_bundle": {
+                "compiled_plan": {"nodes": [{
+                    "node_id": "release-approval",
+                    "kind": "human_approval",
+                    "handler_id": "human_approval",
+                }]},
+            },
+            "status": "waiting_for_input",
+            "execution_status": "waiting_for_input",
+            "artifact_validation_status": "not_requested",
+            "governance_status": "not_requested",
+            "delivery_status": "pending",
+            "quality_status": "pending",
+            "agent_runs": [],
+            "runtime": {"status": "waiting_for_input"},
+        }),
+        encoding="utf-8",
+    )
+    _write_frozen_plan_authority(
+        task_dir,
+        {
+            "nodes": [{
+                "node_id": "release-approval",
+                "kind": "human_approval",
+                "handler_id": "human_approval",
+            }],
+        },
+    )
+    entered_at = datetime.now(timezone.utc) - timedelta(hours=2)
+    HumanApprovalStore(task_dir).enter_waiting(
+        task_id="task-live-approval-expiry",
+        attempt_id=task_run_id,
+        node_id="release-approval",
+        entered_at=entered_at,
+        total_execution_timeout_at=None,
+        approval_deadline_at=entered_at + timedelta(hours=1),
+    )
+
+    await agent_workbench._monitor_task_run_human_approval_expiry(
+        task_run_id=task_run_id,
+        node_id="release-approval",
+    )
+    duplicate = agent_workbench._expire_task_run_human_approval(
+        task_run_id=task_run_id,
+        node_id="release-approval",
+    )
+
+    assert duplicate is False
+    summary = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}")
+    assert summary.json()["status"] == "timed_out"
+    events = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}/events")
+    timeout_events = [
+        item for item in events.json()["items"]
+        if item["event_type"] == "human_approval_timed_out"
+    ]
+    assert len(timeout_events) == 1
+    assert timeout_events[0]["payload"] == {
+        "status": "timed_out",
+        "reason": "approval_deadline_expired",
+        "user_message": "人工审批已超时，本次工作流运行已结束。",
+        "deduplication_key": "human-approval:timed-out",
+    }
+
+
+async def test_cancel_after_expiry_receipt_repairs_timeout_instead_of_overwriting_it(
+    workbench_client,
+    tmp_path,
+):
+    from app.services.human_approval import HumanApprovalStore
+
+    task_run_id = "task-run-expiry-wins-cancel-race"
+    task_dir = _task_run_dir(task_run_id)
+    task_dir.mkdir(parents=True)
+    task_dir.joinpath("task_run.json").write_text(
+        json.dumps({
+            "task_run_id": task_run_id,
+            "task_id": "task-expiry-wins-cancel-race",
+            "workflow_id": "workflow-human-approval",
+            "workspace_id": "ws-human-approval",
+            "repo_path": str(tmp_path),
+            "artifact_dir": str(task_dir),
+            "workflow_snapshot": {"compiled_contract_version": 3},
+            "input_snapshot": {},
+            "task_bundle": {"compiled_plan": {"nodes": [{
+                "node_id": "release-approval",
+                "kind": "human_approval",
+                "handler_id": "human_approval",
+            }]}},
+            "status": "waiting_for_input",
+            "execution_status": "waiting_for_input",
+            "artifact_validation_status": "passed",
+            "governance_status": "waived",
+            "delivery_status": "ready",
+            "quality_status": "passed",
+            "agent_runs": [],
+            "runtime": {"status": "waiting_for_input"},
+        }),
+        encoding="utf-8",
+    )
+    _write_frozen_plan_authority(
+        task_dir,
+        {
+            "nodes": [{
+                "node_id": "release-approval",
+                "kind": "human_approval",
+                "handler_id": "human_approval",
+            }],
+        },
+    )
+    entered_at = datetime.now(timezone.utc) - timedelta(hours=2)
+    approval_store = HumanApprovalStore(task_dir)
+    approval_store.enter_waiting(
+        task_id="task-expiry-wins-cancel-race",
+        attempt_id=task_run_id,
+        node_id="release-approval",
+        entered_at=entered_at,
+        total_execution_timeout_at=None,
+        approval_deadline_at=entered_at + timedelta(hours=1),
+    )
+    assert approval_store.claim_expiry(
+        "release-approval",
+        now=entered_at + timedelta(hours=1),
+    ) is not None
+
+    response = await workbench_client.post(f"/api/workbench/task-runs/{task_run_id}/cancel")
+
+    assert response.status_code == 200
+    assert response.json()["cancelled"] is False
+    assert response.json()["status"] == "timed_out"
+    task_payload = json.loads((task_dir / "task_run.json").read_text(encoding="utf-8"))
+    assert task_payload["artifact_validation_status"] == "passed"
+    assert task_payload["governance_status"] == "waived"
+    assert task_payload["delivery_status"] == "blocked"
+    assert task_payload["quality_status"] == "blocked"
+
+
+async def test_waiting_human_approval_can_be_cancelled(
+    workbench_client,
+    tmp_path,
+):
+    task_run_id = "task-run-cancel-waiting-approval"
+    task_dir = _task_run_dir(task_run_id)
+    task_dir.mkdir(parents=True)
+    task_dir.joinpath("task_run.json").write_text(
+        json.dumps({
+            "task_run_id": task_run_id,
+            "task_id": "task-cancel-waiting-approval",
+            "workflow_id": "workflow-human-approval",
+            "workspace_id": "ws-human-approval",
+            "repo_path": str(tmp_path),
+            "artifact_dir": str(task_dir),
+            "workflow_snapshot": {"compiled_contract_version": 3},
+            "input_snapshot": {},
+            "task_bundle": {
+                "compiled_contract_version": 3,
+                "compiled_definition": {"validation_profile": "none"},
+                "compiled_plan": {"nodes": []},
+            },
+            "status": "waiting_for_input",
+            "execution_status": "waiting_for_input",
+            "artifact_validation_status": "not_requested",
+            "governance_status": "not_requested",
+            "delivery_status": "pending",
+            "quality_status": "pending",
+            "agent_runs": [],
+            "runtime": {"status": "waiting_for_input"},
+        }),
+        encoding="utf-8",
+    )
+
+    response = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/cancel"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["cancelled"] is True
+    assert response.json()["status"] == "cancelled"
 
 
 class _SourceFlowStageLLM:
@@ -921,7 +1616,7 @@ async def test_task_run_public_payload_includes_chinese_ui_summary_for_workflow_
 
     assert summary["status_label"] == "等待运行"
     assert summary["debug_default_collapsed"] is True
-    assert summary["nodes"][0]["label"] == "agent_collect"
+    assert summary["nodes"][0]["label"] == "智能体"
     assert summary["nodes"][0]["status_label"] == "等待运行"
     assert summary["nodes"][0]["inputs"] == [
         {"id": "analysis_target", "role": "分析目标", "type": "free_text"},
@@ -3592,6 +4287,122 @@ async def test_task_run_ui_summary_prioritizes_cancelled_status_over_stale_failu
     assert summary["current_node"]["status_label"] == "已取消"
     assert summary["failure"]["reasons"] == []
     assert "acceptance_audit" not in _public_task_run_runtime_summary(task_root)
+
+
+async def test_waiting_approval_cancellation_ignores_historical_decisions(tmp_path):
+    from types import SimpleNamespace
+
+    from app.api.agent_workbench import _claim_waiting_human_approval_cancellation
+    from app.services.human_approval import HumanApprovalStore
+
+    entered_at = datetime.now(timezone.utc)
+    store = HumanApprovalStore(tmp_path)
+    for node_id in ("security-approval", "release-approval"):
+        store.enter_waiting(
+            task_id="task-1",
+            attempt_id="attempt-1",
+            node_id=node_id,
+            entered_at=entered_at,
+            total_execution_timeout_at=None,
+            approval_deadline_at=entered_at + timedelta(hours=1),
+        )
+    store.decide(
+        "security-approval",
+        decision="approve",
+        actor="reviewer",
+        reason="first gate passed",
+        decided_at=entered_at + timedelta(seconds=1),
+        received_at=entered_at + timedelta(seconds=1),
+    )
+    task_run = SimpleNamespace(
+        artifact_dir=str(tmp_path),
+        task_bundle={
+            "compiled_plan": {
+                "nodes": [
+                    {"node_id": "security-approval", "kind": "human_approval"},
+                    {"node_id": "release-approval", "kind": "human_approval"},
+                ]
+            }
+        },
+    )
+    _write_frozen_plan_authority(
+        tmp_path,
+        {
+            "nodes": [
+                {"node_id": "security-approval", "kind": "human_approval"},
+                {"node_id": "release-approval", "kind": "human_approval"},
+            ],
+        },
+    )
+
+    assert _claim_waiting_human_approval_cancellation(task_run) == "cancelled"
+    assert store.load_cancellation_receipt("security-approval") is None
+    assert store.load_cancellation_receipt("release-approval") is not None
+
+
+async def test_human_approval_node_lookup_prefers_frozen_attempt_plan(tmp_path):
+    from types import SimpleNamespace
+
+    from app.api.agent_workbench import (
+        _task_run_human_approval_node,
+        _task_run_human_approval_node_ids,
+    )
+
+    (tmp_path / "compiled_plan.json").write_text(
+        json.dumps({
+            "nodes": [{
+                "node_id": "frozen-approval",
+                "kind": "human_approval",
+                "handler_id": "human_approval",
+            }],
+        }),
+        encoding="utf-8",
+    )
+    _write_frozen_plan_authority(
+        tmp_path,
+        {
+            "nodes": [{
+                "node_id": "frozen-approval",
+                "kind": "human_approval",
+                "handler_id": "human_approval",
+            }],
+        },
+    )
+    task_run = SimpleNamespace(
+        artifact_dir=str(tmp_path),
+        task_bundle={
+            "compiled_plan": {
+                "nodes": [{
+                    "node_id": "mutable-approval",
+                    "kind": "human_approval",
+                    "handler_id": "human_approval",
+                }],
+            }
+        },
+    )
+
+    assert _task_run_human_approval_node(task_run, "frozen-approval") is not None
+    assert _task_run_human_approval_node(task_run, "mutable-approval") is None
+    assert _task_run_human_approval_node_ids(task_run) == ["frozen-approval"]
+
+
+async def test_human_approval_expiry_monitors_are_cancelled_on_shutdown():
+    from app.api import agent_workbench
+
+    started = asyncio.Event()
+
+    async def sleeping_monitor() -> None:
+        started.set()
+        await asyncio.sleep(3600)
+
+    monitor = asyncio.create_task(sleeping_monitor())
+    await started.wait()
+    agent_workbench._HUMAN_APPROVAL_EXPIRY_TASKS[("task-run", "approval")] = monitor
+
+    await agent_workbench.shutdown_task_run_human_approval_expiry_monitors()
+
+    assert monitor.cancelled()
+    assert agent_workbench._HUMAN_APPROVAL_EXPIRY_TASKS == {}
 
 
 async def test_task_run_ui_summary_marks_active_node_interrupted_after_service_restart(tmp_path):
