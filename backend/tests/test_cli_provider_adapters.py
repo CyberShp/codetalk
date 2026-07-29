@@ -119,6 +119,8 @@ def test_cli_adapters_reuse_bridge_and_preserve_prompt_verbatim(
     assert runtime["args"] == ["--configured-flag"]
     assert runtime["prompt_transport"] == transport
     assert runtime["output_mode"] == output_mode
+    assert runtime["activity_timeout_seconds"] == 17
+    assert runtime["total_timeout_seconds"] == 91
     assert runtime["env"]["CODETALK_AGENT_ARTIFACT_DIR"] == str(tmp_path.resolve())
     assert result.status == "completed"
     assert result.artifacts == []

@@ -26,6 +26,7 @@ import type {
   AgentRuntimeCreate,
   AgentProviderSettings,
   ApiType,
+  DeploymentNetworkMigrationPreview,
   DeploymentNetworkPolicy,
 } from "@/lib/types";
 
@@ -126,6 +127,34 @@ function userFacingLlmTestResult(message: string) {
   return message;
 }
 
+function NetworkMigrationPreview({ migration }: {
+  migration: DeploymentNetworkMigrationPreview | null | undefined;
+}) {
+  if (!migration || migration.contract_version !== 1) {
+    return (
+      <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-on-surface">
+        <p className="font-medium">不支持的设置迁移契约版本</p>
+        <p className="mt-1">当前部署设置保持只读，不会自动迁移或写入。请联系管理员升级后端或确认部署配置。</p>
+      </div>
+    );
+  }
+
+  if (!migration.admin_confirmation_required) {
+    return (
+      <p className="border-t border-outline-variant/15 pt-3 text-xs leading-5 text-on-surface-variant">
+        网络模式已由当前部署配置明确声明。迁移契约 V{migration.contract_version} 仅供只读核对，不会写入用户设置。
+      </p>
+    );
+  }
+
+  return (
+    <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-on-surface">
+      <p className="font-medium">旧版网络模式迁移预览</p>
+      <p className="mt-1">{migration.admin_guidance || "请联系管理员确认部署网络模式。"}</p>
+    </div>
+  );
+}
+
 function DeploymentNetworkPolicyPanel({ policy, error }: {
   policy: DeploymentNetworkPolicy | null;
   error: string | null;
@@ -183,6 +212,7 @@ function DeploymentNetworkPolicyPanel({ policy, error }: {
                 <PolicyStatus label="远程追踪" value={policy.remote_tracing === "disabled" ? "已禁用" : "受部署策略管理"} detail="不启用外部追踪服务。" />
                 <PolicyStatus label="Hosted MCP" value={policy.hosted_mcp === "forbidden" ? "已禁止" : "受部署策略管理"} detail="不连接第三方托管 MCP；本地 MCP 不受影响。" />
               </div>
+              <NetworkMigrationPreview migration={policy.migration_preview} />
               {policy.mode === "intranet" && (
                 <p className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-on-surface">
                   内网模式下，下面的通用模型代理仅用于模型客户端配置，最终受部署批准策略约束。

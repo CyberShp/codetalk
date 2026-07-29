@@ -114,37 +114,6 @@ class WorkflowVersionStore:
                             continue
                         self._migrate_legacy_row(db, row)
                         migrated += 1
-                legacy_versions = db.execute(
-                    """
-                    SELECT version_id, authoring_graph_json, compiled_definition_json
-                    FROM workflow_versions
-                    WHERE state = 'published'
-                      AND compiled_plan_json IS NULL
-                      AND compiled_definition_json IS NOT NULL
-                    ORDER BY version_id
-                    """
-                ).fetchall()
-                for version in legacy_versions:
-                    graph = json.loads(str(version["authoring_graph_json"]))
-                    if (
-                        graph.get("schema_version") != 1
-                        or not isinstance(graph.get("legacy_definition"), dict)
-                    ):
-                        continue
-                    definition = json.loads(str(version["compiled_definition_json"]))
-                    plan = compile_legacy_workflow(
-                        definition,
-                        workflow_version_id=str(version["version_id"]),
-                    )
-                    db.execute(
-                        """
-                        UPDATE workflow_versions
-                        SET compiled_plan_json = ?, updated_at = ?
-                        WHERE version_id = ?
-                        """,
-                        (_dump(plan), _now(), str(version["version_id"])),
-                    )
-                    upgraded += 1
                 db.execute(
                     """
                     INSERT INTO workbench_schema_meta(component, version, updated_at)
@@ -197,17 +166,33 @@ class WorkflowVersionStore:
                             (published_version_id,),
                         ).fetchone()
                         if published is not None:
+                            published_graph = _load_optional(
+                                published["authoring_graph_json"]
+                            )
+                            published_definition = _load_optional(
+                                published["compiled_definition_json"]
+                            )
+                            published_plan = _load_optional(
+                                published["compiled_plan_json"]
+                            )
+                            if (
+                                published_plan is None
+                                and isinstance(published_graph, dict)
+                                and published_graph.get("schema_version") == 1
+                                and isinstance(
+                                    published_graph.get("legacy_definition"), dict
+                                )
+                                and isinstance(published_definition, dict)
+                            ):
+                                published_plan = compile_legacy_workflow(
+                                    published_definition,
+                                    workflow_version_id=published_version_id,
+                                )
                             published_snapshot = {
                                 "state": str(published["state"]),
-                                "authoring_graph": _load_optional(
-                                    published["authoring_graph_json"]
-                                ),
-                                "compiled_definition": _load_optional(
-                                    published["compiled_definition_json"]
-                                ),
-                                "compiled_plan": _load_optional(
-                                    published["compiled_plan_json"]
-                                ),
+                                "authoring_graph": published_graph,
+                                "compiled_definition": published_definition,
+                                "compiled_plan": published_plan,
                                 "validation": _load_optional(
                                     published["validation_json"]
                                 ),
@@ -1049,14 +1034,26 @@ def _header_from_row(row: sqlite3.Row) -> WorkflowHeader:
 def _version_from_row(row: sqlite3.Row) -> WorkflowVersion:
     stored_graph = dict(json.loads(str(row["authoring_graph_json"])))
     draft_revision = _pop_v3_draft_revision(stored_graph)
+    compiled_definition = _load_optional(row["compiled_definition_json"])
+    compiled_plan = _load_optional(row["compiled_plan_json"])
+    if (
+        compiled_plan is None
+        and stored_graph.get("schema_version") == 1
+        and isinstance(stored_graph.get("legacy_definition"), dict)
+        and isinstance(compiled_definition, dict)
+    ):
+        compiled_plan = compile_legacy_workflow(
+            compiled_definition,
+            workflow_version_id=str(row["version_id"]),
+        )
     version = WorkflowVersion(
         version_id=str(row["version_id"]),
         workflow_id=str(row["workflow_id"]),
         version_number=int(row["version_number"]),
         state=str(row["state"]),
         authoring_graph=stored_graph,
-        compiled_definition=_load_optional(row["compiled_definition_json"]),
-        compiled_plan=_load_optional(row["compiled_plan_json"]),
+        compiled_definition=compiled_definition,
+        compiled_plan=compiled_plan,
         validation=_load_optional(row["validation_json"]),
         based_on_version_id=(
             str(row["based_on_version_id"]) if row["based_on_version_id"] else None

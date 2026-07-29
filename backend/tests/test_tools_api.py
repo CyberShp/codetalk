@@ -1106,6 +1106,20 @@ async def test_process_manager_adopts_healthy_external_gitnexus_without_respawn(
     assert status["last_error"] is None
 
 
+async def test_process_manager_instances_do_not_share_mutable_tool_config():
+    from app.services import process_manager
+
+    first = process_manager.ProcessManager()
+    second = process_manager.ProcessManager()
+
+    first._processes["gitnexus"]._config["health_url"] = (
+        "https://unapproved-tools.example/health"
+    )
+
+    assert second._processes["gitnexus"]._config["health_url"].endswith("/api/info")
+    assert process_manager.TOOL_REGISTRY["gitnexus"]["health_url"].endswith("/api/info")
+
+
 async def test_tcp_port_probe_uses_bind_instead_of_connect(monkeypatch):
     """A busy GitNexus may listen on 7100 while refusing new TCP handshakes."""
     from app.services import process_manager

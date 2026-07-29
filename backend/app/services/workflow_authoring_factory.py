@@ -15,7 +15,51 @@ from typing import Any
 from uuid import uuid4
 
 
-CANVAS_TEMPLATES = frozenset({"blank", "free_source_analysis"})
+_CANVAS_TEMPLATE_CATALOG: tuple[dict[str, Any], ...] = (
+    {
+        "id": "blank",
+        "label": "空白画布",
+        "description": "从节点库按需要搭建",
+        "schema_version": 3,
+        "presentation": {"lifecycle": "active", "scope": "generic"},
+    },
+    {
+        "id": "free_source_analysis",
+        "label": "自由源码分析",
+        "description": "源码工作区 -> Agent -> report.md",
+        "schema_version": 3,
+        "presentation": {"lifecycle": "active", "scope": "generic"},
+    },
+    {
+        "id": "source_with_optional_design",
+        "label": "源码 + 可选设计文档",
+        "description": "结合源码与可选设计文档生成 report.md",
+        "schema_version": 3,
+        "presentation": {"lifecycle": "active", "scope": "generic"},
+    },
+    {
+        "id": "change_impact_analysis",
+        "label": "变更影响分析",
+        "description": "根据源码和变更说明分析影响范围",
+        "schema_version": 3,
+        "presentation": {"lifecycle": "active", "scope": "generic"},
+    },
+    {
+        "id": "multi_agent_analysis",
+        "label": "多 Agent 分析",
+        "description": "依次生成主分析与独立复核结果",
+        "schema_version": 3,
+        "presentation": {"lifecycle": "active", "scope": "generic"},
+    },
+    {
+        "id": "formal_storage_test_design",
+        "label": "正式存储测试设计",
+        "description": "源码与设计文档 -> 流程、风险清单和黑盒用例 -> 显式治理",
+        "schema_version": 3,
+        "presentation": {"lifecycle": "active", "scope": "professional"},
+    },
+)
+CANVAS_TEMPLATES = frozenset(item["id"] for item in _CANVAS_TEMPLATE_CATALOG)
 TECHNICAL_ID_FIELDS = frozenset(
     {
         "workflow_id",
@@ -36,6 +80,13 @@ TECHNICAL_ID_FIELDS = frozenset(
 
 class CanvasAuthoringError(ValueError):
     """A client attempted an invalid V3 authoring command."""
+
+
+def canvas_template_catalog() -> list[dict[str, Any]]:
+    """Return detached presentation metadata for the default V3 catalog."""
+    from copy import deepcopy
+
+    return deepcopy(list(_CANVAS_TEMPLATE_CATALOG))
 
 
 def new_workflow_id() -> str:
@@ -99,12 +150,17 @@ def build_canvas_graph(
             "role": "选择已创建的 CodeTalk 工作空间作为本次分析的源码输入。",
         },
     )
+    if template == "multi_agent_analysis":
+        return _build_multi_agent_graph(graph, source)
+    if template == "formal_storage_test_design":
+        return _build_formal_storage_graph(graph, source)
+
     agent = build_v3_node(
         "agent",
         label="源码分析",
         position={"x": 420, "y": 220},
         config={
-            "goal": "读取所选工作空间源码，基于真实文件证据完成分析，并且只生成已声明的报告。",
+            "goal": _generic_agent_goal(template),
             "provider_ref": "builtin-llm",
             "skill_ids": ["source-evidence-first"],
         },
@@ -119,8 +175,37 @@ def build_canvas_graph(
             "required": True,
         },
     )
-    graph["nodes"] = [source, agent, output]
-    graph["edges"] = [
+    graph["nodes"] = [source]
+    if template == "free_source_analysis":
+        _append_agent_input(
+            graph,
+            agent,
+            label="分析目标",
+            input_type="text",
+            required=True,
+            role="逐字保留用户本次希望分析的问题、范围和交付重点。",
+        )
+    elif template == "source_with_optional_design":
+        _append_agent_input(
+            graph,
+            agent,
+            label="设计文档",
+            input_type="file",
+            required=False,
+            role="可选的设计说明；未提供时仅根据源码分析。",
+        )
+    elif template == "change_impact_analysis":
+        _append_agent_input(
+            graph,
+            agent,
+            label="变更说明",
+            input_type="text",
+            required=True,
+            role="逐字保留用户输入的变更目标、补丁说明或影响问题。",
+        )
+    graph["nodes"].extend([agent, output])
+    graph["edges"].extend(
+        [
         build_v3_edge(
             source_node_id=source["id"],
             source_port_id=source["ports"]["outputs"][0]["id"],
@@ -132,6 +217,254 @@ def build_canvas_graph(
             source_port_id=agent["ports"]["outputs"][0]["id"],
             target_node_id=output["id"],
             target_port_id=output["ports"]["inputs"][0]["id"],
+        ),
+        ]
+    )
+    return graph
+
+
+def _generic_agent_goal(template: str) -> str:
+    if template == "source_with_optional_design":
+        return "读取源码和用户可选提供的设计文档，基于真实证据生成且只生成 report.md。"
+    if template == "change_impact_analysis":
+        return "逐字读取变更说明，定位受影响源码与行为，并且只生成 report.md。"
+    return "读取所选工作空间源码，基于真实文件证据完成分析，并且只生成已声明的报告。"
+
+
+def _append_agent_input(
+    graph: dict[str, Any],
+    agent: dict[str, Any],
+    *,
+    label: str,
+    input_type: str,
+    required: bool,
+    role: str,
+) -> None:
+    input_node = build_v3_node(
+        "input",
+        label=label,
+        position={"x": 80, "y": 390},
+        config={
+            "type": input_type,
+            "required": required,
+            "resolver": "local" if input_type == "file" else "manual",
+            "role": role,
+        },
+    )
+    target_port = _port(label, input_type, required=required)
+    agent["ports"]["inputs"].append(target_port)
+    agent["config"]["input_rendering"]["binding_order"].append(target_port["id"])
+    graph["nodes"].append(input_node)
+    graph["edges"].append(
+        build_v3_edge(
+            source_node_id=input_node["id"],
+            source_port_id=input_node["ports"]["outputs"][0]["id"],
+            target_node_id=agent["id"],
+            target_port_id=target_port["id"],
+        )
+    )
+
+
+def _build_multi_agent_graph(
+    graph: dict[str, Any], source: dict[str, Any]
+) -> dict[str, Any]:
+    agents = [
+        build_v3_node(
+            "agent",
+            label="主分析 Agent",
+            position={"x": 420, "y": 130},
+            config={
+                "goal": "基于真实源码证据完成主分析，只生成声明的主分析报告。",
+                "provider_ref": "builtin-llm",
+                "skill_ids": ["source-evidence-first"],
+            },
+        ),
+        build_v3_node(
+            "agent",
+            label="独立复核 Agent",
+            position={"x": 420, "y": 360},
+            config={
+                "goal": "独立读取同一源码，复核关键结论并只生成声明的复核报告。",
+                "provider_ref": "builtin-llm",
+                "skill_ids": ["source-evidence-first"],
+            },
+        ),
+    ]
+    outputs = [
+        build_v3_node(
+            "output",
+            label="主分析报告",
+            position={"x": 760, "y": 130},
+            config={"artifact": "analysis-primary.md", "required": True},
+        ),
+        build_v3_node(
+            "output",
+            label="独立复核报告",
+            position={"x": 760, "y": 360},
+            config={"artifact": "analysis-review.md", "required": True},
+        ),
+    ]
+    graph["nodes"] = [source, *agents, *outputs]
+    for agent, output in zip(agents, outputs):
+        graph["edges"].extend(
+            [
+                build_v3_edge(
+                    source_node_id=source["id"],
+                    source_port_id=source["ports"]["outputs"][0]["id"],
+                    target_node_id=agent["id"],
+                    target_port_id=agent["ports"]["inputs"][0]["id"],
+                ),
+                build_v3_edge(
+                    source_node_id=agent["id"],
+                    source_port_id=agent["ports"]["outputs"][0]["id"],
+                    target_node_id=output["id"],
+                    target_port_id=output["ports"]["inputs"][0]["id"],
+                ),
+            ]
+        )
+    return graph
+
+
+def _build_formal_storage_graph(
+    graph: dict[str, Any], source: dict[str, Any]
+) -> dict[str, Any]:
+    design = build_v3_node(
+        "input",
+        label="设计文档",
+        position={"x": 80, "y": 400},
+        config={
+            "type": "file",
+            "required": True,
+            "resolver": "local",
+            "role": "正式测试设计所依据的设计文档。",
+        },
+    )
+    agent = build_v3_node(
+        "agent",
+        label="源码与流程分析",
+        position={"x": 390, "y": 220},
+        config={
+            "goal": "依据源码和设计文档提取真实流程证据，供显式存储测试治理节点使用。",
+            "provider_ref": "builtin-llm",
+            "skill_ids": ["source-evidence-first"],
+        },
+    )
+    design_port = _port("设计文档", "file", required=True)
+    agent["ports"]["inputs"].append(design_port)
+    agent["config"]["input_rendering"]["binding_order"].append(design_port["id"])
+    agent["ports"]["outputs"] = [
+        _port("流程", "artifact", required=True, binding_key="flow"),
+        _port("源码证据", "artifact", required=True, binding_key="source_evidence"),
+    ]
+    governance = build_v3_node(
+        "governance",
+        label="存储测试设计",
+        position={"x": 690, "y": 300},
+        config={"handler_id": "storage_test_design"},
+    )
+    outputs = [
+        build_v3_node(
+            "output",
+            label="流程说明",
+            position={"x": 1010, "y": 80},
+            config={"artifact": "flow.md", "media_type": "text/markdown"},
+        ),
+        build_v3_node(
+            "output",
+            label="源码证据",
+            position={"x": 1010, "y": 220},
+            config={
+                "artifact": "source-evidence.json",
+                "media_type": "application/json",
+                "schema": {"type": "array"},
+            },
+        ),
+        build_v3_node(
+            "output",
+            label="SFMEA 风险清单",
+            position={"x": 1010, "y": 380},
+            config={
+                "artifact": "sfmea.json",
+                "media_type": "application/json",
+                "schema": {"type": "array"},
+            },
+        ),
+        build_v3_node(
+            "output",
+            label="黑盒测试用例",
+            position={"x": 1010, "y": 540},
+            config={
+                "artifact": "black-box-cases.json",
+                "media_type": "application/json",
+                "schema": {"type": "array"},
+            },
+        ),
+    ]
+    for output in outputs:
+        output["ports"]["inputs"][0]["type"] = "artifact"
+    validators = [
+        build_v3_node(
+            "validator",
+            label="SFMEA 验收",
+            position={"x": 1290, "y": 300},
+            config={
+                "handler_id": "sfmea",
+                "required_outputs": [outputs[2]["config"]["output_id"]],
+            },
+        ),
+        build_v3_node(
+            "validator",
+            label="黑盒用例验收",
+            position={"x": 1290, "y": 480},
+            config={
+                "handler_id": "black_box",
+                "required_outputs": [outputs[3]["config"]["output_id"]],
+            },
+        ),
+    ]
+    graph["nodes"] = [source, design, agent, governance, *outputs, *validators]
+    graph["edges"] = [
+        build_v3_edge(
+            source_node_id=source["id"],
+            source_port_id=source["ports"]["outputs"][0]["id"],
+            target_node_id=agent["id"],
+            target_port_id=agent["ports"]["inputs"][0]["id"],
+        ),
+        build_v3_edge(
+            source_node_id=design["id"],
+            source_port_id=design["ports"]["outputs"][0]["id"],
+            target_node_id=agent["id"],
+            target_port_id=design_port["id"],
+        ),
+        build_v3_edge(
+            source_node_id=agent["id"],
+            source_port_id=agent["ports"]["outputs"][0]["id"],
+            target_node_id=outputs[0]["id"],
+            target_port_id=outputs[0]["ports"]["inputs"][0]["id"],
+        ),
+        build_v3_edge(
+            source_node_id=agent["id"],
+            source_port_id=agent["ports"]["outputs"][1]["id"],
+            target_node_id=outputs[1]["id"],
+            target_port_id=outputs[1]["ports"]["inputs"][0]["id"],
+        ),
+        build_v3_edge(
+            source_node_id=agent["id"],
+            source_port_id=agent["ports"]["outputs"][1]["id"],
+            target_node_id=governance["id"],
+            target_port_id=governance["ports"]["inputs"][0]["id"],
+        ),
+        build_v3_edge(
+            source_node_id=governance["id"],
+            source_port_id=governance["ports"]["outputs"][0]["id"],
+            target_node_id=outputs[2]["id"],
+            target_port_id=outputs[2]["ports"]["inputs"][0]["id"],
+        ),
+        build_v3_edge(
+            source_node_id=governance["id"],
+            source_port_id=governance["ports"]["outputs"][1]["id"],
+            target_node_id=outputs[3]["id"],
+            target_port_id=outputs[3]["ports"]["inputs"][0]["id"],
         ),
     ]
     return graph

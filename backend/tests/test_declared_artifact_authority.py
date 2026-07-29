@@ -268,6 +268,8 @@ def test_handler_capabilities_are_generic_and_shared_by_workflow_api():
     assert registry == {
         "handlers": {
             "agent": {"versions": [1], "kind": "agent"},
+            "human_approval": {"versions": [1], "kind": "human_approval"},
+            "subagent": {"versions": [1], "kind": "subagent"},
             "artifact_exists": {"versions": [1], "kind": "validator"},
             "json_schema": {"versions": [1], "kind": "validator"},
             "source_evidence": {"versions": [1], "kind": "validator"},

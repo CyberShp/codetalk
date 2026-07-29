@@ -101,6 +101,8 @@ class CliProviderAdapter:
             "resume_args": [],
             "timeout_seconds": int(request.timeout_seconds or 120),
             "idle_complete_seconds": max(1, int(request.idle_timeout_seconds or 5)),
+            "activity_timeout_seconds": max(1, int(request.idle_timeout_seconds or 5)),
+            "total_timeout_seconds": int(request.timeout_seconds or 120),
             "mcp_profile": str(request.mcp_profile or ""),
             "requires_network": bool(request.requires_network),
             "env": {
@@ -241,8 +243,10 @@ class CliProviderAdapter:
         runtime["env"] = dict(runtime.get("env") or {})
         if timeout_sec > 0:
             runtime["timeout_seconds"] = int(timeout_sec)
+            runtime["total_timeout_seconds"] = int(timeout_sec)
         if idle_timeout_sec is not None and idle_timeout_sec > 0:
             runtime["idle_complete_seconds"] = max(1, int(idle_timeout_sec))
+            runtime["activity_timeout_seconds"] = max(1, int(idle_timeout_sec))
 
         execution = _ActiveExecution()
         with self._active_lock:

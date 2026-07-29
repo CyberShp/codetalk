@@ -21,9 +21,20 @@ from app.services.workflow_run_status import (
 )
 from app.services.workbench_task_run import validate_run_snapshot_v3
 from app.services.workbench_task_run_events import WorkbenchTaskRunEventStore
+from app.services.workflow_migration_policy import (
+    is_v3_attempt_candidate,
+    workflow_v3_writes_enabled,
+)
 
 
-RecoveryAction = Literal["resume", "waiting_for_input", "timed_out", "cancelled", "failed"]
+RecoveryAction = Literal[
+    "resume",
+    "waiting_for_input",
+    "timed_out",
+    "cancelled",
+    "failed",
+    "read_only",
+]
 _RECOVERABLE_STATUSES = frozenset({"queued", "running", "waiting_for_input"})
 _PUBLIC_RECOVERY_FAILURE_MESSAGE = "工作流恢复校验失败，请重新运行。"
 logger = logging.getLogger(__name__)
@@ -57,6 +68,16 @@ def reconcile_v3_startup_recovery(
             continue
         status = _status(payload)
         if status not in _RECOVERABLE_STATUSES or not _is_v3_candidate(attempt_dir, payload):
+            continue
+        if not workflow_v3_writes_enabled():
+            decisions.append(
+                V3StartupRecoveryDecision(
+                    task_run_id,
+                    "read_only",
+                    (),
+                    "workflow_v3_read_only",
+                )
+            )
             continue
         try:
             contract = _load_frozen_v3_contract(
@@ -468,28 +489,7 @@ def _mark_failed(store: WorkbenchTaskRunEventStore, task_run_id: str, reason: st
 
 
 def _is_v3_candidate(attempt_dir: Path, task_payload: dict[str, Any]) -> bool:
-    snapshot = _read_json(attempt_dir / "run_snapshot_v3.json")
-    components = snapshot.get("components") if isinstance(snapshot, dict) else None
-    if isinstance(components, dict) and "v3_runtime_contract" in components:
-        return True
-    if (attempt_dir / "compiled_definition.json").exists():
-        # A partial write or tampered JSON still identifies this as an attempted
-        # V3 run. Treating it as legacy would silently discard recoverability.
-        return True
-    for candidate in (
-        task_payload.get("workflow_snapshot"),
-        task_payload.get("task_bundle"),
-        _read_json(attempt_dir / "compiled_definition.json"),
-        _read_json(attempt_dir / "compiled_plan.json"),
-    ):
-        if isinstance(candidate, dict) and candidate.get("compiled_contract_version") == 3:
-            return True
-        if isinstance(candidate, dict):
-            for key in ("compiled_definition", "compiled_plan"):
-                nested = candidate.get(key)
-                if isinstance(nested, dict) and nested.get("compiled_contract_version") == 3:
-                    return True
-    return False
+    return is_v3_attempt_candidate(attempt_dir, task_payload)
 
 
 def _status(payload: dict[str, Any]) -> str:

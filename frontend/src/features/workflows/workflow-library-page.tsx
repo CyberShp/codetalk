@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { workflowsApi } from "@/lib/api/workflows";
-import type { WorkflowListItem } from "@/lib/types/workflow";
+import type { WorkflowListItem, WorkflowVersion } from "@/lib/types/workflow";
 
 export function WorkflowLibraryPage() {
   const [items, setItems] = useState<WorkflowListItem[]>([]);
@@ -42,7 +42,7 @@ export function WorkflowLibraryPage() {
     if (status !== "all" && header.status !== status) return false;
     if (draftFilter === "yes" && !header.current_draft_version_id) return false;
     if (draftFilter === "no" && header.current_draft_version_id) return false;
-    const haystack = `${item.name} ${item.id} ${item.description ?? ""}`.toLowerCase();
+    const haystack = `${item.presentation?.label ?? item.name} ${item.description ?? ""}`.toLowerCase();
     return haystack.includes(query.trim().toLowerCase());
   }), [draftFilter, items, query, status]);
 
@@ -58,7 +58,7 @@ export function WorkflowLibraryPage() {
       </header>
 
       <section className="ct-v2-filter-bar" aria-label="工作流筛选">
-        <label className="ct-v2-search-field"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称、ID 或描述" /></label>
+        <label className="ct-v2-search-field"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称或描述" /></label>
         <label><span>状态</span><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="active">使用中</option><option value="archived">已归档</option><option value="all">全部</option></select></label>
         <label><span>草稿</span><select value={draftFilter} onChange={(event) => setDraftFilter(event.target.value)}><option value="all">全部</option><option value="yes">有草稿</option><option value="no">无草稿</option></select></label>
         <output>{visible.length} 个工作流</output>
@@ -84,27 +84,44 @@ export function WorkflowLibraryPage() {
 function WorkflowRow({ item, onChanged }: { item: WorkflowListItem; onChanged: () => Promise<void> }) {
   const header = item.v2;
   if (!header) return null;
+  const displayName = item.presentation?.label ?? item.name;
   const editDraft = header.current_draft_version_id;
+  const migrationOnly = item.editor_mode === "read_only_legacy" || item.editor_mode === "legacy";
   const createDraft = async () => {
-    await workflowsApi.createDraft(item.id, header.published_version_id ?? undefined);
+    const publishedId = header.published_version_id;
+    if (publishedId) {
+      const published = await workflowsApi.version(item.id, publishedId);
+      if (requiresMigrationPreview(published)) {
+        window.location.href = `/workflows/${encodeURIComponent(item.id)}/versions/${encodeURIComponent(publishedId)}`;
+        return;
+      }
+    }
+    await workflowsApi.createDraft(item.id, publishedId ?? undefined);
     await onChanged();
   };
   return (
     <tr>
-      <td><Link href={`/workflows/${encodeURIComponent(item.id)}`}><strong>{item.name}</strong><small>{item.id}</small></Link></td>
+      <td><Link href={`/workflows/${encodeURIComponent(item.id)}`}><strong>{displayName}</strong>{item.presentation?.lifecycle === "legacy" && <span className="ct-v2-workflow-badge is-legacy">Legacy</span>}{item.presentation?.scope === "professional" && <span className="ct-v2-workflow-badge">专业</span>}</Link></td>
       <td><span className={`ct-v2-status is-${header.status}`}>{header.status === "active" ? "使用中" : "已归档"}</span></td>
       <td>{header.published_version_id ? `V${item.version || 1}` : "未发布"}</td>
       <td>{editDraft ? <span className="ct-v2-status is-draft">编辑中</span> : "无草稿"}</td>
       <td><time dateTime={header.updated_at}>{formatDate(header.updated_at)}</time></td>
       <td>
         <div className="ct-v2-row-actions">
-          {editDraft ? <Link href={`/workflows/${encodeURIComponent(item.id)}`} title="编辑草稿"><Edit3 size={15} /></Link> : header.status === "active" && <button type="button" onClick={() => void createDraft()} title="创建新草稿"><CopyPlus size={15} /></button>}
+          {editDraft ? <Link href={`/workflows/${encodeURIComponent(item.id)}`} title="编辑草稿"><Edit3 size={15} /></Link> : header.status === "active" && <button type="button" onClick={() => void createDraft()} title={migrationOnly ? "查看 V3 迁移预览" : "创建新草稿"}><CopyPlus size={15} /></button>}
           <Link href={`/workflows/${encodeURIComponent(item.id)}/versions`} title="查看版本"><History size={15} /></Link>
           {header.status === "active" && <button type="button" onClick={async () => { if (!window.confirm(`归档“${item.name}”？历史版本和运行不会删除。`)) return; await workflowsApi.archive(item.id); await onChanged(); }} title="归档"><Archive size={15} /></button>}
         </div>
       </td>
     </tr>
   );
+}
+
+function requiresMigrationPreview(version: WorkflowVersion) {
+  return version.editor_mode === "read_only_legacy" ||
+    version.editor_mode === "legacy" ||
+    version.authoring_graph.schema_version === 1 ||
+    version.authoring_graph.schema_version === 2;
 }
 
 function formatDate(value: string) {

@@ -71,10 +71,7 @@ export function WorkflowDesigner({ workflowId }: { workflowId: string }) {
         const publishedId = detail.v2?.published_version_id;
         if (publishedId) {
           const published = await workflowsApi.version(workflowId, publishedId);
-          if (
-            published.editor_mode === "read_only_legacy" ||
-            published.authoring_graph.schema_version === 1
-          ) {
+          if (requiresMigrationPreview(published)) {
             router.replace(
               `/workflows/${encodeURIComponent(workflowId)}/versions/${encodeURIComponent(publishedId)}`,
             );
@@ -144,7 +141,7 @@ export function WorkflowDesigner({ workflowId }: { workflowId: string }) {
       <div className="ct-v2-empty-state">
         <FlaskConical size={28} />
         <h1>{copySourceId ? "内置工作流不可直接修改" : "已发布版本不可直接修改"}</h1>
-        <p>{copySourceId ? "另存为自定义工作流后，将创建独立的 V3 画布副本，原始发布版本保持只读。" : "创建一个基于当前发布版本的新草稿，再进入设计器。"}</p>
+        <p>{copySourceId ? "先查看迁移预览并明确确认后，才会创建独立的 V3 画布副本；原始发布版本保持只读。" : "创建一个基于当前发布版本的新草稿，再进入设计器。"}</p>
         <div>
           <Link href="/workflows">返回工作流库</Link>
           <button
@@ -156,8 +153,7 @@ export function WorkflowDesigner({ workflowId }: { workflowId: string }) {
                   const versions = await workflowsApi.versions(copySourceId);
                   const source = versions.items.find((item) => item.state === "published");
                   if (!source) throw new Error("该内置工作流缺少可复制的发布版本");
-                  const copied = await workflowsApi.copyVersionToV3(copySourceId, source.version_id);
-                  router.replace(copied.designer_url);
+                  router.replace(`/workflows/${encodeURIComponent(copySourceId)}/versions/${encodeURIComponent(source.version_id)}`);
                   return;
                 }
                 await workflowsApi.createDraft(
@@ -166,11 +162,11 @@ export function WorkflowDesigner({ workflowId }: { workflowId: string }) {
                 );
                 await loadWorkflow();
               } catch (cause) {
-                setError(cause instanceof Error ? cause.message : copySourceId ? "另存为自定义工作流失败" : "创建草稿失败");
+                setError(cause instanceof Error ? cause.message : copySourceId ? "迁移预览打开失败" : "创建草稿失败");
               }
             }}
           >
-            {copySourceId ? "另存为自定义工作流" : "创建新草稿"}
+            {copySourceId ? "查看 V3 迁移预览" : "创建新草稿"}
           </button>
         </div>
       </div>
@@ -191,6 +187,13 @@ export function WorkflowDesigner({ workflowId }: { workflowId: string }) {
       onRetryResource={loadResource}
     />
   );
+}
+
+function requiresMigrationPreview(version: WorkflowVersion) {
+  return version.editor_mode === "read_only_legacy" ||
+    version.editor_mode === "legacy" ||
+    version.authoring_graph.schema_version === 1 ||
+    version.authoring_graph.schema_version === 2;
 }
 
 function LoadedWorkflowDesigner({

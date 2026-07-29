@@ -27,6 +27,28 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/settings", tags=["设置管理"])
 
 
+def _network_policy_migration_preview() -> dict[str, object]:
+    """Describe legacy network-mode migration without modifying deployment settings."""
+    from app.config import settings
+
+    effective_mode = effective_network_mode()
+    legacy_source = settings.network_mode is None
+    return {
+        "contract_version": 1,
+        "source": "legacy_intranet_network_mode" if legacy_source else "network_mode",
+        "effective_mode": effective_mode,
+        "read_only": True,
+        "automatic_write": False,
+        "admin_confirmation_required": legacy_source,
+        "admin_guidance": (
+            "当前有效网络模式仍来自旧版 intranet_network_mode 配置。"
+            "请由管理员确认并显式配置 network_mode；预览不会自动写入部署设置。"
+            if legacy_source
+            else None
+        ),
+    }
+
+
 def _deployment_network_policy_snapshot() -> dict[str, object]:
     """Return a read-only, credential-free deployment policy summary."""
     from app.config import settings
@@ -53,6 +75,7 @@ def _deployment_network_policy_snapshot() -> dict[str, object]:
         "cli_block_reason": None if cli_context.allowed else cli_context.reason,
         "cli_remediation": None if cli_context.allowed else cli_context.remediation,
         "source": "deployment",
+        "migration_preview": _network_policy_migration_preview(),
     }
 
 

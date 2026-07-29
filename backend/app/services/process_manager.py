@@ -1,6 +1,7 @@
 """Process manager for spawning, monitoring, and restarting local tool processes."""
 
 import asyncio
+import copy
 import errno
 import logging
 import os
@@ -322,7 +323,7 @@ class ProcessManager:
             self._processes[name] = ManagedProcess(
                 name=name,
                 display_name=cfg["display_name"],
-                _config=cfg,
+                _config=copy.deepcopy(cfg),
             )
 
     @classmethod

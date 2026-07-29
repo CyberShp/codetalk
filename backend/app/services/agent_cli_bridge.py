@@ -575,7 +575,12 @@ async def stream_agent_runtime(
         _cleanup_owned_artifact_dir(owned_artifact_dir)
         raise AgentRuntimeError(f"不支持的 prompt_transport: {prompt_transport}")
     timeout = int(runtime.get("timeout_seconds") or 120)
-    hard_timeout = max(3600, timeout * 4)
+    configured_total_timeout = int(runtime.get("total_timeout_seconds") or 0)
+    hard_timeout = (
+        max(1, configured_total_timeout)
+        if configured_total_timeout > 0
+        else max(3600, timeout * 4)
+    )
     isolate_process_group = _isolate_agent_process_group()
     process_kwargs: dict[str, Any] = {}
     if isolate_process_group:
@@ -1241,7 +1246,14 @@ async def _read_stdout(
     runtime = runtime or {}
     completion_mode = _completion_mode(runtime)
     idle_seconds = max(1, int(runtime.get("idle_complete_seconds") or 5))
-    activity_timeout_seconds = max(1, int(runtime.get("timeout_seconds") or 120))
+    activity_timeout_seconds = max(
+        1,
+        int(
+            runtime.get("activity_timeout_seconds")
+            or runtime.get("timeout_seconds")
+            or 120
+        ),
+    )
     sentinel = str(runtime.get("sentinel_text") or "").strip()
     saw_output = False
 

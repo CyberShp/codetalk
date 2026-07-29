@@ -110,6 +110,16 @@ export interface GeneralSettings {
   behavior_claim_audit_model_id: string;
 }
 
+export interface DeploymentNetworkMigrationPreview {
+  contract_version: number;
+  source: "network_mode" | "legacy_intranet_network_mode";
+  effective_mode: "developer" | "intranet" | "strict_compliance";
+  read_only: true;
+  automatic_write: false;
+  admin_confirmation_required: boolean;
+  admin_guidance: string | null;
+}
+
 /** Deployment-owned network posture. This is deliberately read-only in the UI. */
 export interface DeploymentNetworkPolicy {
   mode: "developer" | "intranet" | "strict_compliance";
@@ -127,6 +137,7 @@ export interface DeploymentNetworkPolicy {
   cli_block_reason: string | null;
   cli_remediation: string | null;
   source: "deployment";
+  migration_preview: DeploymentNetworkMigrationPreview;
 }
 
 export type AgentRuntimePromptTransport =

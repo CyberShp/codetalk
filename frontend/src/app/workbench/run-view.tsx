@@ -5,6 +5,8 @@ import type { WorkbenchTaskArtifact } from "@/lib/types";
 
 export function RunCockpitView({ scope }: { scope: WorkbenchController }) {
   const { AlertTriangle, ArtifactPreviewCard, ClipboardList, Database, Download, Library, Loader2, MessageSquareText, Panel, PlayCircle, RefreshCw, Search, X, acceptanceCodetalkProviderIssues, acceptanceInputRedactionIssues, acceptanceInstructionPolicyIssues, acceptanceIssueLabel, acceptanceProviderIssues, acceptanceWorkflowOutputIssues, agentMcpRequestSummary, agentRunActionBusy, applyWorkspaceSelection, artifactAudience, artifactAudienceGroups, artifactAudienceLabel, artifactContent, artifactManifest, artifactShortName, blackBoxGenerationPolicySummary, busyAction, cancelPreparedTaskRun, compactReasonLabel, createAndRunTaskRun, currentApiBase, evidenceValidationSummary, executePreparedAgentRun, executePreparedWorkflow, executeTaskRerunPlan, executionInputSummary, executionResults, failureRetryContextSummary, fastContextDecisionSummary, filledInputCount, generateTaskAcceptanceAudit, importPreparedSemanticOutputs, inputContextSummary, inputMaterialsSummary, inputTextValue, inputsJson, isFileLikeWorkflowInput, isPatchLikeWorkflowInput, isTaskRunActiveStatus, loadPreparedArtifacts, loadTaskRerunPlan, materializationAuditOutputs, materializePreparedAgentRun, materializePreparedWorkflowOutputs, materializeResults, memoryArtifactSummary, openPreparedConversation, openingConversation, parsedPrepareInputs, prepareTaskRun, preparedProviderReadiness, preparedRun, preparedRunSnapshotSummary, previewArtifact, prioritizedAuditArtifacts, providerDisplayLabel, providerOverride, providerReadinessSummary, providerStatusDisplayLabel, rejectedOutputLabel, rejectedOutputReason, replayPlanSummary, repoPath, requiredInputCount, restoreExistingTaskRun, runExecutorProviderOptions, runPanelCapabilitySummary, runPanelDeliverables, runPanelExecutionNotice, runPanelFailureReasons, runPanelProgress, runPanelStatus, runPhaseCards, runStatusDisplayLabel, safeArtifactDownloadFilename, selectRunWorkflow, selectedAgentSkillIds, selectedAgentSkillInstructions, selectedAgentStep, selectedProviderCapability, selectedRunMcpProfile, selectedRunProvider, selectedWorkflowAudit, selectedWorkflowId, selectedWorkflowInputs, selectedWorkflowOutputs, semanticImportOutputIds, semanticOutputImport, setActiveWorkbenchView, setInputsJson, setProviderOverride, taskAcceptanceAudit, taskRerunExecution, taskRerunHistory, taskRerunPlan, taskRerunPlanValidation, taskRunActionBusy, taskRunEventDetail, taskRunEventTitle, taskRunEventTone, taskRunEvents, taskRunRuntimeStatus, taskRuns, testActivityQuality, updatePrepareInput, uploadPrepareInputFile, validatePreparedAgentRun, validationResults, visibleDeliveryArtifacts, visibleTaskRunEvents, visibleWorkflowInputs, workflowAuditWarningLabel, workflowDisplayName, workflowExecution, workflowInputDisplayName, workflowInputsUpdated, workflowOptions, workflowOutputDisplayName, workflowOutputMaterializationSummary, workflowOutputMaterialize, workspaceId, workspaces } = scope;
+  const isV3PreparedRun =
+    preparedRun?.workflow_snapshot.compiled_contract_version === 3;
   return (<Panel title="任务运行" icon={<PlayCircle size={16} />} className="ct-run-cockpit-panel">
             <div className="grid gap-4 xl:grid-cols-[minmax(380px,0.95fr)_minmax(440px,1.05fr)] xl:items-start">
               <div className="min-w-0 space-y-3">
@@ -3173,58 +3175,64 @@ export function RunCockpitView({ scope }: { scope: WorkbenchController }) {
                                 {agentRun.provider} / {agentRun.run_id}
                               </p>
                             </div>
-                            <button
-                              onClick={() => executePreparedAgentRun(stepId)}
-                              disabled={disableAgentActions}
-                              className="inline-flex items-center gap-1.5 rounded bg-primary px-2.5 py-1.5 text-xs font-medium text-on-primary transition-opacity hover:opacity-90 disabled:opacity-50"
-                            >
-                              {isExecuting ? (
-                                <Loader2 size={12} className="animate-spin" />
-                              ) : (
-                                <PlayCircle size={12} />
-                              )}
-                              Execute
-                            </button>
-                            <button
-                              onClick={() =>
-                                validatePreparedAgentRun(
-                                  stepId,
-                                  requiredArtifacts,
-                                )
-                              }
-                              disabled={
-                                disableAgentActions ||
-                                requiredArtifacts.length === 0
-                              }
-                              className="inline-flex items-center gap-1.5 rounded bg-surface px-2.5 py-1.5 text-xs font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
-                            >
-                              {isValidating ? (
-                                <Loader2 size={12} className="animate-spin" />
-                              ) : (
-                                <Search size={12} />
-                              )}
-                              Validate
-                            </button>
-                            <button
-                              onClick={() =>
-                                materializePreparedAgentRun(
-                                  stepId,
-                                  requiredArtifacts,
-                                )
-                              }
-                              disabled={
-                                disableAgentActions ||
-                                requiredArtifacts.length === 0
-                              }
-                              className="inline-flex items-center gap-1.5 rounded bg-surface px-2.5 py-1.5 text-xs font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
-                            >
-                              {isMaterializing ? (
-                                <Loader2 size={12} className="animate-spin" />
-                              ) : (
-                                <Database size={12} />
-                              )}
-                              Materialize
-                            </button>
+                            {!isV3PreparedRun && (
+                              <button
+                                onClick={() => executePreparedAgentRun(stepId)}
+                                disabled={disableAgentActions}
+                                className="inline-flex items-center gap-1.5 rounded bg-primary px-2.5 py-1.5 text-xs font-medium text-on-primary transition-opacity hover:opacity-90 disabled:opacity-50"
+                              >
+                                {isExecuting ? (
+                                  <Loader2 size={12} className="animate-spin" />
+                                ) : (
+                                  <PlayCircle size={12} />
+                                )}
+                                Execute
+                              </button>
+                            )}
+                            {!isV3PreparedRun && (
+                              <button
+                                onClick={() =>
+                                  validatePreparedAgentRun(
+                                    stepId,
+                                    requiredArtifacts,
+                                  )
+                                }
+                                disabled={
+                                  disableAgentActions ||
+                                  requiredArtifacts.length === 0
+                                }
+                                className="inline-flex items-center gap-1.5 rounded bg-surface px-2.5 py-1.5 text-xs font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
+                              >
+                                {isValidating ? (
+                                  <Loader2 size={12} className="animate-spin" />
+                                ) : (
+                                  <Search size={12} />
+                                )}
+                                Validate
+                              </button>
+                            )}
+                            {!isV3PreparedRun && (
+                              <button
+                                onClick={() =>
+                                  materializePreparedAgentRun(
+                                    stepId,
+                                    requiredArtifacts,
+                                  )
+                                }
+                                disabled={
+                                  disableAgentActions ||
+                                  requiredArtifacts.length === 0
+                                }
+                                className="inline-flex items-center gap-1.5 rounded bg-surface px-2.5 py-1.5 text-xs font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
+                              >
+                                {isMaterializing ? (
+                                  <Loader2 size={12} className="animate-spin" />
+                                ) : (
+                                  <Database size={12} />
+                                )}
+                                Materialize
+                              </button>
+                            )}
                           </div>
                           {requiredArtifacts.length > 0 && (
                             <p className="mt-1 text-on-surface-variant">

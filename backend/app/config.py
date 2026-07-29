@@ -263,6 +263,10 @@ class Settings(BaseSettings):
     # runs stay readable through compatibility endpoints, but an environment
     # switch must not resurrect a second mutable workflow experience.
     workbench_v2_enabled: Literal[True] = True
+    workflow_v3_writes_enabled: bool = Field(
+        default=True,
+        validation_alias="CODETALK_WORKFLOW_V3_WRITES_ENABLED",
+    )
 
     # Phase 6 features are independently reversible. Disabling a capability
     # removes it from authoring/publish contracts; runtime paths also enforce

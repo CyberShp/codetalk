@@ -32,6 +32,10 @@ from app.services.workflow_presets import (
     reserved_builtin_workflow_ids,
 )
 from app.services.workflow_version_store import WorkflowVersionStore, workflow_header_status
+from app.services.workflow_migration_policy import (
+    WORKFLOW_V3_READ_ONLY_DETAIL,
+    workflow_v3_writes_enabled,
+)
 
 
 router = APIRouter(prefix="/api/workbench/tasks", tags=["workbench-v2-tasks"])
@@ -97,6 +101,11 @@ def _require_v2() -> None:
     # Kept as a compatibility seam for callers of the versioned API. The
     # versioned Workbench is now the only runtime and cannot be disabled.
     return None
+
+
+def _require_v3_writes() -> None:
+    if not workflow_v3_writes_enabled():
+        raise HTTPException(status_code=409, detail=WORKFLOW_V3_READ_ONLY_DETAIL)
 
 
 @router.get("/history/runs")
@@ -169,6 +178,7 @@ async def list_tasks(
 @router.post("", status_code=201)
 async def create_task(payload: TaskCreateRequest) -> dict[str, Any]:
     _require_v2()
+    _require_v3_writes()
     _require_workflow_available_for_new_task(payload.workflow_id)
     version = _published_version(
         payload.workflow_id,
@@ -228,6 +238,7 @@ async def get_task(task_id: str) -> dict[str, Any]:
 @router.patch("/{task_id}")
 async def update_task(task_id: str, payload: TaskUpdateRequest) -> dict[str, Any]:
     _require_v2()
+    _require_v3_writes()
     current = _task(task_id)
     changes = payload.model_dump(exclude_unset=True)
     version = None
@@ -265,6 +276,7 @@ async def update_task(task_id: str, payload: TaskUpdateRequest) -> dict[str, Any
 @router.post("/{task_id}/archive")
 async def archive_task(task_id: str) -> dict[str, Any]:
     _require_v2()
+    _require_v3_writes()
     task = _task(task_id)
     if task.last_run_id:
         status = WorkbenchTaskRunEventStore(
@@ -278,6 +290,7 @@ async def archive_task(task_id: str) -> dict[str, Any]:
 @router.post("/{task_id}/clone", status_code=201)
 async def clone_task(task_id: str, payload: TaskCloneRequest) -> dict[str, Any]:
     _require_v2()
+    _require_v3_writes()
     source = _task(task_id)
     _require_workflow_available_for_new_task(source.workflow_id)
     _published_version(
@@ -298,6 +311,7 @@ async def list_task_attempts(task_id: str) -> dict[str, Any]:
 @router.post("/{task_id}/compile")
 async def compile_task(task_id: str) -> dict[str, Any]:
     _require_v2()
+    _require_v3_writes()
     task = _task(task_id)
     version = _published_version(task.workflow_id, task.workflow_version_id)
     _validate_ready_inputs(version.compiled_definition or {}, task.input_values)
@@ -315,6 +329,7 @@ async def compile_task(task_id: str) -> dict[str, Any]:
 @router.post("/{task_id}/runs", status_code=201)
 async def create_task_attempt(task_id: str, payload: TaskRunCreateRequest) -> dict[str, Any]:
     _require_v2()
+    _require_v3_writes()
     task = _task(task_id)
     if task.lifecycle_status != "ready":
         raise HTTPException(status_code=409, detail="只有就绪任务可以启动运行")
@@ -896,6 +911,12 @@ def _task_payload(task: WorkbenchTask) -> dict[str, Any]:
         payload["workflow_name"] = version_store().get_workflow(task.workflow_id).name
     except KeyError:
         payload["workflow_name"] = "工作流不可用"
+    try:
+        payload["workflow_version_number"] = version_store().get_version(
+            task.workflow_version_id
+        ).version_number
+    except KeyError:
+        payload["workflow_version_number"] = None
     return payload
 
 

@@ -21,7 +21,7 @@ import traceback
 import uuid
 import zipfile
 from copy import deepcopy
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
@@ -92,15 +92,23 @@ from app.services.workflow_dsl import (
 
 from app.services.workflow_presets import (
     active_builtin_workflow_presets,
+    builtin_workflow_presets_for_bootstrap,
     canonical_builtin_workflow_preset_id,
     get_workflow_preset,
     install_workflow_preset,
     reserved_builtin_workflow_ids,
     restore_builtin_workflow_presets,
+    workflow_preset_presentation,
 )
 from app.services.workflow_version_store import workflow_header_status
 from app.services.workflow_node_registry import node_registry_payload
 from app.services.workflow_authoring_factory import backend_commit_sha
+from app.services.workflow_migration_policy import (
+    WORKFLOW_V3_READ_ONLY_DETAIL,
+    WORKFLOW_V3_SCHEDULER_AUTHORITY_DETAIL,
+    is_v3_attempt_candidate,
+    workflow_v3_writes_enabled,
+)
 from app.services.workflow_run_status import (
     ARTIFACT_VALIDATION_STATUSES,
     GOVERNANCE_STATUSES,
@@ -117,6 +125,49 @@ from app.services.workflow_execution_lease import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/workbench", tags=["agent-workbench"])
+
+
+def _require_v3_writes() -> None:
+    if not workflow_v3_writes_enabled():
+        raise HTTPException(status_code=409, detail=WORKFLOW_V3_READ_ONLY_DETAIL)
+
+
+def _is_v3_task_run(task_run: Any) -> bool:
+    return is_v3_attempt_candidate(task_run.artifact_dir, task_run)
+
+
+def _require_v3_task_run_writes(task_run: Any) -> None:
+    if _is_v3_task_run(task_run) and not workflow_v3_writes_enabled():
+        raise HTTPException(status_code=409, detail=WORKFLOW_V3_READ_ONLY_DETAIL)
+
+
+def _require_task_agent_action_authority(task_run: Any) -> None:
+    _require_v3_task_run_writes(task_run)
+    if _is_v3_task_run(task_run):
+        raise HTTPException(
+            status_code=409,
+            detail=WORKFLOW_V3_SCHEDULER_AUTHORITY_DETAIL,
+        )
+
+
+def _task_run_for_agent_action(task_run_id: str) -> Any | None:
+    try:
+        task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    except KeyError:
+        attempt_dir = _task_runs_dir() / _safe_segment(task_run_id, "task_run_id")
+        if is_v3_attempt_candidate(attempt_dir):
+            if not workflow_v3_writes_enabled():
+                raise HTTPException(
+                    status_code=409,
+                    detail=WORKFLOW_V3_READ_ONLY_DETAIL,
+                )
+            raise HTTPException(
+                status_code=409,
+                detail=WORKFLOW_V3_SCHEDULER_AUTHORITY_DETAIL,
+            )
+        return None
+    _require_task_agent_action_authority(task_run)
+    return task_run
 
 _TASK_RUN_TERMINAL_STATUSES = {
     "completed",
@@ -2253,6 +2304,7 @@ def _safe_segment(value: str, label: str) -> str:
 
 @router.post("/workflows", status_code=201)
 async def save_workflow(payload: dict[str, Any]) -> dict[str, Any]:
+    _require_v3_writes()
     if settings.workbench_v2_enabled and isinstance(payload.get("authoring_graph"), dict):
         from dataclasses import asdict
 
@@ -2312,6 +2364,7 @@ async def audit_workflow_draft(payload: dict[str, Any]) -> dict[str, Any]:
 
 @router.post("/workflows/generate-draft")
 async def generate_workflow_draft(payload: GenerateWorkflowDraftRequest) -> dict[str, Any]:
+    _require_v3_writes()
     prompt_text = payload.prompt.strip()
     generation_id = f"workflow_gen_{uuid.uuid4().hex}"
     messages = _workflow_generation_messages(
@@ -2412,7 +2465,10 @@ async def list_workflows() -> list[dict[str, Any]]:
             if str(item.get("id") or "") not in archived_v2_ids
         ]
     version_store.ensure_legacy_published_workflows(
-        [dict(preset["definition"]) for preset in active_builtin_workflow_presets()]
+        [
+            dict(preset["definition"])
+            for preset in builtin_workflow_presets_for_bootstrap()
+        ]
     )
     version_store.retire_workflows(
         reserved_builtin_workflow_ids().difference(_active_builtin_workflow_ids())
@@ -2450,6 +2506,7 @@ async def list_workflows() -> list[dict[str, Any]]:
 
 @router.post("/workflows/restore-builtins")
 async def restore_builtin_workflows() -> dict[str, Any]:
+    _require_v3_writes()
     store = _workflow_store()
     restored = restore_builtin_workflow_presets(store)
     return {
@@ -2673,6 +2730,7 @@ async def get_core_workflow_readiness() -> dict[str, Any]:
 
 @router.post("/workflow-presets/{preset_id}/install", status_code=201)
 async def install_builtin_workflow_preset(preset_id: str) -> dict[str, Any]:
+    _require_v3_writes()
     _require_workflow_available_for_new_run(preset_id)
     try:
         workflow = install_workflow_preset(_workflow_store(), preset_id)
@@ -3217,6 +3275,7 @@ async def execute_task_agent_run(
             status_code=404,
             detail=f"Unknown task agent run: {task_run_id}/{step_id}",
         )
+    _task_run_for_agent_action(task_run_id)
     try:
         import json
 
@@ -3259,6 +3318,7 @@ async def validate_task_agent_run_mr_artifacts(
             status_code=404,
             detail=f"Unknown task agent run: {task_run_id}/{step_id}",
         )
+    _task_run_for_agent_action(task_run_id)
     result = ArtifactValidationHarness(artifact_dir).validate_mr_artifacts(
         required_artifacts=payload.required_artifacts,
     )
@@ -3277,9 +3337,8 @@ async def materialize_task_agent_run_evidence(
             status_code=404,
             detail=f"Unknown task agent run: {task_run_id}/{step_id}",
         )
-    try:
-        task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
-    except KeyError:
+    task_run = _task_run_for_agent_action(task_run_id)
+    if task_run is None:
         raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
 
     validation = ArtifactValidationHarness(artifact_dir).validate_mr_artifacts(
@@ -3317,6 +3376,7 @@ async def execute_task_run_workflow(
         task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
+    _require_v3_task_run_writes(task_run)
     event_store = WorkbenchTaskRunEventStore(_task_runs_dir())
     if task_run_id in _ACTIVE_TASK_RUN_IDS:
         raise HTTPException(
@@ -3456,6 +3516,8 @@ async def _execute_task_run_background(
 ) -> None:
     event_store = WorkbenchTaskRunEventStore(_task_runs_dir())
     task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    if _is_v3_task_run(task_run) and not workflow_v3_writes_enabled():
+        return
     lease_store = WorkflowExecutionLeaseStore(
         Path(task_run.artifact_dir),
         attempt_id=task_run_id,
@@ -3760,6 +3822,8 @@ def schedule_recovered_v3_task_run(task_run_id: str) -> bool:
     try:
         task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
     except KeyError:
+        return False
+    if _is_v3_task_run(task_run) and not workflow_v3_writes_enabled():
         return False
     if task_run_id in _ACTIVE_TASK_RUN_IDS:
         return False
@@ -4122,6 +4186,8 @@ def schedule_task_run_human_approval_expiries(task_run_id: str) -> int:
         task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
     except KeyError:
         return 0
+    if _is_v3_task_run(task_run) and not workflow_v3_writes_enabled():
+        return 0
     scheduled = 0
     for node_id in _task_run_pending_human_approval_node_ids(task_run):
         key = (task_run_id, node_id)
@@ -4194,6 +4260,8 @@ def _claim_waiting_human_approval_cancellation(task_run: Any) -> Literal[
 async def _monitor_task_run_human_approval_expiry(*, task_run_id: str, node_id: str) -> None:
     try:
         task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+        if _is_v3_task_run(task_run) and not workflow_v3_writes_enabled():
+            return
         from app.services.human_approval import HumanApprovalStore
 
         record = HumanApprovalStore(Path(task_run.artifact_dir)).load(node_id)
@@ -4215,6 +4283,8 @@ def _expire_task_run_human_approval(*, task_run_id: str, node_id: str) -> bool:
 
     try:
         task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+        if _is_v3_task_run(task_run) and not workflow_v3_writes_enabled():
+            return False
         approval_store = HumanApprovalStore(Path(task_run.artifact_dir))
         receipt = approval_store.claim_expiry(node_id, now=datetime.now(timezone.utc))
     except (KeyError, ApprovalNotFound):
@@ -4305,6 +4375,7 @@ async def submit_task_run_human_approval_decision(
             task_run_id=task_run_id,
             node_id=node_id,
         )
+    _require_v3_task_run_writes(task_run)
     if _task_run_human_approval_node(task_run, node_id) is None:
         raise _human_approval_decision_error(
             status_code=404,
@@ -4491,6 +4562,7 @@ async def cancel_task_run(task_run_id: str) -> dict[str, Any]:
         task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
+    _require_v3_task_run_writes(task_run)
     event_store = WorkbenchTaskRunEventStore(_task_runs_dir())
     current_status = event_store.current_status(task_run_id)
     if current_status not in {"queued", "running", "waiting_for_input"}:
@@ -4842,6 +4914,7 @@ def _reconcile_persisted_task_run_outcomes(task_run: Any) -> Any:
     execution = _read_json(task_dir / "workflow_execution.json")
     if not isinstance(execution, dict):
         return task_run
+    read_only_v3 = _is_v3_task_run(task_run) and not workflow_v3_writes_enabled()
     if execution.get("compiled_contract_version") not in {None, ""}:
         from app.services.workflow_run_status import (
             legacy_delivery_status as project_legacy_delivery_status,
@@ -4869,6 +4942,15 @@ def _reconcile_persisted_task_run_outcomes(task_run: Any) -> Any:
             execution.get("legacy_delivery_status")
             or project_legacy_delivery_status(delivery_status=delivery_status)
         )
+        if read_only_v3:
+            return replace(
+                task_run,
+                execution_status=execution_status,
+                artifact_validation_status=artifact_status,
+                governance_status=governance_status,
+                delivery_status=delivery_status,
+                quality_status=quality_status,
+            )
         WorkbenchTaskRunEventStore(_task_runs_dir()).mark_v3_outcomes(
             task_run.task_run_id,
             execution_status=execution_status,
@@ -4888,6 +4970,12 @@ def _reconcile_persisted_task_run_outcomes(task_run: Any) -> Any:
         and delivery_status == str(task_run.delivery_status or "")
     ):
         return task_run
+    if read_only_v3:
+        return replace(
+            task_run,
+            quality_status=quality_status,
+            delivery_status=delivery_status,
+        )
     WorkbenchTaskRunEventStore(_task_runs_dir()).mark_outcomes(
         task_run.task_run_id,
         quality_status=quality_status,
@@ -5120,6 +5208,7 @@ async def materialize_task_run_outputs(task_run_id: str) -> dict[str, Any]:
         task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
+    _require_v3_task_run_writes(task_run)
     task_dir = Path(task_run.artifact_dir)
     workflow_outputs_path = task_dir / "workflow_outputs.json"
     workflow_outputs = _read_json(workflow_outputs_path)
@@ -5221,6 +5310,7 @@ async def import_task_run_outputs_as_semantic_cases(
         task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
+    _require_v3_task_run_writes(task_run)
     task_dir = Path(task_run.artifact_dir)
     workflow_outputs = _read_json(task_dir / "workflow_outputs.json")
     if not isinstance(workflow_outputs, dict):
@@ -5367,7 +5457,10 @@ async def get_task_run_rerun_plan(task_run_id: str) -> dict[str, Any]:
         task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
-    return _ensure_task_rerun_plan(task_run)
+    return _ensure_task_rerun_plan(
+        task_run,
+        persist=not (_is_v3_task_run(task_run) and not workflow_v3_writes_enabled()),
+    )
 
 
 @router.post("/task-runs/{task_run_id}/acceptance-audit")
@@ -5376,12 +5469,13 @@ async def create_task_run_acceptance_audit(task_run_id: str) -> dict[str, Any]:
         task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
+    _require_v3_task_run_writes(task_run)
     frozen_contract_version = _frozen_contract_version(task_run)
-    if frozen_contract_version is not None:
+    if frozen_contract_version is not None or _is_v3_task_run(task_run):
         return {
             "status": "not_applicable",
             "reason": "frozen_contract_uses_validation_profile",
-            "compiled_contract_version": frozen_contract_version,
+            "compiled_contract_version": frozen_contract_version or 3,
         }
     runtime_status = WorkbenchTaskRunEventStore(_task_runs_dir()).current_status(task_run_id)
     if runtime_status in {"queued", "running"} or task_run_id in _ACTIVE_TASK_RUN_IDS:
@@ -5479,7 +5573,10 @@ async def validate_task_run_rerun_plan(task_run_id: str) -> dict[str, Any]:
         task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
-    plan = _ensure_task_rerun_plan(task_run)
+    plan = _ensure_task_rerun_plan(
+        task_run,
+        persist=not (_is_v3_task_run(task_run) and not workflow_v3_writes_enabled()),
+    )
     return _validate_task_rerun_plan(task_run=task_run, plan=plan)
 
 
@@ -5513,6 +5610,7 @@ async def execute_task_run_rerun_plan(
         task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
+    _require_v3_task_run_writes(task_run)
     runtime_status = WorkbenchTaskRunEventStore(_task_runs_dir()).current_status(task_run_id)
     if task_run_id in _ACTIVE_TASK_RUN_IDS or runtime_status in {"queued", "running"}:
         raise HTTPException(
@@ -5814,6 +5912,7 @@ async def download_task_run_artifact(
 
 @router.post("/task-runs/prepare", status_code=201)
 async def prepare_task_run(payload: PrepareTaskRunRequest) -> dict[str, Any]:
+    _require_v3_writes()
     _require_workflow_available_for_new_run(payload.workflow_id)
     await apply_persisted_agent_provider_settings()
     try:
@@ -5838,6 +5937,7 @@ async def prepare_task_run(payload: PrepareTaskRunRequest) -> dict[str, Any]:
 
 @router.post("/task-runs/run", status_code=202)
 async def prepare_and_execute_task_run(payload: RunTaskRunRequest) -> dict[str, Any]:
+    _require_v3_writes()
     _require_workflow_available_for_new_run(payload.workflow_id)
     await apply_persisted_agent_provider_settings()
     try:
@@ -5895,6 +5995,9 @@ async def prepare_and_execute_task_run(payload: RunTaskRunRequest) -> dict[str, 
 
 def _workflow_response(payload: dict[str, Any]) -> dict[str, Any]:
     response = dict(payload)
+    presentation = workflow_preset_presentation(str(response.get("id") or ""))
+    if presentation is not None:
+        response["presentation"] = presentation
     graph = response.get("authoring_graph")
     if isinstance(graph, dict) and graph.get("schema_version") == 1:
         response["editor_mode"] = "read_only_legacy"
@@ -5919,6 +6022,9 @@ def _v2_workflow_compatibility_response(version_store: Any, header: Any) -> dict
         "authoring_graph": dict(version.authoring_graph or {}) if version else {},
         "v2": asdict(header),
     }
+    presentation = workflow_preset_presentation(header.workflow_id)
+    if presentation is not None:
+        response["presentation"] = presentation
     schema_version = response["authoring_graph"].get("schema_version")
     if schema_version == 1:
         response["editor_mode"] = "read_only_legacy"
@@ -10365,7 +10471,11 @@ def _artifact_content_payload(task_dir: Path, path: Path, *, max_chars: int) -> 
     }
 
 
-def _ensure_task_rerun_plan(task_run: Any) -> dict[str, Any]:
+def _ensure_task_rerun_plan(
+    task_run: Any,
+    *,
+    persist: bool = True,
+) -> dict[str, Any]:
     task_dir = Path(str(task_run.artifact_dir))
     path = task_dir / "task_rerun_plan.json"
     payload = _read_json(path)
@@ -10378,8 +10488,9 @@ def _ensure_task_rerun_plan(task_run: Any) -> dict[str, Any]:
         step_results=[],
         outputs=[],
     )
-    _write_json(path, payload)
-    write_task_artifact_manifest(task_dir, task_run_id=task_run.task_run_id)
+    if persist:
+        _write_json(path, payload)
+        write_task_artifact_manifest(task_dir, task_run_id=task_run.task_run_id)
     return payload
 
 

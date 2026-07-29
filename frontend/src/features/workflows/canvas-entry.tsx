@@ -3,20 +3,45 @@
 import { ArrowLeft, LayoutTemplate, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { workflowsApi } from "@/lib/api/workflows";
-
-type Template = "blank" | "free_source_analysis";
+import type { WorkflowCanvasTemplate, WorkflowCanvasTemplateId } from "@/lib/types/workflow";
 
 export function CanvasEntry() {
   const router = useRouter();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [template, setTemplate] = useState<Template>("free_source_analysis");
+  const [template, setTemplate] = useState<WorkflowCanvasTemplateId>("free_source_analysis");
+  const [templates, setTemplates] = useState<WorkflowCanvasTemplate[]>([]);
+  const [templatesLoading, setTemplatesLoading] = useState(true);
+  const [templatesError, setTemplatesError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const nameInput = useRef<HTMLInputElement>(null);
   const descriptionInput = useRef<HTMLTextAreaElement>(null);
+
+  const loadTemplates = useCallback(async () => {
+    setTemplatesLoading(true);
+    setTemplatesError("");
+    try {
+      const catalog = await workflowsApi.listTemplates();
+      if (catalog.meta.schema_version !== 3 || catalog.meta.migration_contract_version !== 1) {
+        throw new Error("模板版本不兼容，请刷新页面或联系管理员升级前后端版本");
+      }
+      if (!catalog.items.length) throw new Error("模板目录为空，请联系管理员检查部署");
+      setTemplates(catalog.items);
+      setTemplate((current) => (
+        catalog.items.some((item) => item.id === current) ? current : catalog.items[0].id
+      ));
+    } catch (cause) {
+      setTemplates([]);
+      setTemplatesError(cause instanceof Error ? cause.message : "模板目录加载失败");
+    } finally {
+      setTemplatesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void loadTemplates(); }, [loadTemplates]);
 
   const create = async () => {
     const requestedName = (nameInput.current?.value ?? name).trim();
@@ -52,11 +77,17 @@ export function CanvasEntry() {
         <label className="ct-v2-field"><span>说明（可选）</span><textarea ref={descriptionInput} rows={3} defaultValue={description} onInput={(event) => setDescription(event.currentTarget.value)} /></label>
         <fieldset className="ct-canvas-entry-templates">
           <legend>起始模板</legend>
-          <label><input data-testid="workflow-template-free_source_analysis" type="radio" name="template" checked={template === "free_source_analysis"} onChange={() => setTemplate("free_source_analysis")} /><span><strong>自由源码分析</strong><small>源码工作区 → Agent → report.md</small></span></label>
-          <label><input data-testid="workflow-template-blank" type="radio" name="template" checked={template === "blank"} onChange={() => setTemplate("blank")} /><span><strong>空白画布</strong><small>从节点库按需要搭建</small></span></label>
+          {templatesLoading && <p className="ct-canvas-entry-template-state">正在加载模板...</p>}
+          {templates.map((item) => (
+            <label key={item.id}>
+              <input data-testid={`workflow-template-${item.id}`} type="radio" name="template" checked={template === item.id} onChange={() => setTemplate(item.id)} />
+              <span><strong>{item.label}{item.presentation.scope === "professional" && <em>专业</em>}</strong><small>{item.description}</small></span>
+            </label>
+          ))}
         </fieldset>
+        {templatesError && <div className="ct-v2-notice is-error" role="alert"><span>{templatesError || "模板目录加载失败"}</span><button type="button" onClick={() => void loadTemplates()}>重试</button></div>}
         {error && <p className="ct-v2-form-error" role="alert">{error}</p>}
-        <footer><button className="ct-v2-primary-button" type="button" onClick={() => void create()} disabled={submitting}>{submitting && <Loader2 size={15} className="animate-spin" />}{submitting ? "正在创建" : "创建并打开画布"}</button></footer>
+        <footer><button className="ct-v2-primary-button" type="button" onClick={() => void create()} disabled={submitting || templatesLoading || Boolean(templatesError)}>{submitting && <Loader2 size={15} className="animate-spin" />}{submitting ? "正在创建" : "创建并打开画布"}</button></footer>
       </section>
     </main>
   );

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import uuid
+from hashlib import sha256
 from copy import deepcopy
 from dataclasses import asdict
 from pathlib import Path
@@ -25,7 +25,10 @@ from app.services.workflow_graph import (
     validate_workflow_graph,
 )
 from app.services.workflow_handler_registry import workflow_handler_capability_snapshot
-from app.services.workflow_presets import reserved_builtin_workflow_ids
+from app.services.workflow_presets import (
+    reserved_builtin_workflow_ids,
+    workflow_preset_presentation,
+)
 from app.services.workflow_dsl import WorkflowStore
 from app.services.workflow_version_store import (
     ExpectedWorkflowDraftRevisionError,
@@ -40,6 +43,7 @@ from app.services.workflow_authoring_factory import (
     CANVAS_TEMPLATES,
     TECHNICAL_ID_FIELDS,
     CanvasAuthoringError,
+    canvas_template_catalog,
     build_canvas_graph,
     backend_commit_sha,
     build_v3_edge,
@@ -51,11 +55,16 @@ from app.services.workflow_authoring_factory import (
     switch_v3_validator_handler,
 )
 from app.services.workflow_node_registry import executable_node_definition
+from app.services.workflow_migration_policy import (
+    WORKFLOW_V3_READ_ONLY_DETAIL,
+    workflow_v3_writes_enabled,
+)
 from app.services.provider_adapters.registry import provider_capability_names
 
 
 router = APIRouter(prefix="/api/workbench", tags=["workbench-v2-workflows"])
 _BUILTIN_WORKFLOW_IDS = reserved_builtin_workflow_ids()
+_V3_MIGRATION_CONTRACT_VERSION = 1
 
 
 class WorkflowHeaderUpdateRequest(BaseModel):
@@ -198,15 +207,50 @@ def _require_v2() -> None:
     return None
 
 
+def _require_v3_writes() -> None:
+    if not workflow_v3_writes_enabled():
+        raise HTTPException(status_code=409, detail=WORKFLOW_V3_READ_ONLY_DETAIL)
+
+
 def _require_mutable_workflow(workflow_id: str) -> None:
     if workflow_id in _BUILTIN_WORKFLOW_IDS:
         raise HTTPException(status_code=409, detail="内置工作流是只读的，请另存为自定义工作流")
+
+
+def _reject_legacy_history_write(workflow_id: str, version: Any) -> None:
+    if version.authoring_graph.get("schema_version") not in {1, 2}:
+        return
+    version_url = f"/api/workbench/workflows/{workflow_id}/versions/{version.version_id}"
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "code": "legacy_workflow_read_only",
+            "message": "Historical V1/V2 workflows are read-only; review the migration preview and confirm a V3 copy.",
+            "migration_preview_url": f"{version_url}/migration-preview",
+            "copy_to_v3_url": f"{version_url}/copy-to-v3",
+        },
+    )
+
+
+@router.get("/workflow-templates")
+async def list_canvas_workflow_templates() -> dict[str, Any]:
+    """Expose the server-owned V3 template catalog and migration contract."""
+    _require_v2()
+    return {
+        "items": canvas_template_catalog(),
+        "meta": {
+            "schema_version": 3,
+            "migration_contract_version": 1,
+            "backend_commit_sha": _backend_commit_sha(),
+        },
+    }
 
 
 @router.post("/workflows/new", status_code=201)
 async def create_canvas_workflow(payload: dict[str, Any]) -> dict[str, Any]:
     """Create a Canvas First V3 draft without accepting client technical IDs."""
     _require_v2()
+    _require_v3_writes()
     _reject_client_owned_identity_fields(payload)
     unknown = sorted(set(payload) - {"template", "name", "description"})
     if unknown:
@@ -246,6 +290,7 @@ async def update_workflow_header(
     workflow_id: str, payload: WorkflowHeaderUpdateRequest
 ) -> dict[str, Any]:
     _require_v2()
+    _require_v3_writes()
     _require_mutable_workflow(workflow_id)
     try:
         header = workflow_version_store().update_workflow(
@@ -263,6 +308,7 @@ async def update_workflow_header(
 @router.post("/workflows/{workflow_id}/archive")
 async def archive_workflow_header(workflow_id: str) -> dict[str, Any]:
     _require_v2()
+    _require_v3_writes()
     _require_mutable_workflow(workflow_id)
     try:
         return asdict(workflow_version_store().archive_workflow(workflow_id))
@@ -285,9 +331,17 @@ async def create_workflow_draft(
     workflow_id: str, payload: WorkflowDraftCreateRequest
 ) -> dict[str, Any]:
     _require_v2()
+    _require_v3_writes()
     _require_mutable_workflow(workflow_id)
+    store = workflow_version_store()
     try:
-        version = workflow_version_store().create_draft(
+        header = store.get_workflow(workflow_id)
+        base_version_id = payload.based_on_version_id or header.published_version_id
+        if base_version_id:
+            _reject_legacy_history_write(
+                workflow_id, store.get_version(base_version_id)
+            )
+        version = store.create_draft(
             workflow_id,
             based_on_version_id=payload.based_on_version_id,
         )
@@ -302,24 +356,24 @@ async def create_workflow_draft(
 
 @router.post("/workflows/{workflow_id}/copy", status_code=201)
 async def copy_workflow_as_custom_draft(workflow_id: str) -> dict[str, Any]:
-    """Copy a read-only template into a distinct editable V2 draft."""
+    """Retain the legacy copy route as a read-only compatibility response."""
     _require_v2()
+    _require_v3_writes()
     store = workflow_version_store()
     try:
         source = store.get_workflow(workflow_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown workflow: {workflow_id}")
-    custom_id = f"{source.workflow_id[:110]}_custom_{uuid.uuid4().hex[:8]}"
-    try:
-        _header, draft = store.copy_workflow_as_custom_draft(
-            source.workflow_id,
-            workflow_id=custom_id,
-            name=f"{source.name}（副本）",
-            description=source.description,
+    source_version_id = source.published_version_id or source.current_draft_version_id
+    if source_version_id:
+        _reject_legacy_history_write(
+            source.workflow_id, store.get_version(source_version_id)
         )
-    except WorkflowVersionError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    return asdict(draft)
+    raise _canvas_error(
+        "legacy_copy_endpoint_read_only",
+        "The legacy /copy endpoint is read-only. Create a V3 draft with the versions endpoint.",
+        status_code=409,
+    )
 
 
 @router.get("/workflows/{workflow_id}/versions/{version_id}")
@@ -344,6 +398,7 @@ async def update_workflow_draft(
     payload: WorkflowDraftUpdateRequest,
 ) -> dict[str, Any]:
     _require_v2()
+    _require_v3_writes()
     _require_mutable_workflow(workflow_id)
     _version_for_workflow(workflow_id, version_id)
     try:
@@ -369,6 +424,7 @@ async def add_canvas_node(
 ) -> dict[str, Any]:
     """Add one Phase 3 node and allocate every node-owned identifier server-side."""
     _require_v2()
+    _require_v3_writes()
     _require_mutable_workflow(workflow_id)
     version = _require_v3_mutable_draft(workflow_id, version_id)
     expected_revision = _expected_v3_revision(payload)
@@ -414,6 +470,7 @@ async def update_canvas_validator_handler(
 ) -> dict[str, Any]:
     """Switch a Validator only to a registered server-owned Validator handler."""
     _require_v2()
+    _require_v3_writes()
     _require_mutable_workflow(workflow_id)
     version = _require_v3_mutable_draft(workflow_id, version_id)
     expected_revision = _expected_v3_revision(payload.model_dump())
@@ -444,6 +501,7 @@ async def add_canvas_port(
 ) -> dict[str, Any]:
     """Add a typed V3 port without allowing a client-selected port ID."""
     _require_v2()
+    _require_v3_writes()
     _require_mutable_workflow(workflow_id)
     version = _require_v3_mutable_draft(workflow_id, version_id)
     expected_revision = _expected_v3_revision(payload)
@@ -490,6 +548,7 @@ async def update_canvas_port(
 ) -> dict[str, Any]:
     """Edit user-facing port properties without replacing its stable ID."""
     _require_v2()
+    _require_v3_writes()
     _require_mutable_workflow(workflow_id)
     version = _require_v3_mutable_draft(workflow_id, version_id)
     expected_revision = _expected_v3_revision(payload)
@@ -550,6 +609,7 @@ async def delete_canvas_port(
 ) -> dict[str, Any]:
     """Delete a V3 port and every edge that referenced it atomically."""
     _require_v2()
+    _require_v3_writes()
     _require_mutable_workflow(workflow_id)
     version = _require_v3_mutable_draft(workflow_id, version_id)
     expected_revision = _expected_v3_revision(payload)
@@ -595,6 +655,7 @@ async def add_canvas_edge(
 ) -> dict[str, Any]:
     """Create a data edge with a server-generated identity."""
     _require_v2()
+    _require_v3_writes()
     _require_mutable_workflow(workflow_id)
     version = _require_v3_mutable_draft(workflow_id, version_id)
     expected_revision = _expected_v3_revision(payload)
@@ -617,12 +678,7 @@ async def add_canvas_edge(
     return {"edge": edge, "draft": _workflow_version_payload(draft)}
 
 
-@router.post("/workflows/{workflow_id}/versions/{version_id}/copy-to-v3", status_code=201)
-async def copy_workflow_version_to_v3(workflow_id: str, version_id: str) -> dict[str, Any]:
-    """Explicitly copy a legacy version into a separate Canvas First V3 draft."""
-    _require_v2()
-    source = _version_for_workflow(workflow_id, version_id)
-    source_header = workflow_version_store().get_workflow(workflow_id)
+def _v3_migration_source_graph(source: Any, source_header: Any) -> dict[str, Any]:
     source_schema_version = source.authoring_graph.get("schema_version")
     if source_schema_version not in {1, 2}:
         raise _canvas_error(
@@ -630,8 +686,6 @@ async def copy_workflow_version_to_v3(workflow_id: str, version_id: str) -> dict
             "Only legacy V1 or V2 workflow versions can be copied to V3.",
             status_code=409,
         )
-    target_workflow_id = new_workflow_id()
-    target_name = f"{source_header.name} copy"
     source_graph = source.authoring_graph
     if source_schema_version == 1:
         definition = source.compiled_definition or source_graph.get("legacy_definition")
@@ -641,6 +695,132 @@ async def copy_workflow_version_to_v3(workflow_id: str, version_id: str) -> dict
                 "The legacy workflow has no definition to copy.",
             )
         source_graph = legacy_definition_to_v2_graph(definition, source_header)
+    return source_graph
+
+
+def _v3_migration_preview(
+    workflow_id: str, source: Any, source_header: Any
+) -> dict[str, Any]:
+    source_graph = _v3_migration_source_graph(source, source_header)
+    nodes = [item for item in source_graph.get("nodes") or [] if isinstance(item, dict)]
+    incompatible_nodes = [
+        {
+            "label": str(node.get("label") or node.get("id") or node.get("kind") or "节点"),
+            "kind": str(node.get("kind") or "unknown"),
+            "reason": "该旧节点不会自动复制，请在 V3 画布中显式重建。",
+        }
+        for node in nodes
+        if str(node.get("kind") or "") not in {"input", "agent", "output"}
+    ]
+    rules: list[str] = []
+    profile = str((source_graph.get("settings") or {}).get("validation_profile") or "")
+    if profile not in {"", "none", "artifact_only"}:
+        rules.append(f"验证档位：{profile}")
+    for node in nodes:
+        if str(node.get("kind") or "") not in {"governance", "validator"}:
+            continue
+        handler_id = str((node.get("config") or {}).get("handler_id") or "").strip()
+        if handler_id:
+            rules.append(f"显式治理处理器：{handler_id}")
+    presentation = workflow_preset_presentation(workflow_id)
+    if presentation and presentation.get("scope") == "spdk_iscsi":
+        rules.append("Legacy SPDK/iSCSI 专业规则")
+    rules = list(dict.fromkeys(rules))
+    source_outputs = [node for node in nodes if node.get("kind") == "output"]
+    migrated_outputs = len(source_outputs)
+    preview = {
+        "migration_contract_version": _V3_MIGRATION_CONTRACT_VERSION,
+        "source_schema_version": source.authoring_graph.get("schema_version"),
+        "target_schema_version": 3,
+        "source_preserved": True,
+        "incompatible_nodes": incompatible_nodes,
+        "enabled_professional_rules": rules,
+        "output_changes": {
+            "source_output_count": len(source_outputs),
+            "migrated_output_count": migrated_outputs,
+            "dropped_output_count": len(source_outputs) - migrated_outputs,
+        },
+        "rollback_effect": "原工作流版本保持只读且不变；回滚时可归档新建的 V3 副本。",
+        "requires_confirmation": True,
+        "can_apply": True,
+    }
+    preview["confirmation_token"] = _v3_migration_confirmation_token(
+        workflow_id, source.version_id, preview
+    )
+    return preview
+
+
+def _v3_migration_confirmation_token(
+    workflow_id: str, version_id: str, preview: dict[str, Any]
+) -> str:
+    """Bind confirmation to the exact read-only preview without storing state."""
+    confirmation_subject = {
+        "workflow_id": workflow_id,
+        "version_id": version_id,
+        "migration_contract_version": preview["migration_contract_version"],
+        "preview": {key: value for key, value in preview.items() if key != "confirmation_token"},
+    }
+    serialized = json.dumps(
+        confirmation_subject,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _require_v3_migration_confirmation(
+    payload: dict[str, Any] | None, preview: dict[str, Any]
+) -> None:
+    confirmation = payload or {}
+    if confirmation.get("preview_confirmed") is not True:
+        raise _canvas_error(
+            "copy_to_v3_preview_confirmation_required",
+            "请先查看迁移预览并明确确认后再创建 V3 副本。",
+        )
+    contract_version = confirmation.get("migration_contract_version")
+    if (
+        isinstance(contract_version, bool)
+        or not isinstance(contract_version, int)
+        or contract_version != preview["migration_contract_version"]
+    ):
+        raise _canvas_error(
+            "copy_to_v3_migration_contract_unknown",
+            "迁移预览契约版本不受支持，请刷新预览后重新确认。",
+        )
+    confirmation_token = confirmation.get("confirmation_token")
+    if not isinstance(confirmation_token, str) or confirmation_token != preview["confirmation_token"]:
+        raise _canvas_error(
+            "copy_to_v3_preview_confirmation_invalid",
+            "迁移预览已变化或确认无效，请重新查看预览后确认。",
+        )
+
+
+@router.get("/workflows/{workflow_id}/versions/{version_id}/migration-preview")
+async def preview_workflow_version_v3_migration(
+    workflow_id: str, version_id: str
+) -> dict[str, Any]:
+    """Preview an explicit legacy-to-V3 copy without writing any state."""
+    _require_v2()
+    source = _version_for_workflow(workflow_id, version_id)
+    source_header = workflow_version_store().get_workflow(workflow_id)
+    return _v3_migration_preview(workflow_id, source, source_header)
+
+
+@router.post("/workflows/{workflow_id}/versions/{version_id}/copy-to-v3", status_code=201)
+async def copy_workflow_version_to_v3(
+    workflow_id: str, version_id: str, payload: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Explicitly copy a legacy version into a separate Canvas First V3 draft."""
+    _require_v2()
+    _require_v3_writes()
+    source = _version_for_workflow(workflow_id, version_id)
+    source_header = workflow_version_store().get_workflow(workflow_id)
+    migration_preview = _v3_migration_preview(workflow_id, source, source_header)
+    _require_v3_migration_confirmation(payload, migration_preview)
+    source_graph = _v3_migration_source_graph(source, source_header)
+    target_workflow_id = new_workflow_id()
+    target_name = f"{source_header.name} copy"
     graph = migrate_legacy_graph_to_v3(
         source_graph,
         workflow_id=target_workflow_id,
@@ -659,11 +839,7 @@ async def copy_workflow_version_to_v3(workflow_id: str, version_id: str) -> dict
         "workflow": asdict(header),
         "draft": _workflow_version_payload(draft),
         "designer_url": f"/workflows/{header.workflow_id}/designer",
-        "migration_preview": {
-            "source_schema_version": source.authoring_graph.get("schema_version"),
-            "target_schema_version": 3,
-            "source_preserved": True,
-        },
+        "migration_preview": migration_preview,
     }
 
 
@@ -674,6 +850,7 @@ async def validate_workflow_version(
     payload: WorkflowDerivedRequest | None = None,
 ) -> dict[str, Any]:
     _require_v2()
+    _require_v3_writes()
     _require_mutable_workflow(workflow_id)
     version = _version_for_workflow(workflow_id, version_id)
     if version.state != "draft":
@@ -698,6 +875,7 @@ async def compile_workflow_version(
     payload: WorkflowDerivedRequest | None = None,
 ) -> dict[str, Any]:
     _require_v2()
+    _require_v3_writes()
     _require_mutable_workflow(workflow_id)
     version = _version_for_workflow(workflow_id, version_id)
     if version.state != "draft":
@@ -735,6 +913,7 @@ async def publish_workflow_version(
     payload: WorkflowPublishRequest,
 ) -> dict[str, Any]:
     _require_v2()
+    _require_v3_writes()
     _require_mutable_workflow(workflow_id)
     version = _version_for_workflow(workflow_id, version_id)
     expected_revision = _derived_expected_revision(
@@ -780,6 +959,7 @@ async def prepare_workflow_trial_run(
 ) -> dict[str, Any]:
     """Compile a draft server-side and prepare a real, isolated run snapshot."""
     _require_v2()
+    _require_v3_writes()
     _require_mutable_workflow(workflow_id)
     version = _version_for_workflow(workflow_id, version_id)
     if version.state != "draft":

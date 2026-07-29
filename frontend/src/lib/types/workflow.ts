@@ -205,7 +205,7 @@ export interface CompiledWorkflowPlanV3 extends CompiledWorkflowPlan {
   compiled_contract_version: 3;
   settings: {
     stop_on_error: boolean;
-    max_parallelism: number;
+    max_parallelism: 1;
     validation_profile: ValidationProfile;
   };
 }
@@ -253,6 +253,58 @@ export interface WorkflowCanvasCreateResult {
   meta?: WorkflowResourceMeta;
 }
 
+export type WorkflowCanvasTemplateId =
+  | "blank"
+  | "free_source_analysis"
+  | "source_with_optional_design"
+  | "change_impact_analysis"
+  | "multi_agent_analysis"
+  | "formal_storage_test_design";
+
+export interface WorkflowCanvasTemplate {
+  id: WorkflowCanvasTemplateId;
+  label: string;
+  description: string;
+  schema_version: number;
+  presentation: {
+    lifecycle: "active";
+    scope: "generic" | "professional";
+  };
+}
+
+export interface WorkflowCanvasTemplateCatalog {
+  items: WorkflowCanvasTemplate[];
+  meta: {
+    schema_version: number;
+    migration_contract_version: number;
+    backend_commit_sha: string;
+  };
+}
+
+export interface WorkflowMigrationPreview {
+  migration_contract_version: number;
+  confirmation_token: string;
+  source_schema_version: number;
+  target_schema_version: 3;
+  source_preserved: true;
+  incompatible_nodes: Array<{ label: string; kind: string; reason: string }>;
+  enabled_professional_rules: string[];
+  output_changes: {
+    source_output_count: number;
+    migrated_output_count: number;
+    dropped_output_count: number;
+  };
+  rollback_effect: string;
+  requires_confirmation: boolean;
+  can_apply: boolean;
+}
+
+export interface WorkflowMigrationConfirmation {
+  migration_contract_version: number;
+  preview_confirmed: true;
+  confirmation_token: string;
+}
+
 export interface WorkflowResourceMeta {
   endpoint?: string;
   backend_commit_sha?: string;
@@ -287,6 +339,13 @@ export interface WorkflowVersion {
   draft_revision?: number;
 }
 
+export interface WorkflowPresentation {
+  label: string;
+  lifecycle: "active" | "legacy";
+  scope: "generic" | "professional" | "spdk_iscsi";
+  default: boolean;
+}
+
 export interface WorkflowListItem {
   id: string;
   name: string;
@@ -297,6 +356,8 @@ export interface WorkflowListItem {
   inputs?: unknown[];
   steps?: unknown[];
   outputs?: unknown[];
+  presentation?: WorkflowPresentation;
+  editor_mode?: "read_only_legacy" | "legacy" | "canvas";
 }
 
 export interface WorkflowDetail extends WorkflowListItem {

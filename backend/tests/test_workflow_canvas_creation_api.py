@@ -57,6 +57,11 @@ async def _create_file_input_trial_draft(client: AsyncClient) -> dict:
     graph = draft["authoring_graph"]
     revision = draft["draft_revision"]
     agent = next(node for node in graph["nodes"] if node["kind"] == "agent")
+    goal_input = next(
+        node
+        for node in graph["nodes"]
+        if node["kind"] == "input" and node["label"] == "分析目标"
+    )
 
     added_input = await client.post(
         f"/api/workbench/workflows/{workflow_id}/versions/{version_id}/nodes",
@@ -108,6 +113,7 @@ async def _create_file_input_trial_draft(client: AsyncClient) -> dict:
         "version_id": version_id,
         "revision": added_edge.json()["draft"]["draft_revision"],
         "input_id": input_node["config"]["input_id"],
+        "goal_input_id": goal_input["config"]["input_id"],
     }
 
 
@@ -139,7 +145,17 @@ def _configure_trial_workspace(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("template", ["blank", "free_source_analysis"])
+@pytest.mark.parametrize(
+    "template",
+    [
+        "blank",
+        "free_source_analysis",
+        "source_with_optional_design",
+        "change_impact_analysis",
+        "multi_agent_analysis",
+        "formal_storage_test_design",
+    ],
+)
 async def test_canvas_create_api_generates_v3_draft_without_client_technical_ids(
     tmp_path, monkeypatch, template
 ):
@@ -172,6 +188,31 @@ async def test_canvas_create_api_generates_v3_draft_without_client_technical_ids
     assert payload["designer_url"] == (
         f"/workflows/{payload['workflow']['workflow_id']}/designer"
     )
+
+
+@pytest.mark.asyncio
+async def test_canvas_template_catalog_exposes_phase7_version_contract() -> None:
+    async with AsyncClient(
+        transport=ASGITransport(app=_canvas_app()), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/workbench/workflow-templates")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [item["id"] for item in payload["items"]] == [
+        "blank",
+        "free_source_analysis",
+        "source_with_optional_design",
+        "change_impact_analysis",
+        "multi_agent_analysis",
+        "formal_storage_test_design",
+    ]
+    assert payload["meta"] == {
+        "schema_version": 3,
+        "migration_contract_version": 1,
+        "backend_commit_sha": payload["meta"]["backend_commit_sha"],
+    }
+    assert payload["meta"]["backend_commit_sha"]
 
 
 @pytest.mark.asyncio
@@ -527,10 +568,11 @@ async def test_v3_derived_operations_return_stale_draft_when_snapshot_loses_race
 @pytest.mark.parametrize(
     ("inputs_factory", "expected_message"),
     [
-        (lambda _input_id, _tmp_path: {}, "required input"),
+        (lambda _input_id, _goal_input_id, _tmp_path: {}, "required input"),
         (
-            lambda input_id, tmp_path: {
-                input_id: str(tmp_path / "does-not-exist" / "design.md")
+            lambda input_id, goal_input_id, tmp_path: {
+                input_id: str(tmp_path / "does-not-exist" / "design.md"),
+                goal_input_id: "verify missing design input",
             },
             "does-not-exist",
         ),
@@ -552,7 +594,9 @@ async def test_v3_trial_input_4xx_is_atomic_before_revision_and_persistence(
             f"/versions/{draft['version_id']}/test-run",
             json={
                 "workspace_id": "ws-1",
-                "inputs": inputs_factory(draft["input_id"], tmp_path),
+                "inputs": inputs_factory(
+                    draft["input_id"], draft["goal_input_id"], tmp_path
+                ),
                 "expected_revision": draft["revision"],
             },
         )
@@ -606,6 +650,11 @@ async def test_v3_trial_stale_after_input_preflight_fails_closed_without_persist
             json={"template": "free_source_analysis", "name": "Post-preflight race"},
         )
         draft = created.json()["draft"]
+        goal_input_id = next(
+            node["config"]["input_id"]
+            for node in draft["authoring_graph"]["nodes"]
+            if node["kind"] == "input" and node["label"] == "分析目标"
+        )
         workflow_id = draft["workflow_id"]
         version_id = draft["version_id"]
         revision = draft["draft_revision"]
@@ -618,7 +667,7 @@ async def test_v3_trial_stale_after_input_preflight_fails_closed_without_persist
             f"/api/workbench/workflows/{workflow_id}/versions/{version_id}/test-run",
             json={
                 "workspace_id": "ws-1",
-                "inputs": {},
+                "inputs": {goal_input_id: "exercise post-preflight race"},
                 "expected_revision": revision,
             },
         )
@@ -656,13 +705,18 @@ async def test_v3_trial_never_reports_a_post_commit_prepare_fault_as_4xx(
             json={"template": "free_source_analysis", "name": "Late fault"},
         )
         draft = created.json()["draft"]
+        goal_input_id = next(
+            node["config"]["input_id"]
+            for node in draft["authoring_graph"]["nodes"]
+            if node["kind"] == "input" and node["label"] == "分析目标"
+        )
         monkeypatch.setattr(WorkbenchTaskRunPreparer, "prepare", fail_after_commit)
         failed = await client.post(
             f"/api/workbench/workflows/{draft['workflow_id']}"
             f"/versions/{draft['version_id']}/test-run",
             json={
                 "workspace_id": "ws-1",
-                "inputs": {},
+                "inputs": {goal_input_id: "exercise late preparation fault"},
                 "expected_revision": draft["draft_revision"],
             },
         )
@@ -704,6 +758,11 @@ async def test_v3_stale_trial_has_no_side_effects_then_current_trial_advances_re
             json={"template": "free_source_analysis", "name": "Trial race"},
         )
         draft = created.json()["draft"]
+        goal_input_id = next(
+            node["config"]["input_id"]
+            for node in draft["authoring_graph"]["nodes"]
+            if node["kind"] == "input" and node["label"] == "分析目标"
+        )
         workflow_id = draft["workflow_id"]
         version_id = draft["version_id"]
         revision = draft["draft_revision"]
@@ -729,7 +788,7 @@ async def test_v3_stale_trial_has_no_side_effects_then_current_trial_advances_re
             f"/api/workbench/workflows/{workflow_id}/versions/{version_id}/test-run",
             json={
                 "workspace_id": "ws-1",
-                "inputs": {},
+                "inputs": {goal_input_id: "exercise stale trial"},
                 "expected_revision": revision,
             },
         )
@@ -744,7 +803,7 @@ async def test_v3_stale_trial_has_no_side_effects_then_current_trial_advances_re
             f"/api/workbench/workflows/{workflow_id}/versions/{version_id}/test-run",
             json={
                 "workspace_id": "ws-1",
-                "inputs": {},
+                "inputs": {goal_input_id: "exercise current trial"},
                 "expected_revision": current_revision,
             },
         )

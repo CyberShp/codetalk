@@ -176,9 +176,21 @@ async def test_v2_draft_stays_in_legacy_editor_and_explicit_copy_creates_v3(
         loaded = await client.get(
             f"/api/workbench/workflows/{fixture['workflow_header']['workflow_id']}/versions/{version_id}"
         )
+        before_preview = await client.get("/api/workbench/workflows")
+        preview = await client.get(
+            f"/api/workbench/workflows/{fixture['workflow_header']['workflow_id']}"
+            f"/versions/{version_id}/migration-preview"
+        )
+        preview_payload = preview.json()
+        after_preview = await client.get("/api/workbench/workflows")
         copied = await client.post(
             f"/api/workbench/workflows/{fixture['workflow_header']['workflow_id']}"
-            f"/versions/{version_id}/copy-to-v3"
+            f"/versions/{version_id}/copy-to-v3",
+            json={
+                "migration_contract_version": preview_payload["migration_contract_version"],
+                "preview_confirmed": True,
+                "confirmation_token": preview_payload["confirmation_token"],
+            },
         )
         loaded_again = await client.get(
             f"/api/workbench/workflows/{fixture['workflow_header']['workflow_id']}/versions/{version_id}"
@@ -186,6 +198,26 @@ async def test_v2_draft_stays_in_legacy_editor_and_explicit_copy_creates_v3(
 
     assert loaded.status_code == 200
     assert loaded.json().get("editor_mode") == "legacy"
+    assert preview.status_code == 200
+    confirmation_token = preview_payload.pop("confirmation_token")
+    assert len(confirmation_token) == 64
+    assert preview_payload == {
+        "migration_contract_version": 1,
+        "source_schema_version": 2,
+        "target_schema_version": 3,
+        "source_preserved": True,
+        "incompatible_nodes": [],
+        "enabled_professional_rules": [],
+        "output_changes": {
+            "source_output_count": 1,
+            "migrated_output_count": 1,
+            "dropped_output_count": 0,
+        },
+        "rollback_effect": "原工作流版本保持只读且不变；回滚时可归档新建的 V3 副本。",
+        "requires_confirmation": True,
+        "can_apply": True,
+    }
+    assert after_preview.json() == before_preview.json()
     assert copied.status_code == 201
     copied_payload = copied.json()
     assert copied_payload["source_version_id"] == version_id
@@ -283,7 +315,17 @@ async def test_v2_save_preserves_technical_ids_and_historical_v1_fixture_is_read
         )
         v1_copied = await client.post(
             f"/api/workbench/workflows/{v1['workflow_header']['workflow_id']}"
-            f"/versions/{v1_version_id}/copy-to-v3"
+            f"/versions/{v1_version_id}/copy-to-v3",
+            json={
+                "migration_contract_version": 1,
+                "preview_confirmed": True,
+                "confirmation_token": (
+                    await client.get(
+                        f"/api/workbench/workflows/{v1['workflow_header']['workflow_id']}"
+                        f"/versions/{v1_version_id}/migration-preview"
+                    )
+                ).json()["confirmation_token"],
+            },
         )
         v1_after_copy = await client.get(
             f"/api/workbench/workflows/{v1['workflow_header']['workflow_id']}"

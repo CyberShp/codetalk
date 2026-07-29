@@ -519,7 +519,10 @@ class WorkbenchTaskRunPreparer:
                 str(provider_override or step.get("provider") or "claude-code")
             )
             command = _agent_task_provider_command(provider)
-            runtime_limits = _agent_task_runtime_limits(provider)
+            runtime_limits = _agent_task_runtime_limits(
+                provider,
+                step=step if is_v3_contract else None,
+            )
             prompt_transport = _agent_task_prompt_transport(provider)
             step_input_snapshot = _scoped_input_snapshot_for_step(step, input_snapshot)
             step_input_consumption = scope_input_consumption_ledger(
@@ -3221,7 +3224,11 @@ def _agent_task_provider_command(provider: str) -> list[str]:
     return split_agent_command(spec.command) if spec and spec.command else [provider]
 
 
-def _agent_task_runtime_limits(provider: str) -> dict[str, Any]:
+def _agent_task_runtime_limits(
+    provider: str,
+    *,
+    step: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     runtime = _agent_runtime_for_provider(provider)
     if runtime is None:
         return {}
@@ -3236,6 +3243,15 @@ def _agent_task_runtime_limits(provider: str) -> dict[str, Any]:
             or _positive_int(runtime.get("idle_timeout_seconds"), default=0)
             or _positive_int(runtime.get("idle_complete_seconds"), default=0)
             or 300,
+        )
+    if step is not None:
+        timeout_seconds = (
+            _positive_int(step.get("timeout_sec"), default=0)
+            or timeout_seconds
+        )
+        idle_timeout_seconds = (
+            _positive_int(step.get("idle_timeout_sec"), default=0)
+            or idle_timeout_seconds
         )
     return {
         "timeout_seconds": timeout_seconds,

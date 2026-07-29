@@ -12,6 +12,43 @@ from app.services.source_driven_test_design import (
 from app.services.workflow_dsl import WorkflowDefinition, WorkflowStore, validate_workflow_definition
 
 
+_LEGACY_WORKFLOW_PRESENTATION: dict[str, dict[str, Any]] = {
+    "basic_source_report_codex": {
+        "label": "Legacy · SPDK/iSCSI 专业源码报告",
+        "lifecycle": "legacy",
+        "scope": "spdk_iscsi",
+        "default": False,
+    },
+    "basic_source_design_report_builtin": {
+        "label": "Legacy · SPDK/iSCSI 专业设计报告",
+        "lifecycle": "legacy",
+        "scope": "spdk_iscsi",
+        "default": False,
+    },
+}
+
+_PROFESSIONAL_WORKFLOW_PRESENTATION: dict[str, dict[str, Any]] = {
+    "source_flow_sfmea_blackbox": {
+        "label": "正式存储测试设计（Legacy DSL）",
+        "lifecycle": "active",
+        "scope": "professional",
+        "default": False,
+    },
+    **_LEGACY_WORKFLOW_PRESENTATION,
+}
+
+
+def legacy_workflow_presentation() -> dict[str, dict[str, Any]]:
+    """Return display-only metadata without touching historical definitions."""
+    return deepcopy(_LEGACY_WORKFLOW_PRESENTATION)
+
+
+def workflow_preset_presentation(preset_id: str) -> dict[str, Any] | None:
+    """Return optional display metadata for a professional legacy preset."""
+    metadata = _PROFESSIONAL_WORKFLOW_PRESENTATION.get(str(preset_id or ""))
+    return deepcopy(metadata) if metadata is not None else None
+
+
 SOURCE_SCOPE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": ["scope_id", "query", "repo", "discovery", "files", "entry_points"],
@@ -429,6 +466,10 @@ ACTIVE_BUILTIN_WORKFLOW_PRESET_IDS = (
     "source_flow_sfmea_blackbox",
     "basic_source_report_codex",
     "basic_source_design_report_builtin",
+)
+
+BOOTSTRAPPED_BUILTIN_WORKFLOW_PRESET_IDS = (
+    "source_flow_sfmea_blackbox",
 )
 
 BUILTIN_WORKFLOW_PRESET_ALIASES = {
@@ -2077,7 +2118,24 @@ def active_builtin_workflow_presets() -> list[dict[str, Any]]:
     """Return the intentionally small preset catalog exposed by the release UI."""
 
     by_id = {str(preset["id"]): preset for preset in builtin_workflow_presets()}
-    return [deepcopy(by_id[preset_id]) for preset_id in ACTIVE_BUILTIN_WORKFLOW_PRESET_IDS]
+    active: list[dict[str, Any]] = []
+    for preset_id in ACTIVE_BUILTIN_WORKFLOW_PRESET_IDS:
+        preset = deepcopy(by_id[preset_id])
+        presentation = workflow_preset_presentation(preset_id)
+        if presentation is not None:
+            preset["presentation"] = presentation
+        active.append(preset)
+    return active
+
+
+def builtin_workflow_presets_for_bootstrap() -> list[dict[str, Any]]:
+    """Return current presets allowed to create or refresh published versions."""
+
+    by_id = {str(preset["id"]): preset for preset in builtin_workflow_presets()}
+    return [
+        deepcopy(by_id[preset_id])
+        for preset_id in BOOTSTRAPPED_BUILTIN_WORKFLOW_PRESET_IDS
+    ]
 
 
 def reserved_builtin_workflow_ids() -> frozenset[str]:

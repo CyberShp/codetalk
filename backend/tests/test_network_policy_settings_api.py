@@ -55,6 +55,15 @@ async def test_network_policy_snapshot_comes_only_from_deployment_settings(clien
         "cli_block_reason": None,
         "cli_remediation": None,
         "source": "deployment",
+        "migration_preview": {
+            "contract_version": 1,
+            "source": "network_mode",
+            "effective_mode": "intranet",
+            "read_only": True,
+            "automatic_write": False,
+            "admin_confirmation_required": False,
+            "admin_guidance": None,
+        },
     }
     serialized = json.dumps(body)
     for secret in ("deploy-secret", "db-secret", "gateway.corp.example", "/etc/codetalk/corp-ca.pem"):

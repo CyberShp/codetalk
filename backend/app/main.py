@@ -36,6 +36,7 @@ async def lifespan(app: FastAPI):
     from app.services.workbench_task_store import WorkbenchTaskStore
     from app.services.workflow_presets import (
         active_builtin_workflow_presets,
+        builtin_workflow_presets_for_bootstrap,
         reserved_builtin_workflow_ids,
     )
     from app.services.workflow_version_store import WorkflowVersionStore
@@ -45,7 +46,10 @@ async def lifespan(app: FastAPI):
     )
     workflow_migration = workflow_versions.initialize_and_migrate()
     builtin_versions = workflow_versions.ensure_legacy_published_workflows(
-        [dict(preset["definition"]) for preset in active_builtin_workflow_presets()]
+        [
+            dict(preset["definition"])
+            for preset in builtin_workflow_presets_for_bootstrap()
+        ]
     )
     active_builtin_ids = {
         str(preset["id"]) for preset in active_builtin_workflow_presets()

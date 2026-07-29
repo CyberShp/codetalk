@@ -312,7 +312,9 @@ def test_workflow_version_migration_is_idempotent_and_preserves_legacy_table(tmp
         ).fetchone()[0] == 2
 
 
-def test_workflow_version_migration_backfills_existing_legacy_execution_plan(tmp_path):
+def test_workflow_version_migration_reads_missing_legacy_plan_without_rewriting_history(
+    tmp_path,
+):
     from app.services.workflow_dsl import WorkflowStore
     from app.services.workflow_version_store import WorkflowVersionStore
 
@@ -331,13 +333,23 @@ def test_workflow_version_migration_backfills_existing_legacy_execution_plan(tmp
             "UPDATE workbench_schema_meta SET version = 1 WHERE component = 'workflow_versions'"
         )
         db.commit()
+        frozen_updated_at = db.execute(
+            "SELECT updated_at FROM workflow_versions WHERE version_id = ?",
+            (header.published_version_id,),
+        ).fetchone()[0]
 
     upgraded = store.initialize_and_migrate()
     version = store.get_version(header.published_version_id)
 
-    assert upgraded["upgraded_workflows"] == 1
+    assert upgraded["upgraded_workflows"] == 0
     assert version.compiled_plan is not None
     assert version.compiled_plan["workflow_version_id"] == header.published_version_id
+    with sqlite3.connect(db_path) as db:
+        frozen = db.execute(
+            "SELECT compiled_plan_json, updated_at FROM workflow_versions WHERE version_id = ?",
+            (header.published_version_id,),
+        ).fetchone()
+    assert frozen == (None, frozen_updated_at)
     assert store.initialize_and_migrate()["upgraded_workflows"] == 0
 
 
@@ -1035,17 +1047,14 @@ async def test_workflow_version_api_creates_updates_publishes_and_rejects_mutati
         assert loaded_published.json()["v2"]["published_version_id"] == draft_id
 
         next_draft = await client.post("/api/workbench/workflows/new_flow/versions", json={})
-        next_draft_id = next_draft.json()["version_id"]
-        await client.put(
-            f"/api/workbench/workflows/new_flow/versions/{next_draft_id}",
-            json={"authoring_graph": _graph("Draft only")},
-        )
-        listed_with_draft = await client.get("/api/workbench/workflows")
+        assert next_draft.status_code == 409
+        assert next_draft.json()["detail"]["code"] == "legacy_workflow_read_only"
+        listed_without_draft = await client.get("/api/workbench/workflows")
         listed_projection = next(
-            item for item in listed_with_draft.json() if item.get("id") == "new_flow"
+            item for item in listed_without_draft.json() if item.get("id") == "new_flow"
         )
         assert listed_projection["v2"]["published_version_id"] == draft_id
-        assert listed_projection["v2"]["current_draft_version_id"] == next_draft_id
+        assert listed_projection["v2"]["current_draft_version_id"] is None
         assert listed_projection["authoring_graph"]["nodes"][0]["label"] == "Updated"
 
         immutable = await client.put(

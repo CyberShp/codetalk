@@ -1399,8 +1399,13 @@ async def test_task_api_accepts_a_migrated_builtin_style_workflow(tmp_path, monk
     header = version_store.get_workflow("source-review")
     published = version_store.get_version(header.published_version_id)
 
-    assert migration["upgraded_workflows"] == 1
+    assert migration["upgraded_workflows"] == 0
     assert published.compiled_plan is not None
+    with sqlite3.connect(db_path) as db:
+        assert db.execute(
+            "SELECT compiled_plan_json FROM workflow_versions WHERE version_id = ?",
+            (header.published_version_id,),
+        ).fetchone()[0] is None
 
     app = FastAPI()
     app.include_router(agent_workbench.router)

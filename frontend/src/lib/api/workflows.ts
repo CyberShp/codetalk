@@ -3,10 +3,14 @@ import type {
   AuthoringGraph,
   WorkflowCapabilities,
   WorkflowCanvasCreateResult,
+  WorkflowCanvasTemplateCatalog,
+  WorkflowCanvasTemplateId,
   WorkflowCompileResult,
   WorkflowDetail,
   WorkflowHeader,
   WorkflowListItem,
+  WorkflowMigrationConfirmation,
+  WorkflowMigrationPreview,
   WorkflowNodeRegistry,
   WorkflowProviderCapability,
   WorkflowValidationResult,
@@ -21,6 +25,8 @@ const workflowPath = (workflowId: string) =>
 
 export const workflowsApi = {
   list: () => request<WorkflowListItem[]>("/api/workbench/workflows"),
+  listTemplates: () =>
+    request<WorkflowCanvasTemplateCatalog>("/api/workbench/workflow-templates"),
   get: (workflowId: string) =>
     request<WorkflowDetail>(workflowPath(workflowId)),
   create: (payload: {
@@ -34,7 +40,7 @@ export const workflowsApi = {
       body: JSON.stringify(payload),
     }),
   createCanvas: (payload: {
-    template: "blank" | "free_source_analysis";
+    template: WorkflowCanvasTemplateId;
     name: string;
     description?: string;
   }) =>
@@ -65,20 +71,19 @@ export const workflowsApi = {
       method: "POST",
       body: JSON.stringify({ based_on_version_id: basedOnVersionId ?? null }),
     }),
-  copyAsCustomDraft: (workflowId: string) =>
-    request<WorkflowVersion>(`${workflowPath(workflowId)}/copy`, {
-      method: "POST",
-      body: "{}",
-    }),
-  copyVersionToV3: (workflowId: string, versionId: string) =>
+  previewVersionMigration: (workflowId: string, versionId: string) =>
+    request<WorkflowMigrationPreview>(
+      `${workflowPath(workflowId)}/versions/${encodeURIComponent(versionId)}/migration-preview`,
+    ),
+  copyVersionToV3: (workflowId: string, versionId: string, confirmation: WorkflowMigrationConfirmation) =>
     request<{
       workflow: WorkflowHeader;
       draft: WorkflowVersion;
       designer_url: string;
-      migration_preview: Record<string, unknown>;
+      migration_preview: WorkflowMigrationPreview;
     }>(`${workflowPath(workflowId)}/versions/${encodeURIComponent(versionId)}/copy-to-v3`, {
       method: "POST",
-      body: "{}",
+      body: JSON.stringify(confirmation),
     }),
   updateDraft: (
     workflowId: string,

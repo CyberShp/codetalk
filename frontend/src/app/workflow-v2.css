@@ -507,6 +507,8 @@
 .ct-v2-row-actions { display: flex; align-items: center; gap: 3px; }
 .ct-v2-row-actions a, .ct-v2-row-actions button { display: inline-grid; width: 28px; height: 28px; place-items: center; border: 0; border-radius: 4px; background: transparent; color: #526575; }
 .ct-v2-row-actions a:hover, .ct-v2-row-actions button:hover { background: #eaf2f6; color: #087b94; }
+.ct-v2-workflow-badge { display: inline-block; margin: 4px 5px 0 0; border: 1px solid #9a6b13; border-radius: 3px; padding: 1px 4px; color: #714b08; font-size: 9px; font-weight: 600; }
+.ct-v2-workflow-badge.is-legacy { border-color: #9b5c5c; color: #842f2f; }
 .ct-v2-table-empty { padding: 36px; color: #7c8995; text-align: center; }
 .ct-v2-history-band { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 18px; margin: 14px 22px 2px; padding: 14px 16px; border: 1px solid #cedbe4; border-radius: 6px; background: #f8fafb; }
 .ct-v2-history-band h2 { margin: 0 0 4px; font-size: 14px; }
@@ -877,7 +879,9 @@
 .ct-canvas-entry-templates label:has(input:checked) { border-color: #0e7490; background: #f1fafb; }
 .ct-canvas-entry-templates strong, .ct-canvas-entry-templates small { display: block; }
 .ct-canvas-entry-templates strong { font-size: 12px; }
+.ct-canvas-entry-templates strong em { margin-left: 6px; border: 1px solid #8b5e00; border-radius: 3px; padding: 1px 4px; color: #7a4d00; font-size: 9px; font-style: normal; font-weight: 600; }
 .ct-canvas-entry-templates small { margin-top: 3px; color: #718096; font-size: 10px; line-height: 1.4; }
+.ct-canvas-entry-template-state { grid-column: 1 / -1; margin: 0; color: #64748b; font-size: 12px; }
 .ct-canvas-entry-dialog footer { display: flex; justify-content: flex-end; }
 .ct-v2-resource-states { position: absolute; z-index: 20; right: 12px; top: 70px; display: flex; gap: 5px; max-width: min(760px, calc(100% - 24px)); pointer-events: none; }
 .ct-v2-resource-state { display: inline-flex; align-items: center; gap: 5px; border: 1px solid #d8e2eb; border-radius: 5px; background: #fff; padding: 4px 7px; color: #64748b; font-size: 10px; box-shadow: 0 3px 10px rgba(31,48,61,.06); }
