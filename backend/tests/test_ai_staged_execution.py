@@ -947,7 +947,7 @@ async def test_rapid_test_activity_materializes_required_stage_contract_artifact
 
 
 def test_deep_profile_plan_materializes_parallel_exploration_branches():
-    """Deep runs must schedule bounded analysis work, not merely label artifacts."""
+    """Deep runs must explore every major analysis branch instead of reusing rapid caps."""
     plan = build_staged_execution_plan(
         contract=_contract(),
         original_user_request="完整分析 iSCSI login 的资源、异常、并发与恢复测试设计",
@@ -955,7 +955,14 @@ def test_deep_profile_plan_materializes_parallel_exploration_branches():
             "id": "deep",
             "label": "深度型",
             "delivery_class": "full_test_delivery",
-            "max_subagents": 4,
+            "max_subagents": 1,
+            "source_analysis_limits": {
+                "max_tokens": 800,
+                "max_chinese_characters": 800,
+                "max_files": 3,
+                "excerpt_chars": 800,
+                "max_evidence_anchors": 4,
+            },
         },
     )
 
@@ -969,23 +976,22 @@ def test_deep_profile_plan_materializes_parallel_exploration_branches():
 
     assert plan["execution_profile"]["id"] == "deep"
     assert plan["execution_profile"]["applied_subagent_count"] == 4
+    assert plan["execution_profile"]["configured_max_subagents"] == 1
     assert branch_ids.issubset(stages)
     assert all(stages[branch_id]["depends_on"] == ["flow_outline"] for branch_id in branch_ids)
     assert all(stages[branch_id]["support"] is True for branch_id in branch_ids)
     assert branch_ids.issubset(stages["business_flow"]["depends_on"])
     assert branch_ids.issubset(stages["sfmea"]["depends_on"])
     assert branch_ids.issubset(stages["black_box_cases"]["depends_on"])
-    # Deep mode gains breadth from independently scoped branches, not from
-    # silently defeating the V3 source-evidence/output budget per branch.
-    assert all(stages[branch_id]["max_tokens"] <= 1600 for branch_id in branch_ids)
+    assert all(stages[branch_id]["max_tokens"] == 8000 for branch_id in branch_ids)
     assert all(
-        stages[branch_id]["output_limits"]["max_evidence_anchors"] <= 12
+        stages[branch_id]["output_limits"]["max_evidence_anchors"] == 48
         for branch_id in branch_ids
     )
-    assert stages["source_analysis"]["max_tokens"] <= 1600
-    assert stages["source_analysis"]["output_limits"]["max_evidence_anchors"] <= 12
-    assert plan["execution_profile"]["source_analysis_limits"]["max_files"] <= 6
-    assert plan["execution_profile"]["source_analysis_limits"]["max_evidence_anchors"] <= 12
+    assert stages["source_analysis"]["max_tokens"] == 4096
+    assert stages["source_analysis"]["output_limits"]["max_evidence_anchors"] == 48
+    assert plan["execution_profile"]["source_analysis_limits"]["max_files"] == 24
+    assert plan["execution_profile"]["source_analysis_limits"]["max_evidence_anchors"] == 48
     assert (
         plan["execution_profile"]["source_analysis_limits"]["max_tokens"]
         == stages["source_analysis"]["max_tokens"]
@@ -1013,7 +1019,7 @@ def test_plan_does_not_duplicate_source_evidence_pack_as_generic_artifact_stage(
         stage for stage in plan["stages"] if stage.get("artifact") == "source_analysis.md"
     ]
     assert [stage["id"] for stage in source_stages] == ["source_analysis"]
-    assert source_stages[0]["max_tokens"] == 1600
+    assert source_stages[0]["max_tokens"] == 4096
 
 
 def test_deep_exploration_prompt_routes_evidence_by_branch_responsibility():
@@ -1119,7 +1125,8 @@ def test_deep_exploration_prompt_routes_evidence_by_branch_responsibility():
     assert "SRC-07" in prompt
     assert "data digest error" in prompt
     assert "SRC-03" in prompt
-    assert "至少引用两个不同的 routed evidence_id" in prompt
+    assert "尽可能覆盖全部相关锚点" in prompt
+    assert "最多 48 个锚点" in prompt
 
 
 def test_deep_profile_requires_governed_source_driven_stage_chain_for_basic_report():
@@ -1514,7 +1521,7 @@ async def test_truncated_deep_support_branch_is_preserved_without_blocking_deliv
     ).read_text()
 
 
-def test_deep_exploration_branch_uses_bounded_markdown_context():
+def test_deep_exploration_branch_uses_comprehensive_markdown_context():
     plan = build_staged_execution_plan(
         contract=_contract(),
         original_user_request="分析 iSCSI login 的资源生命周期与耗尽条件",
@@ -1549,11 +1556,11 @@ def test_deep_exploration_branch_uses_bounded_markdown_context():
         completed={},
     )
 
-    assert stage["max_tokens"] <= 1600
-    assert stage["output_limits"]["max_chinese_characters"] <= 1800
+    assert stage["max_tokens"] == 8000
+    assert stage["output_limits"]["max_chinese_characters"] == 8000
     assert len(prompt) < 16_000
     assert "必须直接以 Markdown 标题或列表开始，不得使用 JSON" in prompt
-    assert "SRC-09" not in prompt
+    assert "SRC-09" in prompt
 
 
 def test_source_driven_v2_plan_groups_ledgers_and_mindmap_without_extra_model_calls():

@@ -9,6 +9,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from app.services.workflow_output_presets import output_content_preset_options
+
 
 NODE_REGISTRY_SCHEMA_VERSION = 1
 
@@ -129,6 +131,11 @@ _NODE_REGISTRY: tuple[dict[str, Any], ...] = (
                     {"value": "black_box", "label": "黑盒测试"},
                     {"value": "independent_review", "label": "独立审查"},
                 ],
+            },
+            "content_preset_ids": {
+                "type": "enum_multiselect",
+                "label": "内容预设",
+                "options": output_content_preset_options(),
             },
             "evidence_memory": {"type": "boolean", "label": "写入证据库"},
             "semantic_import": {"type": "boolean", "label": "导入测试语义库"},

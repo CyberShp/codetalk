@@ -88,6 +88,48 @@ test("workflow designer canvas nodes and edges materialize into executable DSL",
   assert.equal(workflow.ui.layout.nodes.length, 6);
 });
 
+test("workflow designer preserves optional output content presets on declared outputs", () => {
+  const workflow = buildWorkflowFromDesigner({
+    workflowId: "output_preset_flow",
+    workflowName: "Output Preset Flow",
+    provider: "builtin-llm",
+    goal: "生成可选格式预设报告",
+    inputSpec: "repo_path:directory@local",
+    outputSpec: "report:markdown=report.md",
+    artifacts: "report.md",
+    layout: {
+      nodes: [
+        { id: "repo", kind: "input", title: "仓库", source: "canvas" },
+        { id: "agent", kind: "agent", title: "Agent", source: "canvas" },
+        {
+          id: "report",
+          kind: "output",
+          title: "正式报告",
+          source: "canvas",
+          config: {
+            output_id: "report",
+            type: "markdown",
+            artifact: "report.md",
+            content_preset_ids: [
+              "dev_to_test_flow_doc",
+              "coverage_audit_limits",
+            ],
+          },
+        },
+      ],
+      edges: [
+        { id: "e1", source: "repo", target: "agent" },
+        { id: "e2", source: "agent", target: "report" },
+      ],
+    },
+  });
+
+  assert.deepEqual(workflow.outputs.find((output) => output.id === "report").content_preset_ids, [
+    "dev_to_test_flow_doc",
+    "coverage_audit_limits",
+  ]);
+});
+
 test("workflow designer accepts input through source context before the agent", () => {
   const workflow = buildWorkflowFromDesigner({
     workflowId: "context_chain",

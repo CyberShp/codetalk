@@ -1710,7 +1710,7 @@ def test_prepare_workbench_task_run_freezes_workflow_and_creates_agent_run(tmp_p
 
     assert result.workflow_snapshot["version"] == 2
     assert result.task_bundle["inputs"]["mr_link"] == "https://codehub.local/project/merge_requests/1"
-    assert result.task_bundle["network_policy"]["network_mode"] == "intranet_controlled_egress"
+    assert result.task_bundle["network_policy"]["network_mode"] == "codetalk_passthrough"
     assert result.agent_runs[0]["step_id"] == "collect_mr"
     assert result.agent_runs[0]["mcp_profile"] == "codehub-readonly"
 
@@ -2269,6 +2269,7 @@ def test_prepare_workbench_task_run_builds_executor_handoff_contract(tmp_path):
                 "type": "markdown",
                 "from": "agent_collect",
                 "artifact": "black_box_cases.md",
+                "content_preset_ids": ["blackbox_scenario_flow_case_pack"],
             },
         ],
     })
@@ -2331,6 +2332,9 @@ def test_prepare_workbench_task_run_builds_executor_handoff_contract(tmp_path):
         "sfmea.json",
         "black_box_cases.md",
     ]
+    black_box_output = contract["outputs"]["declared_outputs"][1]
+    assert black_box_output["content_presets"][0]["id"] == "blackbox_scenario_flow_case_pack"
+    assert "独立 Oracle" in black_box_output["content_presets"][0]["prompt_hint"]
     output_contract = json.loads(
         Path(
             result.artifact_dir,
@@ -2343,6 +2347,8 @@ def test_prepare_workbench_task_run_builds_executor_handoff_contract(tmp_path):
         "sfmea.json",
         "black_box_cases.md",
     ]
+    declared_black_box = output_contract["execution_contract"]["outputs"]["declared_outputs"][1]
+    assert declared_black_box["content_presets"][0]["label"] == "黑盒场景-流程-用例包"
 
 
 def test_external_agent_finalization_materializes_behavior_validation_before_quality_audit(

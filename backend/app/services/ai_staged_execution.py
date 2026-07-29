@@ -139,6 +139,20 @@ _DEEP_EXPLORATION_BRANCHES = (
         "并发交错、边界、翻转与长期稳定性探索",
     ),
 )
+_DEEP_SOURCE_EXPLORATION_BUDGET = {
+    "max_tokens": 4096,
+    "max_chinese_characters": 8000,
+    "max_files": 24,
+    "excerpt_chars": 6000,
+    "max_evidence_anchors": 48,
+    "min_source_files": 12,
+    "min_test_files": 8,
+}
+_DEEP_BRANCH_EXPLORATION_BUDGET = {
+    "max_tokens": 8000,
+    "max_chinese_characters": 8000,
+    "max_evidence_anchors": 48,
+}
 _DEEP_BRANCH_EVIDENCE_HINTS = {
     "deep_entry_paths": (
         "login", "auth", "chap", "session", "tsih", "isid", "cid", "entry", "request",
@@ -2606,49 +2620,11 @@ def _staged_execution_profile(raw_profile: dict[str, Any] | None) -> dict[str, A
         profile_id = "rapid"
     configured_max_subagents = max(0, int(raw.get("max_subagents") or 0))
     if profile_id == "deep":
-        # Deep execution has four distinct analysis responsibilities.  The
-        # frozen profile decides how many are actually scheduled, never the UI.
-        applied_subagent_count = min(
-            len(_DEEP_EXPLORATION_BRANCHES),
-            max(2, configured_max_subagents or 2),
-        )
-        # Deep mode gains breadth through separately scoped branches.  It must
-        # not inflate the deterministic source-analysis prompt or per-branch
-        # output budget beyond the V3 evidence-pack contract.
-        requested_source_limits = raw.get("source_analysis_limits")
-        requested_source_limits = (
-            requested_source_limits if isinstance(requested_source_limits, dict) else {}
-        )
-        source_limits = {
-            "max_tokens": min(
-                1600,
-                int(requested_source_limits.get("max_tokens") or settings.source_analysis_max_tokens),
-            ),
-            "max_chinese_characters": min(
-                1200,
-                int(requested_source_limits.get("max_chinese_characters") or settings.source_analysis_max_chinese_characters),
-            ),
-            "max_files": min(
-                6,
-                int(requested_source_limits.get("max_files") or settings.source_analysis_max_files),
-            ),
-            "excerpt_chars": min(
-                1500,
-                int(requested_source_limits.get("excerpt_chars") or settings.source_analysis_excerpt_chars),
-            ),
-            "max_evidence_anchors": min(
-                12,
-                int(requested_source_limits.get("max_evidence_anchors") or settings.source_analysis_max_evidence_anchors),
-            ),
-            "min_source_files": min(
-                6,
-                max(1, int(requested_source_limits.get("min_source_files") or 1)),
-            ),
-            "min_test_files": min(
-                4,
-                int(requested_source_limits.get("min_test_files") or settings.source_analysis_min_test_files),
-            ),
-        }
+        # Deep execution means exhausting the known responsibility map.  The
+        # configured count remains auditable, but it no longer narrows branch,
+        # state, resource, failure/recovery, concurrency, or boundary analysis.
+        applied_subagent_count = len(_DEEP_EXPLORATION_BRANCHES)
+        source_limits = dict(_DEEP_SOURCE_EXPLORATION_BUDGET)
         return {
             "id": "deep",
             "delivery_class": str(raw.get("delivery_class") or "full_test_delivery"),
@@ -2700,12 +2676,14 @@ def _insert_deep_exploration_stages(
             "support": True,
             "subagent_role": stage_id,
             "output_contract": {"artifact": artifact},
-            # Deep delivery has multiple independent evidence syntheses; each
-            # remains bounded so one branch cannot dominate an entire run.
-            "max_tokens": 1600,
+            "max_tokens": _DEEP_BRANCH_EXPLORATION_BUDGET["max_tokens"],
             "output_limits": {
-                "max_chinese_characters": 1800,
-                "max_evidence_anchors": 12,
+                "max_chinese_characters": _DEEP_BRANCH_EXPLORATION_BUDGET[
+                    "max_chinese_characters"
+                ],
+                "max_evidence_anchors": _DEEP_BRANCH_EXPLORATION_BUDGET[
+                    "max_evidence_anchors"
+                ],
             },
         }
         for stage_id, artifact, purpose in branches
@@ -13718,11 +13696,21 @@ def _deep_exploration_stage_prompt(
     whole regular-stage context, because that turns four parallel notes into
     four copies of a report-generation request and makes truncation likely.
     """
+    output_limits = stage.get("output_limits")
+    output_limits = output_limits if isinstance(output_limits, dict) else {}
+    max_anchors = max(
+        1,
+        int(
+            output_limits.get("max_evidence_anchors")
+            or _DEEP_BRANCH_EXPLORATION_BUDGET["max_evidence_anchors"]
+        ),
+    )
     cards: list[dict[str, Any]] = []
     for card in _select_deep_branch_evidence_cards(
         stage_id=str(stage.get("id") or ""),
         source_pack=source_pack,
         original_request=str(plan.get("original_user_request") or plan.get("target") or ""),
+        limit=max_anchors,
     ):
         cards.append(
             {
@@ -13734,14 +13722,12 @@ def _deep_exploration_stage_prompt(
                     f"{int(card.get('end_line') or 0)}"
                 ),
                 "symbols": list(card.get("symbols") or [])[:4],
-                "excerpt": str(card.get("excerpt") or "")[:600],
+                "excerpt": str(card.get("excerpt") or "")[:1000],
             }
         )
-    output_limits = stage.get("output_limits")
     max_characters = int(
         output_limits.get("max_chinese_characters")
-        if isinstance(output_limits, dict)
-        else 1100
+        or _DEEP_BRANCH_EXPLORATION_BUDGET["max_chinese_characters"]
     )
     outline_summary = json.dumps(
         _compact_stage_value(outline), ensure_ascii=False, sort_keys=True
@@ -13766,7 +13752,7 @@ def _deep_exploration_stage_prompt(
             "RULES:",
             "- 只整理当前分支职责；不要重复完整流程、SFMEA、黑盒用例或总报告。",
             "- 只可依据 VERIFIED_EVIDENCE 说明事实；证据不足只能标记为待验证。",
-            "- 每个结论必须写出 VERIFIED_EVIDENCE 中的精确 evidence_id（例如 SRC-01）和文件行号；至少引用两个不同的 routed evidence_id，最多 8 个锚点。",
+            f"- 每个结论必须写出 VERIFIED_EVIDENCE 中的精确 evidence_id（例如 SRC-01）和文件行号；尽可能覆盖全部相关锚点，本分支最多 {max_anchors} 个锚点。",
             f"- 正文最多 {max_characters} 个中文字符，使用短标题和要点，不贴大段源码。",
             "- 必须直接以 Markdown 标题或列表开始，不得使用 JSON、artifact 容器或 Markdown 代码围栏。",
             "- 仅返回当前 Markdown 文件正文。",
@@ -13779,7 +13765,7 @@ def _select_deep_branch_evidence_cards(
     stage_id: str,
     source_pack: dict[str, Any],
     original_request: str,
-    limit: int = 8,
+    limit: int = _DEEP_BRANCH_EXPLORATION_BUDGET["max_evidence_anchors"],
 ) -> list[dict[str, Any]]:
     """Route verified evidence to the deep branch that can use it.
 
@@ -14698,10 +14684,7 @@ async def _execute_source_analysis_stage(
 
     prompt_context = _source_analysis_prompt_context(
         compact,
-        # The delivery ledger may require more paths than the Source Analysis
-        # model should receive. Keep this P0 prompt contract at six slices even
-        # when a formal workflow retains a ten-path evidence pack.
-        max_files=min(6, int(effective["max_files"])),
+        max_files=int(effective["max_files"]),
     )
     _write_json(stage_dir / "source_analysis_prompt_context.json", prompt_context)
     prompt = _source_analysis_prompt(stage=stage, compact_context=prompt_context)
@@ -15708,10 +15691,50 @@ def _stage_execution_limits(stage_id: str) -> dict[str, Any]:
             },
         ),
         "test_design_mindmap": (3500, {"max_chinese_characters": 3200}),
-        "deep_entry_paths": (2400, {"max_chinese_characters": 2200}),
-        "deep_state_and_resources": (2400, {"max_chinese_characters": 2200}),
-        "deep_failures_and_recovery": (2400, {"max_chinese_characters": 2200}),
-        "deep_concurrency_and_boundaries": (2400, {"max_chinese_characters": 2200}),
+        "deep_entry_paths": (
+            _DEEP_BRANCH_EXPLORATION_BUDGET["max_tokens"],
+            {
+                "max_chinese_characters": _DEEP_BRANCH_EXPLORATION_BUDGET[
+                    "max_chinese_characters"
+                ],
+                "max_evidence_anchors": _DEEP_BRANCH_EXPLORATION_BUDGET[
+                    "max_evidence_anchors"
+                ],
+            },
+        ),
+        "deep_state_and_resources": (
+            _DEEP_BRANCH_EXPLORATION_BUDGET["max_tokens"],
+            {
+                "max_chinese_characters": _DEEP_BRANCH_EXPLORATION_BUDGET[
+                    "max_chinese_characters"
+                ],
+                "max_evidence_anchors": _DEEP_BRANCH_EXPLORATION_BUDGET[
+                    "max_evidence_anchors"
+                ],
+            },
+        ),
+        "deep_failures_and_recovery": (
+            _DEEP_BRANCH_EXPLORATION_BUDGET["max_tokens"],
+            {
+                "max_chinese_characters": _DEEP_BRANCH_EXPLORATION_BUDGET[
+                    "max_chinese_characters"
+                ],
+                "max_evidence_anchors": _DEEP_BRANCH_EXPLORATION_BUDGET[
+                    "max_evidence_anchors"
+                ],
+            },
+        ),
+        "deep_concurrency_and_boundaries": (
+            _DEEP_BRANCH_EXPLORATION_BUDGET["max_tokens"],
+            {
+                "max_chinese_characters": _DEEP_BRANCH_EXPLORATION_BUDGET[
+                    "max_chinese_characters"
+                ],
+                "max_evidence_anchors": _DEEP_BRANCH_EXPLORATION_BUDGET[
+                    "max_evidence_anchors"
+                ],
+            },
+        ),
     }.get(base_stage_id)
     if limits is None:
         return {}

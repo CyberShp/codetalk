@@ -11,6 +11,8 @@ from collections import defaultdict
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any
 
+from app.services.workflow_output_presets import selected_output_content_presets
+
 
 COMPILED_CONTRACT_VERSION = 3
 _SCHEMA_VERSION = 3
@@ -532,6 +534,9 @@ def _declared_outputs(nodes: dict[str, dict[str, Any]], edges: list[dict[str, An
             "outputs",
             producer[1],
         )
+        content_presets = selected_output_content_presets(
+            config.get("content_preset_ids") or config.get("content_presets")
+        )
         result.append({
             "output_id": output_id,
             # Existing WorkflowStore/Task Prepare reads id/type/from.  Keep the
@@ -549,6 +554,7 @@ def _declared_outputs(nodes: dict[str, dict[str, Any]], edges: list[dict[str, An
                 if _strings(config.get("validation_roles"))
                 else {}
             ),
+            **({"content_presets": content_presets} if content_presets else {}),
             "producer_step_id": producer[0],
             "producer_port_id": producer[1],
             "producer_port_key": producer_port_key,

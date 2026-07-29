@@ -40,6 +40,7 @@ from app.services.workbench_input_ingest import (
     validate_workbench_inputs,
 )
 from app.services.workflow_dsl import WorkflowStore
+from app.services.workflow_output_presets import selected_output_content_presets
 from app.services.workbench_task_compile import (
     TaskConfigurationError,
     compiled_contract_version,
@@ -2985,7 +2986,14 @@ def _declared_outputs_for_step(
         source_step = str(output.get("from") or "")
         if source_step != step_id and artifact not in required:
             continue
-        outputs.append(dict(output))
+        declared = dict(output)
+        if "content_presets" not in declared:
+            content_presets = selected_output_content_presets(
+                declared.get("content_preset_ids")
+            )
+            if content_presets:
+                declared["content_presets"] = content_presets
+        outputs.append(declared)
     return outputs
 
 
@@ -3066,6 +3074,16 @@ def _workflow_contract_output(item: dict[str, Any]) -> dict[str, Any]:
         payload["semantic_import"] = {"enabled": True}
     elif isinstance(semantic_import, dict) and semantic_import.get("enabled", True) is not False:
         payload["semantic_import"] = {"enabled": True, **dict(semantic_import)}
+    if isinstance(item.get("content_presets"), list):
+        payload["content_presets"] = [
+            dict(preset)
+            for preset in item.get("content_presets") or []
+            if isinstance(preset, dict)
+        ]
+    else:
+        content_presets = selected_output_content_presets(item.get("content_preset_ids"))
+        if content_presets:
+            payload["content_presets"] = content_presets
     return payload
 
 

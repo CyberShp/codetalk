@@ -112,7 +112,7 @@ export interface GeneralSettings {
 
 export interface DeploymentNetworkMigrationPreview {
   contract_version: number;
-  source: "network_mode" | "legacy_intranet_network_mode";
+  source: "codetalk_runtime" | "network_mode" | "legacy_intranet_network_mode";
   effective_mode: "developer" | "intranet" | "strict_compliance";
   read_only: true;
   automatic_write: false;
@@ -120,7 +120,7 @@ export interface DeploymentNetworkMigrationPreview {
   admin_guidance: string | null;
 }
 
-/** Deployment-owned network posture. This is deliberately read-only in the UI. */
+/** CodeTalk runtime network posture. Security is owned by the surrounding environment. */
 export interface DeploymentNetworkPolicy {
   mode: "developer" | "intranet" | "strict_compliance";
   policy_id: string;
@@ -136,7 +136,7 @@ export interface DeploymentNetworkPolicy {
   cli_network_ready: boolean;
   cli_block_reason: string | null;
   cli_remediation: string | null;
-  source: "deployment";
+  source: "codetalk_runtime" | "deployment";
   migration_preview: DeploymentNetworkMigrationPreview;
 }
 
@@ -359,6 +359,15 @@ export interface WorkbenchWorkflowCapabilities {
     default_enabled?: boolean;
     description?: string;
     prompt_hint?: string;
+  }>;
+  output_content_presets?: Array<{
+    id: string;
+    label: string;
+    source: "codetalk_builtin" | string;
+    description?: string;
+    prompt_hint?: string;
+    roles?: string[];
+    headings?: string[];
   }>;
   semantic_library_import_formats: string[];
   artifact_contract: Record<string, string>;
@@ -1362,7 +1371,7 @@ export interface Workspace {
 
 export interface WorkspaceCreate {
   name: string;
-  repo_path: string;
+  repo_path?: string;
 }
 
 export interface WorkspaceFolderEntry {

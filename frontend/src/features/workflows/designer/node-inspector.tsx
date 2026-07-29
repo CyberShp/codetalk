@@ -308,7 +308,7 @@ function RegistryConfigFields({
                   id: option.value,
                   label: option.label,
                 }))}
-                emptyText="没有可用的验收角色"
+                emptyText="没有可用选项"
                 ariaLabel={label}
                 onChange={(value) => onChange({ [key]: value })}
               />

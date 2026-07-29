@@ -6322,6 +6322,11 @@ def _build_workbench_staged_plan(
         if isinstance(test_activity_contract.get("artifact_contract"), dict)
         else {}
     )
+    declared_outputs_by_artifact = {
+        str(item.get("artifact") or ""): item
+        for item in output_contract.get("declared_outputs") or []
+        if isinstance(item, dict) and str(item.get("artifact") or "")
+    }
     artifact_contract = {
         artifact: {
             "artifact": artifact,
@@ -6331,6 +6336,19 @@ def _build_workbench_staged_plan(
                 else {}
             ),
             **({"schema": schemas[artifact]} if schemas.get(artifact) else {}),
+            **(
+                {
+                    "content_presets": declared_outputs_by_artifact[artifact][
+                        "content_presets"
+                    ]
+                }
+                if isinstance(declared_outputs_by_artifact.get(artifact), dict)
+                and isinstance(
+                    declared_outputs_by_artifact[artifact].get("content_presets"),
+                    list,
+                )
+                else {}
+            ),
         }
         for artifact in required_artifacts
     }

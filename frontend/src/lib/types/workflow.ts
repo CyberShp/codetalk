@@ -169,7 +169,7 @@ export interface WorkflowValidationResult {
 
 export interface WorkflowPlanNode {
   node_id: string;
-  graph_node_id: string;
+  graph_node_id: string | null;
   type: string;
   depends_on: string[];
   resolved_input_bindings: Record<
@@ -184,6 +184,7 @@ export interface WorkflowPlanNode {
   timeout_sec: number;
   idle_timeout_sec: number;
   failure_policy: "stop" | "continue_independent";
+  required_outputs: string[];
   kind?: string;
   handler_id?: string;
   handler_version?: number;
@@ -371,12 +372,23 @@ export interface WorkflowSkillCapability {
   default_enabled?: boolean;
 }
 
+export interface WorkflowOutputContentPreset {
+  id: string;
+  label: string;
+  source?: string;
+  description?: string;
+  prompt_hint?: string;
+  roles?: string[];
+  headings?: string[];
+}
+
 export interface WorkflowCapabilities {
   input_types: string[];
   input_resolvers: string[];
   step_types: string[];
   output_types: string[];
   skill_catalog?: WorkflowSkillCapability[];
+  output_content_presets?: WorkflowOutputContentPreset[];
   meta?: WorkflowResourceMeta;
 }
 

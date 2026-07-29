@@ -484,6 +484,9 @@ export function buildWorkflowFromDesigner(options) {
       from,
       ...(artifact ? { artifact } : {}),
       ...(schema ? { schema } : {}),
+      ...(outputNode && stringsFromNodeConfig(outputNode, "content_preset_ids").length
+        ? { content_preset_ids: stringsFromNodeConfig(outputNode, "content_preset_ids") }
+        : {}),
       ...(evidenceMemory ? { evidence_memory: evidenceMemory } : {}),
       ...(semanticImport ? { semantic_import: semanticImport } : {}),
     };

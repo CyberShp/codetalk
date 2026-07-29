@@ -196,6 +196,31 @@ def test_v3_default_profile_is_artifact_only_and_declared_outputs_are_authoritat
         "required_outputs": ["report"],
         "required_artifacts": ["report.md"],
     }
+
+
+def test_v3_declared_outputs_freeze_optional_content_presets():
+    from app.services.workflow_contract_v3 import compile_workflow_contract_v3
+
+    graph = _graph()
+    graph["nodes"][2]["config"]["content_preset_ids"] = [
+        "dev_to_test_flow_doc",
+        "coverage_audit_limits",
+    ]
+
+    compiled = compile_workflow_contract_v3(
+        graph,
+        capabilities=_capabilities(),
+        workflow_version_id="wfv_content_presets",
+    )
+
+    output = compiled["compiled_definition"]["declared_outputs"][0]
+    assert [item["id"] for item in output["content_presets"]] == [
+        "dev_to_test_flow_doc",
+        "coverage_audit_limits",
+    ]
+    assert output["content_presets"][0]["label"] == "开发给测试讲代码"
+    assert "外部入口和触发条件" in output["content_presets"][0]["headings"]
+    assert "覆盖审计与分析限制" in output["content_presets"][1]["label"]
     plan_step = next(node for node in compiled["compiled_plan"]["nodes"] if node["node_id"] == "analyze")
     assert plan_step["type"] == "agent_task"
 

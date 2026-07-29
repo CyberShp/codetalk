@@ -102,6 +102,7 @@ from app.services.workflow_presets import (
 )
 from app.services.workflow_version_store import workflow_header_status
 from app.services.workflow_node_registry import node_registry_payload
+from app.services.workflow_output_presets import OUTPUT_CONTENT_PRESETS
 from app.services.workflow_authoring_factory import backend_commit_sha
 from app.services.workflow_migration_policy import (
     WORKFLOW_V3_READ_ONLY_DETAIL,
@@ -2583,6 +2584,7 @@ async def get_workflow_capabilities() -> dict[str, Any]:
             "workflow_output_materialization": True,
             "semantic_case_import_from_outputs": True,
             "sha256_and_size_recorded": True,
+            "optional_content_presets": True,
         },
         "agent_cli_features": {
             "agent_owned_mcp_credentials": True,
@@ -2673,6 +2675,18 @@ async def get_workflow_capabilities() -> dict[str, Any]:
                 "description": "要求 Agent 写入声明的 JSON/Markdown artifact，CodeTalk 校验后才接受。",
                 "prompt_hint": "必须把结果写入 required_artifacts 声明的文件；终端文字只能作为进度说明，不能替代 artifact。",
             },
+        ],
+        "output_content_presets": [
+            {
+                "id": str(item.get("id") or ""),
+                "label": str(item.get("label") or ""),
+                "source": str(item.get("source") or "codetalk_builtin"),
+                "description": str(item.get("description") or ""),
+                "prompt_hint": str(item.get("prompt_hint") or ""),
+                "roles": list(item.get("roles") or []),
+                "headings": list(item.get("headings") or []),
+            }
+            for item in OUTPUT_CONTENT_PRESETS
         ],
         "semantic_library_import_formats": ["json", "jsonl", "ndjson", "csv", "txt"],
         "artifact_contract": {
