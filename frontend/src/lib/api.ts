@@ -21,6 +21,7 @@ import type {
   CoverageModuleResult,
   Workspace,
   WorkspaceCreate,
+  WorkspaceFolderBrowseResponse,
   WorkspaceMaterial,
   EmbeddingStatus,
   AnalysisPlan,
@@ -663,6 +664,14 @@ export const api = {
     },
 
     get: (id: string) => request<Workspace>(`/api/workspaces/${id}`),
+
+    browseFolders: (path?: string) => {
+      const query = new URLSearchParams({
+        ...(path ? { path } : {}),
+      });
+      const suffix = query.toString() ? `?${query.toString()}` : "";
+      return request<WorkspaceFolderBrowseResponse>(`/api/workspaces/folders${suffix}`);
+    },
 
     sourceSearch: (wsId: string, q: string, limit = 20) => {
       const query = new URLSearchParams({ q, limit: String(limit) });

@@ -1365,6 +1365,19 @@ export interface WorkspaceCreate {
   repo_path: string;
 }
 
+export interface WorkspaceFolderEntry {
+  name: string;
+  path: string;
+  hidden: boolean;
+}
+
+export interface WorkspaceFolderBrowseResponse {
+  path: string;
+  parent_path: string | null;
+  home_path: string;
+  entries: WorkspaceFolderEntry[];
+}
+
 export type ChatMode = "targeted" | "freeqa" | "report_qa";
 
 export interface WorkspaceChatMessage {

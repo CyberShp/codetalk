@@ -132,6 +132,19 @@ class AddMaterialRequest(BaseModel):
     file_path: str = Field(min_length=1, max_length=4096)
 
 
+class WorkspaceFolderEntry(BaseModel):
+    name: str
+    path: str
+    hidden: bool = False
+
+
+class WorkspaceFolderBrowseResponse(BaseModel):
+    path: str
+    parent_path: str | None
+    home_path: str
+    entries: list[WorkspaceFolderEntry]
+
+
 class WorkspaceReportListItem(BaseModel):
     """Report metadata only — no content. Used in workspace list/detail responses."""
     id: str
@@ -506,6 +519,56 @@ async def create_workspace(
     async with db.execute("SELECT * FROM workspaces WHERE id = ?", (ws_id,)) as cur:
         row = await cur.fetchone()
     return _row_to_workspace(row)
+
+
+@router.get("/folders", response_model=WorkspaceFolderBrowseResponse)
+async def browse_workspace_folders(
+    path: str | None = Query(default=None, max_length=4096),
+    limit: int = Query(default=300, ge=1, le=1000),
+):
+    submitted_path = str(path or "").strip()
+    target = Path(submitted_path).expanduser() if submitted_path else Path.home()
+    try:
+        folder = target.resolve()
+    except OSError as exc:
+        raise HTTPException(status_code=422, detail=f"无法解析路径：{target}") from exc
+
+    if not folder.exists():
+        raise HTTPException(status_code=404, detail=f"文件夹不存在：{folder}")
+    if not folder.is_dir():
+        raise HTTPException(status_code=422, detail=f"路径不是文件夹：{folder}")
+
+    entries: list[WorkspaceFolderEntry] = []
+    try:
+        children = list(folder.iterdir())
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=f"没有权限读取文件夹：{folder}") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=422, detail=f"无法读取文件夹：{folder}") from exc
+
+    for child in sorted(children, key=lambda item: (item.name.startswith("."), item.name.lower())):
+        if len(entries) >= limit:
+            break
+        try:
+            if not child.is_dir():
+                continue
+            entries.append(
+                WorkspaceFolderEntry(
+                    name=child.name,
+                    path=str(child.resolve()),
+                    hidden=child.name.startswith("."),
+                )
+            )
+        except OSError:
+            continue
+
+    parent = folder.parent if folder.parent != folder else None
+    return WorkspaceFolderBrowseResponse(
+        path=str(folder),
+        parent_path=str(parent) if parent else None,
+        home_path=str(Path.home().resolve()),
+        entries=entries,
+    )
 
 
 @router.delete("/{ws_id}", status_code=204, response_class=Response)

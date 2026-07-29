@@ -197,6 +197,43 @@ class TestWorkspaceCRUD:
         assert data["indexed"] == 0
         assert any("_index_workspace" in c for c in background_tasks)
 
+    async def test_browse_folders_returns_directories_only(self, client_v2, tmp_path):
+        folder_root = tmp_path / "browser-root"
+        folder_root.mkdir()
+        (folder_root / "zeta").mkdir()
+        (folder_root / "Alpha").mkdir()
+        (folder_root / ".hidden").mkdir()
+        (folder_root / "file.txt").write_text("not a folder")
+
+        resp = await client_v2.get(
+            "/api/workspaces/folders",
+            params={"path": str(folder_root)},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["path"] == str(folder_root.resolve())
+        assert data["parent_path"] == str(tmp_path.resolve())
+        assert data["home_path"]
+        assert [entry["name"] for entry in data["entries"]] == [
+            "Alpha",
+            "zeta",
+            ".hidden",
+        ]
+        assert all((folder_root / entry["name"]).is_dir() for entry in data["entries"])
+
+    async def test_browse_folders_rejects_file_path(self, client_v2, tmp_path):
+        file_path = tmp_path / "file.txt"
+        file_path.write_text("not a folder")
+
+        resp = await client_v2.get(
+            "/api/workspaces/folders",
+            params={"path": str(file_path)},
+        )
+
+        assert resp.status_code == 422
+        assert "不是文件夹" in resp.json()["detail"]
+
     async def test_create_rejects_nonexistent_path(self, client_v2):
         resp = await client_v2.post(
             "/api/workspaces",
