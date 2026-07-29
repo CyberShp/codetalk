@@ -3277,6 +3277,177 @@ def test_staged_combined_report_audits_the_canonical_sfmea_and_blackbox_rows():
     )
 
 
+def test_builtin_llm_test_activity_contract_does_not_require_external_behavior_audit(
+    tmp_path, monkeypatch
+):
+    import app.services.workbench_workflow_runner as runner_module
+    from app.services.workbench_workflow_runner import (
+        _workflow_scoped_test_activity_contract,
+    )
+
+    monkeypatch.setattr(runner_module.settings, "behavior_claim_audit_enabled", True)
+
+    scoped = _workflow_scoped_test_activity_contract(
+        contract={
+            "artifact_contract": {
+                "sfmea.json": {"required_fields": ["sfmea_id"]},
+            },
+            "quality_gates": {"require_independent_behavior_validation": True},
+        },
+        workflow_snapshot={
+            "id": "builtin-test-activity",
+            "execution_subject": "builtin_llm",
+            "steps": [
+                {
+                    "id": "analyze",
+                    "type": "agent_task",
+                    "provider": "builtin-llm",
+                    "required_artifacts": ["sfmea.json"],
+                }
+            ],
+            "outputs": [{"artifact": "sfmea.json", "type": "json"}],
+        },
+    )
+
+    assert scoped["quality_gates"]["require_independent_behavior_validation"] is False
+
+
+def test_external_agent_test_activity_contract_keeps_independent_behavior_audit(
+    monkeypatch,
+):
+    import app.services.workbench_workflow_runner as runner_module
+    from app.services.workbench_workflow_runner import (
+        _workflow_scoped_test_activity_contract,
+    )
+
+    monkeypatch.setattr(runner_module.settings, "behavior_claim_audit_enabled", True)
+
+    scoped = _workflow_scoped_test_activity_contract(
+        contract={
+            "artifact_contract": {
+                "sfmea.json": {"required_fields": ["sfmea_id"]},
+            },
+            "quality_gates": {"require_independent_behavior_validation": True},
+        },
+        workflow_snapshot={
+            "id": "external-test-activity",
+            "steps": [
+                {
+                    "id": "analyze",
+                    "type": "agent_task",
+                    "provider": "agent-runtime:default-codex",
+                    "required_artifacts": ["sfmea.json"],
+                }
+            ],
+            "outputs": [{"artifact": "sfmea.json", "type": "json"}],
+        },
+    )
+
+    assert scoped["quality_gates"]["require_independent_behavior_validation"] is True
+
+
+def test_builtin_harness_contract_promotes_flow_support_artifacts_as_internal(tmp_path):
+    from app.services.workbench_task_run import BUILTIN_LLM_PROVIDER_ID
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+
+    artifact_dir = tmp_path / "agent"
+    artifact_dir.mkdir()
+    (artifact_dir / "task_bundle.json").write_text("{}", encoding="utf-8")
+    (artifact_dir / "workflow_snapshot.json").write_text(
+        json.dumps(
+            {
+                "id": "source_flow_sfmea_blackbox",
+                "steps": [
+                    {
+                        "id": "analyze",
+                        "type": "agent_task",
+                        "provider": BUILTIN_LLM_PROVIDER_ID,
+                        "required_artifacts": ["report.md"],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    runner = WorkbenchWorkflowRunner(tmp_path / "task-runs")
+    facade, session_id, missing = runner._prepare_provider_facade_for_step(
+        step={
+            "id": "analyze",
+            "type": "agent_task",
+            "provider": BUILTIN_LLM_PROVIDER_ID,
+            "required_artifacts": ["report.md"],
+        },
+        agent_run={
+            "provider": BUILTIN_LLM_PROVIDER_ID,
+            "artifact_dir": str(artifact_dir),
+        },
+        artifact_dir=artifact_dir,
+        run_payload={
+            "provider": BUILTIN_LLM_PROVIDER_ID,
+            "cwd": str(tmp_path),
+            "status": "created",
+        },
+        run_id="run-builtin-flow-support",
+        timeout_sec=30,
+        idle_timeout_sec=None,
+    )
+
+    contract = json.loads((artifact_dir / "harness_contract.json").read_text())
+    assert missing == []
+    assert session_id
+    assert facade.artifact_dir == artifact_dir
+    assert "flow_outline.json" in contract["internal_artifacts"]
+    assert "flow_evidence_pack.json" in contract["internal_artifacts"]
+    assert "flow_outline.json" not in contract["required_artifacts"]
+
+
+def test_quality_audit_materializes_missing_flow_outline_from_source_pack(tmp_path):
+    from app.services.workbench_workflow_runner import (
+        _ensure_flow_modeling_support_artifacts,
+    )
+
+    agent_artifact_dir = tmp_path / "agent_runs" / "analyze"
+    source_pack_dir = agent_artifact_dir / "stages" / "source_analysis"
+    source_pack_dir.mkdir(parents=True)
+    source_pack = {
+        "repo_revision": "",
+        "analysis_target": "login flow",
+        "evidence_cards": [
+            {
+                "evidence_id": "EV-1",
+                "file_path": "lib/login.c",
+                "start_line": 1,
+                "end_line": 4,
+                "excerpt": (
+                    "int login(void) {\n"
+                    "  validate_request();\n"
+                    "  return accept_session();\n"
+                    "}\n"
+                ),
+                "symbols": ["login"],
+                "sha256": "a" * 64,
+            }
+        ],
+    }
+    (source_pack_dir / "source_evidence_pack.json").write_text(
+        json.dumps(source_pack),
+        encoding="utf-8",
+    )
+
+    changed = _ensure_flow_modeling_support_artifacts(
+        artifact_dir=tmp_path,
+        repo_path=str(tmp_path),
+    )
+
+    assert changed["flow_evidence_pack.json"] == ["deterministic_flow_evidence_pack"]
+    assert changed["flow_outline.json"] == ["deterministic_flow_outline"]
+    assert (agent_artifact_dir / "flow_evidence_pack.json").is_file()
+    assert (agent_artifact_dir / "flow_outline.json").is_file()
+    assert (agent_artifact_dir / "business_flow.md").is_file()
+
+
 def test_legacy_local_source_flow_does_not_inherit_staged_flow_sections():
     from app.services.workbench_workflow_runner import (
         _workflow_scoped_test_activity_contract,

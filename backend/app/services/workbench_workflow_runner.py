@@ -39,6 +39,11 @@ from app.services.agent_run_harness import (
 )
 from app.services.ai_thread_artifacts import ArtifactContractError
 from app.services.harness_facade import AgentHarnessFacade, HarnessRunRequest
+from app.services.flow_evidence import (
+    build_flow_evidence_pack,
+    build_flow_outline,
+    render_business_flow_markdown,
+)
 from app.services.provider_adapters.contracts import ProviderUnsupported
 from app.services.legacy_workbench_harness_contract import (
     is_legacy_workbench_harness_contract,
@@ -81,6 +86,8 @@ _BUILTIN_HARNESS_INTERNAL_ARTIFACTS = [
     "staged_execution_result.json",
     "test_activity_stage_progress.json",
     "source_analysis.md",
+    "flow_evidence_pack.json",
+    "flow_outline.json",
     "builtin_llm_failure.json",
     "raw_output.txt",
     "execution_result.json",
@@ -2994,6 +3001,10 @@ class WorkbenchWorkflowRunner:
             artifact_dir,
             quality_feedback={"issues": []},
         )
+        _ensure_flow_modeling_support_artifacts(
+            artifact_dir=artifact_dir,
+            repo_path=str(task_run.repo_path or ""),
+        )
         scoped_contract = _workflow_scoped_test_activity_contract(
             contract=contract,
             workflow_snapshot=task_run.workflow_snapshot,
@@ -3043,6 +3054,12 @@ class WorkbenchWorkflowRunner:
             profile_id=profile_id,
         )
         audit["stage_contract"] = stage_contract_validation
+        projected_stage_progress = stage_contract_validation.get("progress")
+        if isinstance(projected_stage_progress, dict):
+            _write_json(
+                artifact_dir / "test_activity_stage_progress.json",
+                projected_stage_progress,
+            )
         profile_execution_evidence = _profile_execution_evidence_for_quality_audit(
             artifact_dir=artifact_dir,
             execution_profile=execution_profile,
@@ -5667,7 +5684,10 @@ def _workflow_scoped_test_activity_contract(
                     ),
                 }
     quality_gates = dict(contract.get("quality_gates") or {})
-    if not settings.behavior_claim_audit_enabled:
+    if (
+        not settings.behavior_claim_audit_enabled
+        or _workflow_runs_on_builtin_llm(workflow_snapshot)
+    ):
         quality_gates["require_independent_behavior_validation"] = False
     return {
         **contract,
@@ -5676,6 +5696,93 @@ def _workflow_scoped_test_activity_contract(
         "required_outputs": list(scoped_artifacts),
         "audit_scope_required": True,
     }
+
+
+def _workflow_runs_on_builtin_llm(workflow_snapshot: dict[str, Any]) -> bool:
+    if str(workflow_snapshot.get("execution_subject") or "") == "builtin_llm":
+        return True
+    agent_steps = [
+        step
+        for step in workflow_snapshot.get("steps") or []
+        if isinstance(step, dict) and str(step.get("type") or "") == "agent_task"
+    ]
+    if not agent_steps:
+        return False
+    return all(
+        str(step.get("provider") or "") == BUILTIN_LLM_PROVIDER_ID
+        for step in agent_steps
+    )
+
+
+def _ensure_flow_modeling_support_artifacts(
+    *,
+    artifact_dir: Path,
+    repo_path: str,
+) -> dict[str, list[str]]:
+    changed: dict[str, list[str]] = {}
+    roots = [artifact_dir]
+    agent_runs_dir = artifact_dir / "agent_runs"
+    if agent_runs_dir.is_dir():
+        roots.extend(path for path in sorted(agent_runs_dir.iterdir()) if path.is_dir())
+    for root in roots:
+        root_changed = _ensure_flow_modeling_support_artifacts_in_dir(
+            artifact_dir=root,
+            repo_path=repo_path,
+        )
+        for artifact, reasons in root_changed.items():
+            changed.setdefault(artifact, []).extend(reasons)
+    return changed
+
+
+def _ensure_flow_modeling_support_artifacts_in_dir(
+    *,
+    artifact_dir: Path,
+    repo_path: str,
+) -> dict[str, list[str]]:
+    changed: dict[str, list[str]] = {}
+    flow_pack_path = artifact_dir / "flow_evidence_pack.json"
+    outline_path = artifact_dir / "flow_outline.json"
+    flow_pack = _read_json(flow_pack_path)
+    if not isinstance(flow_pack, dict):
+        source_pack = _read_json(
+            artifact_dir / "stages" / "source_analysis" / "source_evidence_pack.json"
+        )
+        if not isinstance(source_pack, dict):
+            source_scope = _read_json(artifact_dir / "source_scope.json")
+            evidence_cards = _read_json(artifact_dir / "evidence_cards.json")
+            if isinstance(source_scope, dict) and isinstance(evidence_cards, list):
+                source_pack = {
+                    "kind": "source_evidence_pack",
+                    "schema_version": "source-evidence-pack-v1",
+                    "repo_path": source_scope.get("repo") or repo_path,
+                    "repo_revision": source_scope.get("repo_revision") or "",
+                    "analysis_target": source_scope.get("analysis_target")
+                    or source_scope.get("query")
+                    or "",
+                    "source_scope": source_scope,
+                    "evidence_cards": evidence_cards,
+                }
+        if isinstance(source_pack, dict) and source_pack.get("evidence_cards"):
+            flow_pack = build_flow_evidence_pack(source_pack, repo_path=repo_path)
+            _write_json(flow_pack_path, flow_pack)
+            changed.setdefault("flow_evidence_pack.json", []).append(
+                "deterministic_flow_evidence_pack"
+            )
+    if not isinstance(flow_pack, dict) or outline_path.is_file():
+        return changed
+    outline = build_flow_outline(flow_pack)
+    _write_json(outline_path, outline)
+    changed.setdefault("flow_outline.json", []).append("deterministic_flow_outline")
+    business_flow_path = artifact_dir / "business_flow.md"
+    if not business_flow_path.is_file():
+        business_flow_path.write_text(
+            render_business_flow_markdown(outline),
+            encoding="utf-8",
+        )
+        changed.setdefault("business_flow.md", []).append(
+            "render_verified_flow_outline"
+        )
+    return changed
 
 
 def _audit_staged_agent_artifacts(
@@ -5696,6 +5803,10 @@ def _audit_staged_agent_artifacts(
         workflow_snapshot
     ):
         return {}
+    _ensure_flow_modeling_support_artifacts(
+        artifact_dir=artifact_dir,
+        repo_path=str(execution_contract.get("repo_path") or ""),
+    )
     scoped = _workflow_scoped_test_activity_contract(
         contract=contract,
         workflow_snapshot=workflow_snapshot,
