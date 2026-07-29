@@ -24,6 +24,7 @@ from app.services.agent_sandbox import (
     codex_command_for_outer_sandbox,
     filtered_agent_environment,
     prepare_isolated_codex_home,
+    prepare_isolated_opencode_home,
     prepare_isolated_runtime_tmp,
     prepare_agent_sandbox,
 )
@@ -122,17 +123,31 @@ async def probe_agent_runtime(runtime: dict[str, Any]) -> dict[str, Any]:
     proc: asyncio.subprocess.Process | None = None
     try:
         try:
-            sandbox = prepare_agent_sandbox(
-                runtime=_sandbox_runtime_with_network_context(
-                    runtime=runtime,
-                    context=network_context,
-                    command=command,
-                    read_paths=[
-                        *list(runtime.get("sandbox_read_paths") or []),
-                        *_command_runtime_read_paths(command),
-                        *_configured_runtime_read_paths(probe_args),
-                    ],
+            sandbox_runtime = _sandbox_runtime_with_network_context(
+                runtime=runtime,
+                context=network_context,
+                command=command,
+                read_paths=[
+                    *list(runtime.get("sandbox_read_paths") or []),
+                    *_command_runtime_read_paths(command),
+                    *_configured_runtime_read_paths(probe_args),
+                ],
+            )
+            opencode_runtime_home, opencode_runtime_env = prepare_isolated_opencode_home(
+                provider=str(
+                    runtime.get("provider")
+                    or runtime.get("name")
+                    or runtime.get("id")
+                    or ""
                 ),
+                command=[command, *probe_args],
+                artifact_dir=probe_temp_dir,
+            )
+            if opencode_runtime_home is not None:
+                env.update(opencode_runtime_env)
+                sandbox_runtime["sandbox_opencode_home"] = str(opencode_runtime_home)
+            sandbox = prepare_agent_sandbox(
+                runtime=sandbox_runtime,
                 cwd=str(probe_temp_dir),
                 artifact_dir=probe_temp_dir,
             )
@@ -151,6 +166,7 @@ async def probe_agent_runtime(runtime: dict[str, Any]) -> dict[str, Any]:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
+                cwd=str(probe_temp_dir),
                 **process_kwargs,
             )
             try:
@@ -211,6 +227,7 @@ async def probe_agent_runtime(runtime: dict[str, Any]) -> dict[str, Any]:
     finally:
         if proc is not None:
             await _terminate_process(proc, process_group=isolate_process_group)
+        cleanup_isolated_runtime_directories(probe_temp_dir)
         _cleanup_owned_artifact_dir(owned_artifact_dir)
 
 
@@ -609,6 +626,28 @@ async def stream_agent_runtime(
             *[str(path) for path in codex_runtime_read_targets],
             str(Path(command).parent),
         ]
+    try:
+        opencode_runtime_home, opencode_runtime_env = prepare_isolated_opencode_home(
+            provider=str(
+                runtime.get("provider")
+                or runtime.get("name")
+                or runtime.get("id")
+                or ""
+            ),
+            command=[command, *args],
+            artifact_dir=artifact_dir,
+            config_environment=env,
+            allow_artifact_writes=True,
+        )
+    except AgentSandboxError as exc:
+        if prompt_file_path:
+            Path(prompt_file_path).unlink(missing_ok=True)
+        cleanup_isolated_runtime_directories(artifact_dir)
+        _cleanup_owned_artifact_dir(owned_artifact_dir)
+        raise AgentRuntimeError(str(exc)) from exc
+    if opencode_runtime_home is not None:
+        env.update(opencode_runtime_env)
+        sandbox_runtime["sandbox_opencode_home"] = str(opencode_runtime_home)
     try:
         sandbox = prepare_agent_sandbox(
             runtime=sandbox_runtime,

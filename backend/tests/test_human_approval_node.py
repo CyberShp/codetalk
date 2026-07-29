@@ -58,6 +58,7 @@ def test_human_approval_waits_records_immutable_decision_and_rebuilds_projection
         actor="reviewer-7",
         reason="release evidence is complete",
         decided_at=decided_at,
+        received_at=decided_at,
     )
     duplicate = store.decide(
         "release-approval",
@@ -65,6 +66,7 @@ def test_human_approval_waits_records_immutable_decision_and_rebuilds_projection
         actor="reviewer-7",
         reason="release evidence is complete",
         decided_at=decided_at,
+        received_at=decided_at,
     )
 
     assert duplicate == approved

@@ -20,12 +20,39 @@ const evidenceRoot = process.env.CODETALK_E2E_ARTIFACT_DIR
 const runtimeRoot = process.env.CODETALK_TEMP_DIR
   ?? "/Volumes/Media/codetalk-runtime-tmp/phase7-provider-matrix";
 const builtinFixturePort = Number(process.env.CODETALK_PHASE7_BUILTIN_FIXTURE_PORT ?? "3217");
+const opencodeFixturePort = Number(process.env.CODETALK_PHASE7_OPENCODE_FIXTURE_PORT ?? "3218");
+const opencodeBinary = process.env.CODETALK_PHASE7_OPENCODE_BIN ?? "/opt/homebrew/bin/opencode";
 
 assertPhase5IsolatedRuntime();
+assertPhase7StorageAndRedisPolicy();
 assertCanMutatePublicRuntime({
   env: process.env,
   flowName: "Phase 7 real provider matrix browser acceptance",
 });
+
+function assertPhase7StorageAndRedisPolicy() {
+  const mediaRoot = path.resolve("/Volumes/Media");
+  const configuredPaths = [
+    ["CODETALK_E2E_ARTIFACT_DIR", evidenceRoot],
+    ["CODETALK_TEMP_DIR", runtimeRoot],
+    ["CODETALK_PLAYWRIGHT_DATA_DIR", process.env.CODETALK_PLAYWRIGHT_DATA_DIR],
+    ["CODETALK_PLAYWRIGHT_SQLITE_DB", process.env.CODETALK_PLAYWRIGHT_SQLITE_DB],
+  ] as const;
+  for (const [name, value] of configuredPaths) {
+    if (!value) continue;
+    const resolved = path.resolve(value);
+    if (resolved !== mediaRoot && !resolved.startsWith(`${mediaRoot}${path.sep}`)) {
+      throw new Error(`${name} must stay under /Volumes/Media for Phase 7 acceptance.`);
+    }
+  }
+  const forbiddenRedis = Object.entries(process.env).find(([name, value]) =>
+    name.toUpperCase().includes("REDIS")
+    && /(?:^|[:=/])6399(?:\D|$)/.test(value ?? ""),
+  );
+  if (forbiddenRedis) {
+    throw new Error(`Phase 7 acceptance must never target Redis 6399 (${forbiddenRedis[0]}).`);
+  }
+}
 
 if (process.env.GITNEXUS_BIN !== "/usr/bin/false" || process.env.GITNEXUS_PORT !== "7101") {
   throw new Error(
@@ -127,6 +154,93 @@ test("loopback Codex-compatible CLI adapter preserves verbatim goal and delivers
     });
   } finally {
     await runtime.remove();
+  }
+});
+
+test("installed OpenCode uses an isolated approved loopback model route and delivers only report.md", async ({ page, request }, testInfo) => {
+  test.setTimeout(240_000);
+  const stamp = uniqueStamp(testInfo);
+  const repo = createPhase7Repository(`real OpenCode ${stamp}`);
+  const workspaceName = `Phase 7 real OpenCode workspace ${stamp}`;
+  const workflowName = `Phase 7 real OpenCode generic ${stamp}`;
+  const verbatimGoal = "  OpenCode first line.\n\nSecond line stays separate.\nURL: https://example.invalid/opencode/42  ";
+  const binaryVersion = execFileSync(opencodeBinary, ["--version"], { encoding: "utf8" }).trim();
+  const fixture = await startOpenCodeModelFixture();
+  const runtime = await configureRealOpenCodeRuntime(request, stamp);
+
+  try {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await createWorkspaceThroughUi(page, workspaceName, repo);
+    await createTemplateThroughUi(page, workflowName, "change_impact_analysis");
+    await selectProviderThroughUi(page, runtime.id);
+    await publishCurrentWorkflowThroughUi(page);
+    const runId = await runPublishedMatrixWorkflowThroughUi(page, {
+      workflowName,
+      taskName: `Phase 7 real OpenCode task ${stamp}`,
+      workspaceName,
+      fillInputs: async (inputPage) => {
+        await inputPage.getByLabel("变更说明 *").fill(verbatimGoal);
+      },
+      inspectOutputs: async (outputPage) => {
+        await expect(outputPage.getByRole("textbox", { name: /分析报告 文件名/ })).toHaveValue("report.md");
+        await expect(outputPage.getByText(/sfmea|black.box|test.activity/i)).toHaveCount(0);
+      },
+    });
+
+    await assertGenericCompletion(page, request, runId, {
+      provider: runtime.id,
+      expectedGoal: verbatimGoal,
+    });
+    const agentInvocation = await readArtifactJson(request, runId, /agent_runs\/[^/]+\/agent_invocation\.json$/);
+    const agentTaskBundle = await readArtifactJson(request, runId, /agent_runs\/[^/]+\/task_bundle\.json$/);
+    const sandboxPolicy = await readArtifactJson(request, runId, /sandbox_policy\.json$/);
+    const frozenProviders = Object.values(
+      (agentTaskBundle.provider_snapshot as { providers?: Record<string, Record<string, unknown>> } | undefined)
+        ?.providers ?? {},
+    );
+    const frozenOpenCode = frozenProviders.find((provider) => provider.runtime_provider === "opencode");
+    expect(JSON.stringify(agentInvocation.runtime)).toContain(opencodeBinary);
+    expect(JSON.stringify(agentInvocation.runtime)).toContain("--pure");
+    expect(JSON.stringify(agentInvocation.runtime)).toContain("codetalk-local/e2e-model");
+    expect(frozenOpenCode).toEqual(expect.objectContaining({
+      runtime_provider: "opencode",
+      env_hints: expect.objectContaining({
+        OPENCODE_DISABLE_AUTOUPDATE: "1",
+        OPENCODE_DISABLE_TELEMETRY: "1",
+      }),
+    }));
+    expect(JSON.stringify(frozenOpenCode)).toContain(`http://127.0.0.1:${opencodeFixturePort}/v1`);
+    expect(sandboxPolicy.network_policy).toEqual(expect.objectContaining({
+      mode: "intranet",
+      boundary: "approved_proxy_gateway",
+      allowed: true,
+      approved_proxy_config_id: "phase7-opencode-loopback",
+    }));
+    expect(sandboxPolicy).toEqual(expect.objectContaining({
+      status: "active",
+      engine: "sandbox-exec",
+      network: "outbound_allowed",
+    }));
+    expect(JSON.stringify(sandboxPolicy)).not.toContain(`${process.env.HOME}/.config/opencode`);
+    expect(JSON.stringify(sandboxPolicy)).not.toContain(`${process.env.HOME}/.local/share/opencode`);
+    expect(fixture.requests.length).toBeGreaterThanOrEqual(3);
+    expect(fixture.requests.every((item) => item.path === "/v1/chat/completions")).toBeTruthy();
+    expect(
+      fixture.requests.some((fixtureRequest) => containsDecodedString(fixtureRequest, verbatimGoal)),
+      "the OpenCode model request must preserve the user goal verbatim after decoding nested transport envelopes",
+    ).toBeTruthy();
+    await captureEvidence(page, `provider-matrix-real-opencode-${stamp}-completed.png`, {
+      binary: opencodeBinary,
+      binary_version: binaryVersion,
+      fixture_requests: fixture.requests,
+      run_id: runId,
+      agent_invocation: agentInvocation,
+      frozen_opencode_provider: frozenOpenCode,
+      sandbox_policy: sandboxPolicy,
+    });
+  } finally {
+    await runtime.remove();
+    await fixture.close();
   }
 });
 
@@ -402,6 +516,51 @@ async function configureRuntime(request: APIRequestContext, name: string, script
   };
 }
 
+async function configureRealOpenCodeRuntime(request: APIRequestContext, stamp: string) {
+  const inlineConfig = JSON.stringify({
+    share: "disabled",
+    enabled_providers: ["codetalk-local"],
+    provider: {
+      "codetalk-local": {
+        npm: "@ai-sdk/openai-compatible",
+        name: "CodeTalk local E2E",
+        options: { baseURL: `http://127.0.0.1:${opencodeFixturePort}/v1` },
+        models: { "e2e-model": { name: "CodeTalk E2E Model" } },
+      },
+    },
+  });
+  const created = await request.post(`${phase5BackendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: `Phase 7 installed OpenCode ${stamp}`,
+      provider: "opencode",
+      command: opencodeBinary,
+      args: ["--pure", "--model", "codetalk-local/e2e-model"],
+      prompt_transport: "opencode_run_arg",
+      output_mode: "auto",
+      working_dir_mode: "project",
+      env: {
+        OPENCODE_CONFIG_CONTENT: inlineConfig,
+        OPENCODE_DISABLE_AUTOUPDATE: "1",
+        OPENCODE_DISABLE_TELEMETRY: "1",
+      },
+      timeout_seconds: 120,
+      completion_mode: "process_exit",
+      session_persistence: "none",
+      requires_network: true,
+      enabled: true,
+    },
+  });
+  expect(created.status(), await created.text()).toBe(201);
+  const runtime = await created.json() as { id: string };
+  return {
+    id: `agent-runtime:${runtime.id}`,
+    remove: async () => {
+      const removed = await request.delete(`${phase5BackendBase}/api/settings/agent-runtimes/${runtime.id}`);
+      expect(removed.status()).toBe(204);
+    },
+  };
+}
+
 async function startBuiltinModelFixture() {
   const requests: Array<Record<string, unknown>> = [];
   const server = createServer((incoming, outgoing) => {
@@ -426,4 +585,117 @@ async function startBuiltinModelFixture() {
     requests,
     close: async () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
   };
+}
+
+async function startOpenCodeModelFixture() {
+  const requests: Array<Record<string, unknown>> = [];
+  const server = createServer((incoming, outgoing) => {
+    const chunks: Buffer[] = [];
+    incoming.on("data", (chunk: Buffer) => chunks.push(chunk));
+    incoming.on("end", () => {
+      const rawUrl = incoming.url ?? "";
+      const requestUrl = new URL(rawUrl, `http://127.0.0.1:${opencodeFixturePort}`);
+      const payload = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as {
+        messages?: Array<{ role?: string; content?: unknown }>;
+        tools?: unknown[];
+      };
+      requests.push({ raw_url: rawUrl, path: requestUrl.pathname, payload });
+      if (requestUrl.pathname !== "/v1/chat/completions") {
+        outgoing.writeHead(404).end();
+        return;
+      }
+      const messages = Array.isArray(payload.messages) ? payload.messages : [];
+      const tools = Array.isArray(payload.tools) ? payload.tools : [];
+      const messageText = messages.map((message) =>
+        typeof message.content === "string" ? message.content : JSON.stringify(message.content ?? ""),
+      ).join("\n");
+      const messageHistory = JSON.stringify(messages);
+      const artifactDir = messageText.match(/"artifact_dir"\s*:\s*"([^"]+)"/)?.[1]
+        ?? messageHistory.match(/\\"artifact_dir\\"\s*:\s*\\"([^"\\]+)\\"/)?.[1];
+      const hasBashCall = messageHistory.includes('"name":"bash"');
+      const hasWriteCall = messageHistory.includes('"name":"write"');
+      const responseChunks: Array<Record<string, unknown>> = [];
+      if (tools.length > 0 && artifactDir && !hasWriteCall) {
+        responseChunks.push(openCodeChunk({
+          role: "assistant",
+          tool_calls: [{
+            index: 0,
+            id: "call_codetalk_write_report",
+            type: "function",
+            function: {
+              name: "write",
+              arguments: JSON.stringify({
+                filePath: path.join(artifactDir, "report.md"),
+                content: "# Phase 7 real OpenCode report\n\nGenerated by the installed OpenCode CLI through its write tool.\n",
+              }),
+            },
+          }],
+        }));
+        responseChunks.push(openCodeChunk({}, "tool_calls"));
+      } else if (tools.length > 0 && !hasBashCall) {
+        responseChunks.push(openCodeChunk({
+          role: "assistant",
+          tool_calls: [{
+            index: 0,
+            id: "call_codetalk_read_task",
+            type: "function",
+            function: {
+              name: "bash",
+              arguments: JSON.stringify({
+                command: 'cat "$CODETALK_AGENT_PROMPT_FILE"',
+                description: "Read the complete CodeTalk task file",
+              }),
+            },
+          }],
+        }));
+        responseChunks.push(openCodeChunk({}, "tool_calls"));
+      } else {
+        responseChunks.push(openCodeChunk({
+          role: "assistant",
+          content: tools.length === 0 ? "CodeTalk OpenCode E2E" : "LOCAL_OPENCODE_OK",
+        }));
+        responseChunks.push(openCodeChunk({}, "stop"));
+      }
+      outgoing.writeHead(200, { "content-type": "text/event-stream", connection: "close" });
+      for (const chunk of responseChunks) outgoing.write(`data: ${JSON.stringify(chunk)}\n\n`);
+      outgoing.end("data: [DONE]\n\n");
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(opencodeFixturePort, "127.0.0.1", () => resolve());
+  });
+  return {
+    requests,
+    close: async () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
+  };
+}
+
+function openCodeChunk(delta: Record<string, unknown>, finishReason: string | null = null) {
+  return {
+    id: "chatcmpl-codetalk-local",
+    object: "chat.completion.chunk",
+    created: Math.floor(Date.now() / 1000),
+    model: "e2e-model",
+    choices: [{ index: 0, delta, finish_reason: finishReason }],
+  };
+}
+
+function containsDecodedString(value: unknown, expected: string, depth = 0): boolean {
+  if (depth > 12) return false;
+  if (typeof value === "string") {
+    if (value.includes(expected)) return true;
+    try {
+      return containsDecodedString(JSON.parse(value), expected, depth + 1);
+    } catch {
+      return false;
+    }
+  }
+  if (Array.isArray(value)) {
+    return value.some((item) => containsDecodedString(item, expected, depth + 1));
+  }
+  if (value && typeof value === "object") {
+    return Object.values(value).some((item) => containsDecodedString(item, expected, depth + 1));
+  }
+  return false;
 }

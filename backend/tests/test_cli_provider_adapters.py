@@ -137,6 +137,61 @@ def test_cli_adapters_reuse_bridge_and_preserve_prompt_verbatim(
     ]
 
 
+def test_cli_adapter_executes_with_frozen_config_and_live_runtime_secrets(
+    monkeypatch, tmp_path
+):
+    from app.services import agent_runtimes
+
+    _, _, OpenCodeAdapter = _adapter_types()
+    provider_ref = "agent-runtime:phase7-opencode"
+    monkeypatch.setattr(
+        agent_runtimes,
+        "get_agent_runtime_sync",
+        lambda runtime_id: {
+            "id": runtime_id,
+            "enabled": True,
+            "env": {
+                "OPENCODE_CONFIG_CONTENT": '{"enabled_providers":["changed-after-freeze"]}',
+                "OPENCODE_DISABLE_AUTOUPDATE": "0",
+                "OPENAI_API_KEY": "live-runtime-secret",
+            },
+        },
+    )
+    request = _request(
+        provider_ref,
+        "run with the prepared provider snapshot",
+        command=["/opt/homebrew/bin/opencode", "--pure"],
+    )
+    request = replace(
+        request,
+        task_bundle={
+            **request.task_bundle,
+            "provider_snapshot": {
+                "providers": {
+                    provider_ref: {
+                        "env_hints": {
+                            "OPENCODE_CONFIG_CONTENT": '{"enabled_providers":["codetalk-local"]}',
+                            "OPENCODE_DISABLE_AUTOUPDATE": "1",
+                            "OPENAI_API_KEY": "<redacted>",
+                            "CODETALK_AGENT_ARTIFACT_DIR": "/untrusted/provider/path",
+                        },
+                    },
+                },
+            },
+        },
+    )
+
+    session = OpenCodeAdapter(tmp_path).prepare(request)
+    runtime_env = session.metadata["runtime"]["env"]
+
+    assert runtime_env["OPENCODE_CONFIG_CONTENT"] == (
+        '{"enabled_providers":["codetalk-local"]}'
+    )
+    assert runtime_env["OPENCODE_DISABLE_AUTOUPDATE"] == "1"
+    assert runtime_env["OPENAI_API_KEY"] == "live-runtime-secret"
+    assert runtime_env["CODETALK_AGENT_ARTIFACT_DIR"] == str(tmp_path.resolve())
+
+
 def test_cli_adapter_exposes_only_captured_task_materials_to_the_sandbox(
     monkeypatch, tmp_path
 ):

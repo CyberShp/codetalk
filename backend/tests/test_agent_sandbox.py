@@ -5,7 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from app.services.agent_sandbox import AgentSandboxError, prepare_agent_sandbox
+from app.services.agent_sandbox import (
+    AgentSandboxError,
+    prepare_agent_sandbox,
+    prepare_isolated_opencode_home,
+)
 
 
 def test_codex_sanitized_config_preserves_service_tier_for_model_routing(tmp_path):
@@ -108,6 +112,87 @@ def test_opencode_gets_only_provider_specific_writable_state(tmp_path, monkeypat
     assert str(opencode_state.resolve()) in launch.audit["runtime_state_paths"]
     assert str((home / ".ssh").resolve()) not in launch.audit["read_paths"]
     assert str((home / ".ssh").resolve()) not in launch.audit["write_paths"]
+
+
+def test_opencode_isolated_runtime_state_excludes_host_configuration(tmp_path, monkeypatch):
+    host_home = tmp_path / "host-home"
+    host_config = host_home / ".config" / "opencode"
+    host_state = host_home / ".local" / "share" / "opencode"
+    host_config.mkdir(parents=True)
+    host_state.mkdir(parents=True)
+    isolated_home = tmp_path / "task" / ".runtime-opencode-home-safe"
+    isolated_home.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(host_home))
+
+    launch = prepare_agent_sandbox(
+        runtime={
+            "sandbox_mode": "required",
+            "sandbox_command": "/opt/homebrew/bin/opencode",
+            "sandbox_opencode_home": str(isolated_home),
+        },
+        cwd=str(tmp_path),
+        artifact_dir=tmp_path / "artifacts",
+        platform_name="darwin",
+        which=lambda command: "/usr/bin/sandbox-exec" if command == "sandbox-exec" else None,
+    )
+
+    assert str(isolated_home.resolve()) in launch.audit["runtime_state_paths"]
+    assert not any(
+        path.startswith(str(host_home.resolve()))
+        for path in launch.audit["read_paths"] + launch.audit["write_paths"]
+    )
+
+
+def test_opencode_isolated_runtime_allows_only_the_current_artifact_directory(tmp_path):
+    artifact_dir = tmp_path / "task-artifacts"
+    host_xdg_config = tmp_path / "host-xdg-config"
+    original_config = {
+        "enabled_providers": ["codetalk-local"],
+        "provider": {"codetalk-local": {"models": {"e2e-model": {}}}},
+        "permission": {
+            "webfetch": "deny",
+            "external_directory": {"/**": "allow"},
+        },
+    }
+
+    runtime_home, runtime_env = prepare_isolated_opencode_home(
+        provider="opencode",
+        command=["/opt/homebrew/bin/opencode", "run"],
+        artifact_dir=artifact_dir,
+        config_environment={
+            "OPENCODE_CONFIG_CONTENT": json.dumps(original_config),
+            "XDG_CONFIG_HOME": str(host_xdg_config),
+        },
+        allow_artifact_writes=True,
+    )
+
+    assert runtime_home is not None
+    configured = json.loads(runtime_env["OPENCODE_CONFIG_CONTENT"])
+    assert configured["enabled_providers"] == ["codetalk-local"]
+    assert configured["provider"] == original_config["provider"]
+    assert configured["permission"]["webfetch"] == "deny"
+    assert configured["permission"]["external_directory"] == {
+        f"{artifact_dir.resolve()}/**": "allow",
+    }
+    assert Path(runtime_env["XDG_CONFIG_HOME"]).parent == runtime_home
+    assert runtime_env["XDG_CONFIG_HOME"] != str(host_xdg_config)
+    assert f"{tmp_path.resolve()}/**" not in configured["permission"]["external_directory"]
+
+
+def test_opencode_invalid_config_fails_without_leaving_runtime_state(tmp_path):
+    artifact_dir = tmp_path / "task-artifacts"
+
+    with pytest.raises(AgentSandboxError, match="有效 JSON"):
+        prepare_isolated_opencode_home(
+            provider="opencode",
+            command=["/opt/homebrew/bin/opencode", "run"],
+            artifact_dir=artifact_dir,
+            config_environment={"OPENCODE_CONFIG_CONTENT": "{not-json"},
+            allow_artifact_writes=True,
+        )
+
+    assert artifact_dir.exists()
+    assert list(artifact_dir.glob(".runtime-opencode-home-*")) == []
 
 
 def test_required_sandbox_fails_closed_when_platform_tool_is_missing(tmp_path):

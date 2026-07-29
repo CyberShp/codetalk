@@ -4152,7 +4152,7 @@ def test_prepare_workbench_task_run_embeds_agent_provider_snapshot(tmp_path, mon
     assert known["fallback_commands"] == [["corp-agent", "--legacy"]]
     assert known["env_hint_keys"] == ["CORP_AGENT_PROFILE", "CORP_AGENT_TOKEN"]
     assert known["env_hints"]["CORP_AGENT_PROFILE"] == "innernet"
-    assert known["env_hints"]["CORP_AGENT_TOKEN"] == "token=<redacted>"
+    assert known["env_hints"]["CORP_AGENT_TOKEN"] == "<redacted>"
     assert known["capabilities"]["supports_mcp"] is True
     assert known["capabilities"]["env_hint_keys"] == [
         "CORP_AGENT_PROFILE",
@@ -4165,7 +4165,7 @@ def test_prepare_workbench_task_run_embeds_agent_provider_snapshot(tmp_path, mon
     assert known["diagnostics"]["configured_command_text"] == "corp-agent run --json"
     assert known["diagnostics"]["fallback_command_texts"] == ["corp-agent --legacy"]
     assert known["diagnostics"]["env_hint_keys"] == ["CORP_AGENT_PROFILE", "CORP_AGENT_TOKEN"]
-    assert known["diagnostics"]["env_hints"]["CORP_AGENT_TOKEN"] == "token=<redacted>"
+    assert known["diagnostics"]["env_hints"]["CORP_AGENT_TOKEN"] == "<redacted>"
     assert "CORP_AGENT_TOKEN" in known["diagnostics"]["probe_recipe"]["environment_checks"]
     assert known["diagnostics"]["mcp_credentials_owner"] == "agent_cli"
     assert snapshot["steps"]["known"]["provider"] == "corp-agent"
@@ -4198,7 +4198,10 @@ async def test_prepare_workbench_task_run_uses_settings_agent_runtime(
     tmp_path,
     sqlite_db,
 ):
-    from app.services.agent_runtimes import AgentRuntimeStore
+    from app.services.agent_runtimes import (
+        AgentRuntimeStore,
+        resolve_agent_runtime_environment,
+    )
     from app.services.workflow_dsl import WorkflowStore
     from app.services.workbench_task_run import (
         WorkbenchTaskRunPreparer,
@@ -4211,6 +4214,27 @@ async def test_prepare_workbench_task_run_uses_settings_agent_runtime(
             "command": "nga",
             "args": ["run", "--json"],
             "prompt_transport": "stdin",
+            "env": {
+                "CORP_AGENT_PROFILE": "frozen-profile",
+                "CORP_AGENT_TOKEN": "token=frozen-secret",
+                "OPENAI_API_KEY": "frozen-openai-secret",
+                "AUTHORIZATION": "raw-authorization-secret",
+                "OPENCODE_CONFIG_CONTENT": json.dumps(
+                    {
+                        "enabled_providers": ["frozen-provider"],
+                        "provider": {
+                            "frozen-provider": {
+                                "options": {
+                                    "baseURL": "http://localhost:3218/v1",
+                                    "apiKey": "x",
+                                    "password": "short",
+                                    "headers": {"Authorization": "tiny"},
+                                }
+                            }
+                        },
+                    }
+                ),
+            },
             "enabled": True,
         }
     )
@@ -4245,6 +4269,18 @@ async def test_prepare_workbench_task_run_uses_settings_agent_runtime(
     assert configured["runtime_provider"] == "nga"
     assert configured["command"] == ["nga", "run", "--json"]
     assert configured["capabilities"]["prompt_transport"] == "stdin"
+    assert configured["env_hints"]["CORP_AGENT_PROFILE"] == "frozen-profile"
+    assert configured["env_hints"]["CORP_AGENT_TOKEN"] == "<redacted>"
+    assert configured["env_hints"]["OPENAI_API_KEY"] == "<redacted>"
+    assert configured["env_hints"]["AUTHORIZATION"] == "<redacted>"
+    frozen_config = json.loads(configured["env_hints"]["OPENCODE_CONFIG_CONTENT"])
+    assert frozen_config["enabled_providers"] == ["frozen-provider"]
+    assert frozen_config["provider"]["frozen-provider"]["options"] == {
+        "baseURL": "http://localhost:3218/v1",
+        "apiKey": "<redacted>",
+        "password": "<redacted>",
+        "headers": {"Authorization": "<redacted>"},
+    }
     agent_run = json.loads(
         Path(result.artifact_dir, "agent_runs", "collect", "agent_run.json").read_text(
             encoding="utf-8"
@@ -4252,6 +4288,62 @@ async def test_prepare_workbench_task_run_uses_settings_agent_runtime(
     )
     assert agent_run["provider"] == provider
     assert agent_run["command"] == ["nga", "run", "--json"]
+    persisted_snapshot = Path(result.artifact_dir, "provider_snapshot.json").read_text(
+        encoding="utf-8"
+    )
+    persisted_bundle = Path(
+        result.artifact_dir, "agent_runs", "collect", "task_bundle.json"
+    ).read_text(encoding="utf-8")
+    for secret in (
+        "token=frozen-secret",
+        "frozen-openai-secret",
+        "raw-authorization-secret",
+        '"apiKey": "x"',
+        '"password": "short"',
+        '"Authorization": "tiny"',
+    ):
+        assert secret not in persisted_snapshot
+        assert secret not in persisted_bundle
+
+    await AgentRuntimeStore(sqlite_db).update_runtime(
+        runtime["id"],
+        {
+            "env": {
+                "CORP_AGENT_PROFILE": "changed-after-freeze",
+                "CORP_AGENT_TOKEN": "token=rotated-secret",
+                "OPENAI_API_KEY": "rotated-openai-secret",
+                "AUTHORIZATION": "rotated-authorization-secret",
+                "OPENCODE_CONFIG_CONTENT": json.dumps(
+                    {
+                        "enabled_providers": ["changed-after-freeze"],
+                        "provider": {
+                            "frozen-provider": {
+                                "options": {
+                                    "baseURL": "http://localhost:9999/v1",
+                                    "apiKey": "y",
+                                    "password": "new-short",
+                                    "headers": {"Authorization": "new-tiny"},
+                                }
+                            }
+                        },
+                    }
+                ),
+            }
+        },
+    )
+    resolved = resolve_agent_runtime_environment(provider, configured["env_hints"])
+    assert resolved["CORP_AGENT_PROFILE"] == "frozen-profile"
+    assert resolved["CORP_AGENT_TOKEN"] == "token=rotated-secret"
+    assert resolved["OPENAI_API_KEY"] == "rotated-openai-secret"
+    assert resolved["AUTHORIZATION"] == "rotated-authorization-secret"
+    resolved_config = json.loads(resolved["OPENCODE_CONFIG_CONTENT"])
+    assert resolved_config["enabled_providers"] == ["frozen-provider"]
+    assert resolved_config["provider"]["frozen-provider"]["options"] == {
+        "baseURL": "http://localhost:3218/v1",
+        "apiKey": "y",
+        "password": "new-short",
+        "headers": {"Authorization": "new-tiny"},
+    }
 
 
 def test_agent_execution_persists_provider_diagnostics_snapshot(tmp_path, monkeypatch):

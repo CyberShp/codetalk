@@ -151,6 +151,111 @@ async def test_probe_allows_absolute_runtime_argument_through_same_read_sandbox(
 
 
 @pytest.mark.asyncio
+async def test_probe_starts_process_in_the_directory_authorized_by_its_sandbox(
+    monkeypatch, tmp_path
+):
+    from app.services import agent_cli_bridge
+
+    captured: dict[str, object] = {}
+
+    def fake_prepare_agent_sandbox(*, runtime, cwd, artifact_dir):
+        captured["sandbox_cwd"] = cwd
+        captured["artifact_dir"] = artifact_dir
+        return type("Sandbox", (), {"wrapper": [], "status": "active"})()
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return b"opencode 1.18.4", b""
+
+    async def fake_create_subprocess_exec(*_args, **kwargs):
+        captured["process_cwd"] = kwargs.get("cwd")
+        return FakeProcess()
+
+    monkeypatch.setattr(agent_cli_bridge, "prepare_agent_sandbox", fake_prepare_agent_sandbox)
+    monkeypatch.setattr(
+        agent_cli_bridge.asyncio,
+        "create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr(
+        type(agent_cli_bridge.settings),
+        "ensure_runtime_temp_path",
+        lambda _settings: tmp_path,
+    )
+
+    result = await agent_cli_bridge.probe_agent_runtime({
+        "provider": "opencode",
+        "command": "/opt/homebrew/bin/opencode",
+        "requires_network": False,
+    })
+
+    assert result["success"] is True
+    assert captured["process_cwd"] == captured["sandbox_cwd"]
+    assert Path(str(captured["process_cwd"])).parent == tmp_path
+
+
+@pytest.mark.asyncio
+async def test_opencode_probe_uses_isolated_runtime_state(monkeypatch, tmp_path):
+    from app.services import agent_cli_bridge
+
+    captured: dict[str, object] = {}
+    isolated_home = tmp_path / "isolated-opencode-home"
+    isolated_home.mkdir()
+
+    def fake_prepare_isolated_opencode_home(**kwargs):
+        captured["isolation_request"] = kwargs
+        return isolated_home, {
+            "HOME": str(isolated_home / "home"),
+            "OPENCODE_CONFIG_DIR": str(isolated_home / "config"),
+        }
+
+    def fake_prepare_agent_sandbox(*, runtime, cwd, artifact_dir):
+        captured["sandbox_runtime"] = runtime
+        return type("Sandbox", (), {"wrapper": [], "status": "active"})()
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return b"opencode 1.18.4", b""
+
+    async def fake_create_subprocess_exec(*_args, **kwargs):
+        captured["process_env"] = kwargs["env"]
+        return FakeProcess()
+
+    monkeypatch.setattr(
+        agent_cli_bridge,
+        "prepare_isolated_opencode_home",
+        fake_prepare_isolated_opencode_home,
+    )
+    monkeypatch.setattr(agent_cli_bridge, "prepare_agent_sandbox", fake_prepare_agent_sandbox)
+    monkeypatch.setattr(
+        agent_cli_bridge.asyncio,
+        "create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr(
+        type(agent_cli_bridge.settings),
+        "ensure_runtime_temp_path",
+        lambda _settings: tmp_path,
+    )
+
+    result = await agent_cli_bridge.probe_agent_runtime({
+        "provider": "opencode",
+        "command": "/opt/homebrew/bin/opencode",
+        "requires_network": False,
+    })
+
+    assert result["success"] is True
+    assert captured["process_env"]["HOME"] == str(isolated_home / "home")
+    assert captured["process_env"]["OPENCODE_CONFIG_DIR"] == str(isolated_home / "config")
+    assert captured["sandbox_runtime"]["sandbox_opencode_home"] == str(isolated_home)
+    assert captured["isolation_request"]["artifact_dir"].parent == tmp_path
+
+
+@pytest.mark.asyncio
 @pytest.mark.skipif(os.name == "nt", reason="POSIX process-group semantics")
 async def test_terminate_process_kills_a_sigterm_ignoring_descendant(tmp_path):
     child_pid_file = tmp_path / "child.pid"
@@ -688,6 +793,34 @@ async def test_stream_runtime_removes_internally_owned_artifact_directory(
 
     assert "temporary artifact cleanup" in "".join(output)
     assert not list(runtime_temp_dir.glob("codetalk-agent-runtime-*"))
+
+
+@pytest.mark.asyncio
+async def test_stream_opencode_invalid_config_cleans_all_isolated_runtime_state(tmp_path):
+    from app.services import agent_cli_bridge
+
+    artifacts = tmp_path / "artifacts"
+    with pytest.raises(agent_cli_bridge.AgentRuntimeError, match="有效 JSON"):
+        async for _chunk in stream_agent_runtime(
+            runtime={
+                "provider": "opencode",
+                "command": "/opt/homebrew/bin/opencode",
+                "prompt_transport": "opencode_run_arg",
+                "output_mode": "auto",
+                "sandbox_mode": "off",
+                "requires_network": False,
+                "env": {
+                    "CODETALK_AGENT_ARTIFACT_DIR": str(artifacts),
+                    "OPENCODE_CONFIG_CONTENT": "{not-json",
+                },
+            },
+            prompt="x" * 30_000,
+            cwd=str(tmp_path),
+        ):
+            pass
+
+    assert list(artifacts.glob(".runtime-*")) == []
+    assert list(artifacts.rglob("codetalk-agent-prompt-*.md")) == []
 
 
 @pytest.mark.asyncio

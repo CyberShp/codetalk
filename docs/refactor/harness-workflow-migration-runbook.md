@@ -241,7 +241,7 @@ MCP 或未批准出口。管理员拥有的 PCAP、网关日志和拒绝公共�
 
 ## 8. 完成记录
 
-2026-07-29 的本地隔离验收已生成八组主证据：
+2026-07-29 的本地隔离验收已生成九组主证据：
 
 - `phase7/migration-real-20260728-2`：模板 chooser、V1/V2 preview/copy、桌面/移动；
 - `phase7/history-artifacts-20260729T123000+0700`：历史 task/RunSnapshot/events/Artifact 与下载 SHA；
@@ -261,9 +261,14 @@ MCP 或未批准出口。管理员拥有的 PCAP、网关日志和拒绝公共�
   产品运行页没有 Execute/Validate/Materialize 单节点动作，`1 passed (9.7s)`；目录保存
   Playwright trace、截图、完整请求/响应、Attempt 前后 SHA 和 events 前后对照，且执行前后
   Attempt 与事件均未变化。
+- `phase7/opencode-real-browser-final8-20260729`：机器已安装的 OpenCode `1.18.4` 通过
+  required Seatbelt、隔离 HOME 和批准的 loopback model route 完成通用 V3 工作流，真实
+  Chrome `1 passed (25.5s)`；输入逐字到达，只交付 `report.md`，目录保存 trace、截图、
+  4 个模型请求、冻结 Provider、sandbox policy、任务 manifest 与 SHA。
 
-这些目录都位于 `/Volumes/Media/codetalk-e2e-artifacts/`。它们不包含实际安装 Codex 经
-企业网关的运行，也不包含管理员 PCAP/网关日志，不能单独解除发布阻塞。
+这些目录都位于 `/Volumes/Media/codetalk-e2e-artifacts/`。实际 OpenCode 运行满足权威计划
+中 AC-12 的“当前可用 CLI Agent”；但本机 loopback fixture 不是企业部署网关，也不包含
+管理员 PCAP/网关日志，因此不能解除 AC-10 的发布阻塞。
 
 Phase 7 只有在以下材料齐全后才允许结束：14 项 AC 状态全部填写为 `Pass`、
 `Known Issue` 或 `Blocked`，且最终没有 Blocked 的发布条件；真实浏览器 trace、截图、
@@ -273,6 +278,14 @@ Phase 7 只有在以下材料齐全后才允许结束：14 项 AC 状态全部�
 当前完成与缺口以 `harness-workflow-acceptance-report.md` 为准。没有这些证据时，本手册
 只定义操作流程，不构成发布批准。
 
-2026-07-29 第八位全新只读 reviewer 已给出 `APPROVE`，P0/P1/P2/P3 均为零；该批准只
-关闭代码准入门禁，不替代仍缺失的管理员 PCAP/网关日志和实际安装 Codex 经批准内网网关
-运行证据。只要 AC-10/AC-12 仍为 `Blocked`，Phase 7 就不能标记为发布验收完成。
+2026-07-29 第八位全新只读 reviewer 已给出 `APPROVE`，P0/P1/P2/P3 均为零；真实
+OpenCode 增量在 replay plan secret 问题完成 Red→Green 后，也由独立 reviewer 复审为
+`APPROVE`，P0/P1/P2/P3 均为零。最终只读 reviewer 随后发现嵌套 secret 会导致整段冻结
+OpenCode JSON 被 live 配置替换（P0=0、P1=1）；结构化叶恢复后，复审继续发现普通格式
+顶层 secret 的 snapshot 泄露/不可恢复（P0=0、P1=1）。统一 sentinel 修复后，第三次复审
+又发现短 JSON secret 与顶层 `AUTHORIZATION` 可绕过脱敏（P0=0、P1=1）；按字段名递归
+脱敏后聚焦后端 `361 passed`，最终整库 `4047 passed, 8 skipped`（1,257.64s），真实
+Chrome/OpenCode final8、前端 lint、TypeScript 和生产 build 均通过；同一 reviewer 最终
+复审为 `APPROVE`，P0/P1/P2/P3 均为零。AC-12 已由当前可用 CLI
+Agent 证据关闭，但该证据不替代仍缺失的管理员 PCAP/网关日志。reviewer 门禁已通过；
+只要 AC-10 仍为 `Blocked`，Phase 7 就不能标记为发布验收完成。

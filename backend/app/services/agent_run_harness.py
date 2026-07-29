@@ -33,11 +33,13 @@ from app.services.agent_sandbox import (
     codex_command_for_outer_sandbox,
     filtered_agent_environment,
     prepare_isolated_codex_home as _prepare_isolated_codex_home,
+    prepare_isolated_opencode_home as _prepare_isolated_opencode_home,
     prepare_isolated_runtime_tmp as _prepare_isolated_runtime_tmp,
     prepare_agent_sandbox,
 )
 from app.services.network_policy import resolve_agent_network_context
 from app.services.harness_facade import normalize_provider_event
+from app.services.agent_runtimes import resolve_agent_runtime_environment
 from app.services.agent_invocation_contract import (
     agent_invocation_artifact_event_payload,
     agent_invocation_capability_event_payload,
@@ -975,7 +977,12 @@ class AgentRunHarness:
             "PYTHONUTF8": "1",
             "PYTHONIOENCODING": "utf-8",
         }
-        env_hints.update(_agent_provider_env_hints(str(run_payload.get("provider") or "")))
+        env_hints.update(
+            _agent_provider_env_hints(
+                str(run_payload.get("provider") or ""),
+                task_bundle=task_bundle if isinstance(task_bundle, dict) else {},
+            )
+        )
         launch_command, command_resolution = _launch_command_from_provider_health(
             command,
             provider_diagnostics,
@@ -1010,6 +1017,14 @@ class AgentRunHarness:
         )
         if codex_runtime_home is not None:
             env_hints["CODEX_HOME"] = str(codex_runtime_home)
+        opencode_runtime_home, opencode_runtime_env = _prepare_isolated_opencode_home(
+            provider=str(run_payload.get("provider") or ""),
+            command=process_command,
+            artifact_dir=self.artifact_dir,
+            config_environment=env_hints,
+            allow_artifact_writes=True,
+        )
+        env_hints.update(opencode_runtime_env)
         prompt_file_path: str | None = None
         if (
             prompt_transport not in {"stdin", "codex_exec_json"}
@@ -1182,6 +1197,7 @@ class AgentRunHarness:
                     "sandbox_command": process_command[0] if process_command else "",
                     "sandbox_codex_home": str(codex_runtime_home or ""),
                     "sandbox_codex_include_user_skills": False,
+                    "sandbox_opencode_home": str(opencode_runtime_home or ""),
                 },
                 cwd=cwd,
                 artifact_dir=self.artifact_dir,
@@ -1792,7 +1808,7 @@ def _agent_replay_plan_payload(
             else "execution_input.json:process_command"
         ),
         "agent_instruction_policy": agent_instruction_policy,
-        "env_hints": env_hints,
+        "env_hints": _redact_replay_payload(env_hints),
         "artifact_hashes": artifact_hashes,
         "replay_steps": [
             "Inspect agent_replay_plan.json, execution_input.json, and agent_output_contract.json.",
@@ -2329,9 +2345,20 @@ def _agent_provider_health_snapshot(
         }
 
 
-def _agent_provider_env_hints(provider: str) -> dict[str, str]:
+def _agent_provider_env_hints(
+    provider: str,
+    *,
+    task_bundle: dict[str, Any] | None = None,
+) -> dict[str, str]:
     if not provider:
         return {}
+    if provider.startswith("agent-runtime:") and isinstance(task_bundle, dict):
+        snapshot = task_bundle.get("provider_snapshot")
+        providers = snapshot.get("providers") if isinstance(snapshot, dict) else None
+        provider_info = providers.get(provider) if isinstance(providers, dict) else None
+        env_hints = provider_info.get("env_hints") if isinstance(provider_info, dict) else None
+        if isinstance(env_hints, dict):
+            return resolve_agent_runtime_environment(provider, env_hints)
     try:
         from app.services.external_agent_discovery import external_agent_provider_env_hints
 

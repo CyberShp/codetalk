@@ -16,6 +16,7 @@ from app.config import settings
 
 MANAGED_PROVIDER_PROMPT_TRANSPORTS = {"claude_print_arg", "codex_exec_json", "opencode_run_arg"}
 AGENT_PROVIDERS = {"claude", "codex", "opencode", "nga", "custom"}
+AGENT_RUNTIME_PROVIDER_PREFIX = "agent-runtime:"
 PROMPT_TRANSPORTS = {"stdin", "argv_last", *MANAGED_PROVIDER_PROMPT_TRANSPORTS}
 OUTPUT_MODES = {"plain", "ndjson", "stream_json", "auto"}
 WORKING_DIR_MODES = {"project", "fixed", "none"}
@@ -377,6 +378,77 @@ def get_agent_runtime_sync(
             return None
         raise
     return _runtime_from_row(row) if row is not None else None
+
+
+def resolve_agent_runtime_environment(
+    provider: str,
+    frozen_environment: dict[str, Any] | None,
+) -> dict[str, str]:
+    """Resolve redacted secret values without reinterpreting frozen safe config."""
+    frozen = {
+        str(key): str(value)
+        for key, value in (frozen_environment or {}).items()
+        if str(key).strip()
+    }
+    resolved = {
+        key: value for key, value in frozen.items() if "<redacted>" not in value
+    }
+    redacted_keys = [key for key, value in frozen.items() if "<redacted>" in value]
+    provider_ref = str(provider or "").strip()
+    if not redacted_keys or not provider_ref.startswith(AGENT_RUNTIME_PROVIDER_PREFIX):
+        return resolved
+    runtime_id = provider_ref[len(AGENT_RUNTIME_PROVIDER_PREFIX):]
+    runtime = get_agent_runtime_sync(runtime_id)
+    if not runtime or not bool(runtime.get("enabled", True)):
+        return resolved
+    live_environment = runtime.get("env")
+    if not isinstance(live_environment, dict):
+        return resolved
+    for key in redacted_keys:
+        if key in live_environment:
+            resolved[key] = _restore_redacted_environment_value(
+                frozen[key],
+                str(live_environment[key]),
+            )
+        elif frozen[key] != "<redacted>":
+            resolved[key] = frozen[key]
+    return resolved
+
+
+def _restore_redacted_environment_value(frozen: str, live: str) -> str:
+    if frozen == "<redacted>":
+        return live
+    try:
+        frozen_payload = json.loads(frozen)
+        live_payload = json.loads(live)
+    except (json.JSONDecodeError, TypeError):
+        return frozen
+    restored = _restore_redacted_json_value(frozen_payload, live_payload)
+    return _json_dumps(restored)
+
+
+def _restore_redacted_json_value(frozen: Any, live: Any) -> Any:
+    if frozen == "<redacted>":
+        return live
+    if isinstance(frozen, dict):
+        if not isinstance(live, dict):
+            return frozen
+        return {
+            key: _restore_redacted_json_value(value, live[key])
+            if key in live
+            else value
+            for key, value in frozen.items()
+        }
+    if isinstance(frozen, list):
+        if not isinstance(live, list):
+            return frozen
+        return [
+            _restore_redacted_json_value(value, live[index])
+            if index < len(live)
+            else value
+            for index, value in enumerate(frozen)
+        ]
+    return frozen
 
 
 def _runtime_from_row(row: aiosqlite.Row | sqlite3.Row) -> dict[str, Any]:

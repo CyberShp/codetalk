@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.services import agent_cli_bridge
+from app.services.agent_runtimes import resolve_agent_runtime_environment
 from app.services.provider_adapters.contracts import (
     ArtifactCandidate,
     CancelResult,
@@ -54,6 +55,26 @@ class _ActiveExecution:
     cancel_requested: threading.Event = field(default_factory=threading.Event)
 
 
+def _frozen_provider_environment(
+    task_bundle: dict[str, Any],
+    *,
+    provider_ref: str,
+) -> dict[str, str]:
+    snapshot = task_bundle.get("provider_snapshot")
+    if not isinstance(snapshot, dict):
+        return {}
+    providers = snapshot.get("providers")
+    if not isinstance(providers, dict):
+        return {}
+    provider = providers.get(provider_ref)
+    if not isinstance(provider, dict):
+        return {}
+    env_hints = provider.get("env_hints")
+    if not isinstance(env_hints, dict):
+        return {}
+    return resolve_agent_runtime_environment(provider_ref, env_hints)
+
+
 class CliProviderAdapter:
     """Translate Harness values into one invocation of ``stream_agent_runtime``."""
 
@@ -87,6 +108,10 @@ class CliProviderAdapter:
             prompt = request.task_bundle.get("prompt")
         if not isinstance(prompt, str):
             prompt = ""
+        frozen_env = _frozen_provider_environment(
+            request.task_bundle,
+            provider_ref=str(request.provider or ""),
+        )
 
         runtime = {
             "id": f"harness-{self.provider}",
@@ -106,6 +131,7 @@ class CliProviderAdapter:
             "mcp_profile": str(request.mcp_profile or ""),
             "requires_network": bool(request.requires_network),
             "env": {
+                **frozen_env,
                 "CODETALK_AGENT_ARTIFACT_DIR": str(self.artifact_dir),
             },
             "sandbox_read_paths": _captured_material_read_paths(

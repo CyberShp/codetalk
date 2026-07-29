@@ -46,6 +46,9 @@ from app.services.workbench_task_compile import (
 )
 
 AGENT_RUNTIME_PROVIDER_PREFIX = "agent-runtime:"
+_SENSITIVE_ENV_KEY_RE = re.compile(
+    r"(?i)(api[-_]?key|access[-_]?key|token|secret|password|passwd|passphrase|credential|private[-_]?key|authorization|cookie)"
+)
 BUILTIN_LLM_PROVIDER_ID = "builtin-llm"
 MANAGED_RUNTIME_ALIASES = {
     "claude-code": ("default-claude-code", "claude", "claude_print_arg"),
@@ -3141,10 +3144,7 @@ def build_agent_provider_snapshot(
             ],
             "readonly_args": list(spec.readonly_args),
             "env_hint_keys": sorted(spec.env_hints),
-            "env_hints": {
-                key: redact_agent_diagnostic_text(value)
-                for key, value in sorted(spec.env_hints.items())
-            },
+            "env_hints": _redact_provider_env_hints(spec.env_hints),
             "command_hint_env": spec.command_hint_env,
             "prompt_transport": spec.prompt_transport,
             "capabilities": external_agent_provider_capabilities(provider),
@@ -3314,10 +3314,7 @@ def _agent_runtime_provider_snapshot_item(runtime: dict[str, Any]) -> dict[str, 
         "fallback_commands": [],
         "readonly_args": [],
         "env_hint_keys": sorted(str(key) for key in (runtime.get("env") or {})),
-        "env_hints": {
-            str(key): redact_agent_diagnostic_text(str(value))
-            for key, value in sorted((runtime.get("env") or {}).items())
-        },
+        "env_hints": _redact_provider_env_hints(runtime.get("env") or {}),
         "command_hint_env": "",
         "prompt_transport": str(runtime.get("prompt_transport") or "stdin"),
         "requires_network": bool(runtime.get("requires_network", True)),
@@ -3717,10 +3714,9 @@ def build_agent_cli_provider_diagnostics(provider: str, spec: Any) -> dict[str, 
     ]
     prompt_transport = str(getattr(spec, "prompt_transport", "") or "auto").strip() or "auto"
     command_hint_env = str(getattr(spec, "command_hint_env", "") or "").strip()
-    env_hints = {
-        str(key): redact_agent_diagnostic_text(str(value))
-        for key, value in sorted((getattr(spec, "env_hints", {}) or {}).items())
-    }
+    env_hints = _redact_provider_env_hints(
+        getattr(spec, "env_hints", {}) or {}
+    )
     manual_probe = (
         f"POST /api/tools/{provider}/startup-probe with repo_path, then verify the "
         f"same backend shell can launch: {command_text or provider}"
@@ -3769,6 +3765,44 @@ def build_agent_cli_provider_diagnostics(provider: str, spec: Any) -> dict[str, 
     if command_resolution:
         diagnostics["command_resolution"] = command_resolution
     return diagnostics
+
+
+def _redact_provider_env_hints(environment: dict[str, Any]) -> dict[str, str]:
+    return {
+        str(key): (
+            "<redacted>"
+            if _SENSITIVE_ENV_KEY_RE.search(str(key))
+            else _redact_provider_env_value(value)
+        )
+        for key, value in sorted(environment.items())
+    }
+
+
+def _redact_provider_env_value(value: Any) -> str:
+    text = str(value)
+    try:
+        payload = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return redact_agent_diagnostic_text(text)
+    redacted = _redact_provider_json_value(payload)
+    return json.dumps(redacted, ensure_ascii=False, sort_keys=True)
+
+
+def _redact_provider_json_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): (
+                "<redacted>"
+                if _SENSITIVE_ENV_KEY_RE.search(str(key))
+                else _redact_provider_json_value(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_provider_json_value(item) for item in value]
+    if isinstance(value, str):
+        return redact_agent_diagnostic_text(value)
+    return value
 
 
 def _agent_cli_probe_recipe(

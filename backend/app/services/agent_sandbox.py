@@ -292,7 +292,11 @@ def prepare_isolated_runtime_tmp(artifact_dir: Path) -> Path:
     return runtime_tmp
 
 
-_ISOLATED_RUNTIME_PREFIXES = (".runtime-tmp-", ".runtime-codex-home-")
+_ISOLATED_RUNTIME_PREFIXES = (
+    ".runtime-tmp-",
+    ".runtime-codex-home-",
+    ".runtime-opencode-home-",
+)
 
 
 def cleanup_isolated_runtime_directories(artifact_dir: Path) -> list[str]:
@@ -376,6 +380,95 @@ def prepare_isolated_codex_home(
         if resolved_source not in read_targets:
             read_targets.append(resolved_source)
     return runtime_home, read_targets
+
+
+def prepare_isolated_opencode_home(
+    *,
+    provider: str,
+    command: list[str],
+    artifact_dir: Path,
+    config_environment: dict[str, Any] | None = None,
+    allow_artifact_writes: bool = False,
+) -> tuple[Path | None, dict[str, str]]:
+    command_name = Path(command[0]).name.lower() if command else ""
+    if "opencode" not in command_name and "opencode" not in provider.lower():
+        return None, {}
+
+    artifact_root = artifact_dir.resolve()
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    config: dict[str, Any] | None = None
+    if allow_artifact_writes:
+        raw_config = str(
+            (config_environment or {}).get("OPENCODE_CONFIG_CONTENT") or "{}"
+        ).strip()
+        try:
+            parsed_config = json.loads(raw_config)
+        except json.JSONDecodeError as exc:
+            raise AgentSandboxError(
+                "OpenCode 隔离配置不是有效 JSON，无法安全批准任务产物目录。"
+            ) from exc
+        if not isinstance(parsed_config, dict):
+            raise AgentSandboxError(
+                "OpenCode 隔离配置必须是 JSON 对象，无法安全批准任务产物目录。"
+            )
+        config = parsed_config
+        permission_value = config.get("permission")
+        if permission_value is None:
+            permissions: dict[str, Any] = {}
+        elif isinstance(permission_value, str):
+            permissions = {"*": permission_value}
+        elif isinstance(permission_value, dict):
+            permissions = dict(permission_value)
+        else:
+            raise AgentSandboxError(
+                "OpenCode permission 配置格式无效，无法安全批准任务产物目录。"
+            )
+        external_value = permissions.get("external_directory")
+        if external_value is not None and not isinstance(
+            external_value, (str, dict)
+        ):
+            raise AgentSandboxError(
+                "OpenCode external_directory 配置格式无效，无法安全批准任务产物目录。"
+            )
+        permissions["external_directory"] = {
+            f"{artifact_root}/**": "allow",
+        }
+        config["permission"] = permissions
+
+    runtime_home = Path(
+        tempfile.mkdtemp(prefix=".runtime-opencode-home-", dir=artifact_root)
+    )
+    if runtime_home.is_symlink() or not runtime_home.is_dir():
+        raise AgentSandboxError("OpenCode 隔离运行目录不是安全的真实目录。")
+    runtime_home = runtime_home.resolve(strict=True)
+    if runtime_home.parent != artifact_root:
+        raise AgentSandboxError("OpenCode 隔离运行目录越过任务边界。")
+
+    paths = {
+        "HOME": runtime_home / "home",
+        "OPENCODE_CONFIG_DIR": runtime_home / "config",
+        "XDG_CONFIG_HOME": runtime_home / "xdg-config",
+        "XDG_DATA_HOME": runtime_home / "data",
+        "XDG_CACHE_HOME": runtime_home / "cache",
+        "XDG_STATE_HOME": runtime_home / "state",
+    }
+    for path in paths.values():
+        path.mkdir(mode=0o700)
+        if path.is_symlink() or path.resolve(strict=True).parent != runtime_home:
+            raise AgentSandboxError("OpenCode 隔离状态目录越过任务边界。")
+    runtime_env = {
+        **{key: str(path) for key, path in paths.items()},
+        "OPENCODE_AUTO_SHARE": "false",
+        "OPENCODE_DISABLE_AUTOUPDATE": "1",
+        "OPENCODE_DISABLE_TELEMETRY": "1",
+    }
+    if config is not None:
+        runtime_env["OPENCODE_CONFIG_CONTENT"] = json.dumps(
+            config,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    return runtime_home, runtime_env
 
 
 def codex_command_for_outer_sandbox(
@@ -683,11 +776,15 @@ def _runtime_paths(runtime: dict[str, Any], command: str) -> tuple[list[Path], l
             state_paths.append(resolved)
 
     if "opencode" in command_name:
-        add_read(home / ".config" / "opencode")
-        add_read(home / ".opencode")
-        add_state(home / ".local" / "share" / "opencode")
-        add_state(home / ".local" / "state" / "opencode")
-        add_state(home / ".cache" / "opencode")
+        isolated_home = str(runtime.get("sandbox_opencode_home") or "").strip()
+        if isolated_home:
+            add_state(Path(isolated_home))
+        else:
+            add_read(home / ".config" / "opencode")
+            add_read(home / ".opencode")
+            add_state(home / ".local" / "share" / "opencode")
+            add_state(home / ".local" / "state" / "opencode")
+            add_state(home / ".cache" / "opencode")
     elif "codex" in command_name:
         codex_home = Path(
             runtime.get("sandbox_codex_home")

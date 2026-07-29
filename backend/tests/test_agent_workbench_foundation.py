@@ -1499,6 +1499,122 @@ def test_agent_run_harness_injects_custom_provider_env_without_persisting_secret
     assert execution_input["env_hints"]["CORP_AGENT_TOKEN"] == "<redacted>"
 
 
+def test_agent_run_harness_uses_frozen_config_and_live_runtime_secrets(
+    tmp_path, monkeypatch
+):
+    from app.services import agent_runtimes
+    from app.services.agent_run_harness import AgentRunHarness
+
+    artifact_dir = tmp_path / "agent-runtime-env"
+    output_file = artifact_dir / "runtime_env.json"
+    shim = tmp_path / "runtime-env-shim.py"
+    shim.write_text(
+        "import json, os, pathlib, sys\n"
+        "json.load(sys.stdin)\n"
+        "pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'], 'runtime_env.json').write_text(json.dumps({\n"
+        "  'config': os.environ.get('OPENCODE_CONFIG_CONTENT'),\n"
+        "  'autoupdate': os.environ.get('OPENCODE_DISABLE_AUTOUPDATE'),\n"
+        "  'api_key': os.environ.get('OPENAI_API_KEY'),\n"
+        "}), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    provider = "agent-runtime:phase7-opencode"
+    monkeypatch.setattr(
+        agent_runtimes,
+        "get_agent_runtime_sync",
+        lambda runtime_id: {
+            "id": runtime_id,
+            "enabled": True,
+            "env": {
+                "OPENCODE_CONFIG_CONTENT": json.dumps(
+                    {
+                        "enabled_providers": ["changed-after-freeze"],
+                        "provider": {
+                            "codetalk-local": {
+                                "options": {
+                                    "baseURL": "http://127.0.0.1:9999/v1",
+                                    "apiKey": "live-runtime-secret",
+                                }
+                            }
+                        },
+                    }
+                ),
+                "OPENCODE_DISABLE_AUTOUPDATE": "0",
+                "OPENAI_API_KEY": "live-runtime-secret",
+            },
+        },
+    )
+    task_bundle = {
+        "task_id": "task-opencode-env",
+        "provider_snapshot": {
+            "providers": {
+                provider: {
+                    "status": "configured",
+                    "owner": "agent_runtime",
+                    "agent_owned": True,
+                    "env_hints": {
+                        "OPENCODE_CONFIG_CONTENT": json.dumps(
+                            {
+                                "enabled_providers": ["codetalk-local"],
+                                "provider": {
+                                    "codetalk-local": {
+                                        "options": {
+                                            "baseURL": "http://127.0.0.1:3218/v1",
+                                            "apiKey": "<redacted>",
+                                        }
+                                    }
+                                },
+                            }
+                        ),
+                        "OPENCODE_DISABLE_AUTOUPDATE": "1",
+                        "OPENAI_API_KEY": "<redacted>",
+                    },
+                    "diagnostics": {
+                        "configured_command_text": f'"{sys.executable}" "{shim}"',
+                        "fallback_command_texts": [],
+                        "prompt_transport": "stdin",
+                    },
+                }
+            }
+        },
+    }
+    harness = AgentRunHarness(artifact_dir)
+    run = harness.create_run(
+        run_id="agent_run_frozen_opencode_env",
+        provider=provider,
+        command=[sys.executable, str(shim)],
+        cwd=str(tmp_path),
+        workflow_snapshot={"id": "wf"},
+        task_bundle=task_bundle,
+        prompt_transport="stdin",
+    )
+
+    executed = harness.execute_run(run.run_id, timeout_sec=10)
+
+    assert executed.status == "completed"
+    runtime_env = json.loads(output_file.read_text(encoding="utf-8"))
+    assert runtime_env["autoupdate"] == "1"
+    assert runtime_env["api_key"] == "live-runtime-secret"
+    runtime_config = json.loads(runtime_env["config"])
+    assert runtime_config["enabled_providers"] == ["codetalk-local"]
+    assert runtime_config["provider"]["codetalk-local"]["options"] == {
+        "baseURL": "http://127.0.0.1:3218/v1",
+        "apiKey": "live-runtime-secret",
+    }
+    assert runtime_config["permission"]["external_directory"] == {
+        f"{artifact_dir.resolve()}/**": "allow",
+    }
+    assert "live-runtime-secret" not in (
+        artifact_dir / "execution_input.json"
+    ).read_text(encoding="utf-8")
+    replay_plan_text = (artifact_dir / "agent_replay_plan.json").read_text(
+        encoding="utf-8"
+    )
+    assert "live-runtime-secret" not in replay_plan_text
+    replay_plan = json.loads(replay_plan_text)
+    assert replay_plan["env_hints"]["OPENAI_API_KEY"] == "<redacted>"
+
+
 def test_agent_run_harness_uses_provider_prompt_transport_for_argv_last(
     tmp_path, monkeypatch
 ):
