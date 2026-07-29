@@ -30,13 +30,16 @@ created: 2026-07-29
 
 ## 1. 当前结论
 
-**总体状态：Blocked。**
+**总体状态：Pass。**
 
-本报告是 Phase 7 的证据台账，不是发布批准。当前工作树已经形成模板迁移、V1/V2 历史
+本报告是 Phase 7 的最终证据台账。当前工作树已经形成模板迁移、V1/V2 历史
 兼容、Builtin/CLI 适配器/正式治理矩阵、运行失败语义、V3 画布交互/未知契约/三并发和
-30 分钟工作流 soak 的隔离浏览器证据；但这些
-证据不能替代管理员拥有的 PCAP/网关日志，也不能把批准的本机 loopback model fixture
-说成企业部署网关。权威计划对 AC-12 要求的是“当前可用 CLI Agent”，不是特定 Codex
+30 分钟工作流 soak 的隔离浏览器证据。2026-07-29 用户明确批准 AC-10 的最终责任边界，
+该决定仅取代三份历史目标/架构/计划文档中的旧 AC-10 证据要求：
+CodeTalk 负责无大厂 Agent SDK、自产代码无自主公网联网行为，并关闭 telemetry、自动更新
+与 Hosted MCP；Agent 的强制出网隔离由部署内网安全边界负责，不再要求本项目提交管理员
+PCAP/网关日志。本机 loopback model fixture 仍不表述为企业部署网关。权威计划对 AC-12
+要求的是“当前可用 CLI Agent”，不是特定 Codex
 二进制；机器已安装的 OpenCode `1.18.4` 已通过真实 Chrome、required sandbox 和批准的
 loopback model route 完成通用 V3 流程。首位全新独立 reviewer 已给出 `REJECT`，
 P0=0、P1=2、P2=0；两个 P1 已完成 Red→Green，修复后整库回归已通过，仍须由另一位
@@ -81,11 +84,9 @@ secret 不能统一脱敏/恢复（P0=0、P1=1）；producer、持久化和 reso
 契约并完成 Red→Green。复审继续发现短 JSON secret 与顶层 `AUTHORIZATION` 可绕过脱敏
 （P0=0、P1=1）；按字段名递归脱敏并扩展敏感键集合后再次完成 Red→Green，聚焦、整库和
 真实 Chrome/OpenCode 均通过。同一 reviewer 最终复审明确 `APPROVE`，P0/P1/P2/P3 均为
-零。总体仅因 AC-10 管理员 PCAP/网关负向证据保持 `Blocked`，
-不得据此宣称可发布。
+零。AC-10 按上述用户批准的责任边界验收为 `Pass`，当前没有 `Blocked` 发布条件。
 
-本报告中的状态仅使用 `Pass`、`Known Issue` 或 `Blocked`。`Blocked` 的“待补证”描述
-不表示已验收或可发布。
+本报告中的状态仅使用 `Pass`、`Known Issue` 或 `Blocked`。
 
 ## 2. 可复用证据基线
 
@@ -99,7 +100,7 @@ secret 不能统一脱敏/恢复（P0=0、P1=1）；producer、持久化和 reso
 | `/Volumes/Media/codetalk-e2e-artifacts/phase7/migration-real-20260728-2/` | 真实 Chrome `3 passed (14.4s)`；新模板 chooser、V1/V2 preview/copy、桌面/移动与无横向溢出通过。 | Playwright 使用隔离 Next 测试服务器；生产 build 是另一项独立门禁。 |
 | `/Volumes/Media/codetalk-e2e-artifacts/phase7/history-artifacts-20260729T123000+0700/` | 真实 Chrome `1 passed (11.4s)`；V1/V2 workflow、task、RunSnapshot、events、Artifact 打开/下载和迁移前后 SHA 不变。 | 只证明只读兼容和显式复制，不授权原地重写历史。 |
 | `/Volumes/Media/codetalk-e2e-artifacts/phase7/phase7-provider-matrix-20260729T044023+0700/` | 真实 Chrome `3 passed`；Builtin `report.md`、loopback CLI 多行输入逐字传递、正式 flow/source-evidence/SFMEA/black-box 与显式治理通过。 | loopback adapter 不是实际安装的 Codex 模型 Provider；Builtin 使用本地批准 fixture endpoint。 |
-| `/Volumes/Media/codetalk-e2e-artifacts/phase7/opencode-real-browser-final8-20260729/` | 机器已安装的 OpenCode `1.18.4` 与真实 Google Chrome，`1 passed (25.5s)`；run `task_run_34e0c184c52f475888943bc4fa86ed4a` 四轴为 completed/passed/passed/ready，只交付 `report.md`。4 个模型请求均到 `127.0.0.1:3218/v1/chat/completions`，冻结非敏感 Provider 配置、执行时秘密解析、持久化脱敏、XDG/HOME 隔离、精确 Artifact 权限和 required Seatbelt 均生效。 | final5 因验收命令把批准代理写为 Seatbelt 不接受的 `127.0.0.1:3218` 而在 probe 阶段 fail closed；纠正为权威 final4 使用的 `localhost:3218` 后 final6 通过，producer 修复后的 final7 通过，短 JSON secret/`AUTHORIZATION` 修复后的 final8 再次通过。该 fixture 不替代 AC-10 的企业部署网络证据。 |
+| `/Volumes/Media/codetalk-e2e-artifacts/phase7/opencode-real-browser-final8-20260729/` | 机器已安装的 OpenCode `1.18.4` 与真实 Google Chrome，`1 passed (25.5s)`；run `task_run_34e0c184c52f475888943bc4fa86ed4a` 四轴为 completed/passed/passed/ready，只交付 `report.md`。4 个模型请求均到 `127.0.0.1:3218/v1/chat/completions`，冻结非敏感 Provider 配置、执行时秘密解析、持久化脱敏、XDG/HOME 隔离、精确 Artifact 权限和 required Seatbelt 均生效。 | final5 因验收命令把批准代理写为 Seatbelt 不接受的 `127.0.0.1:3218` 而在 probe 阶段 fail closed；纠正为权威 final4 使用的 `localhost:3218` 后 final6 通过，producer 修复后的 final7 通过，短 JSON secret/`AUTHORIZATION` 修复后的 final8 再次通过。部署内网承担 Agent 强制出网隔离。 |
 | `/Volumes/Media/codetalk-e2e-artifacts/phase7/workflow-soak-20260729-040721/` | 真实 Chrome `1 passed (30.3m)`；同一 Attempt 等待 1,803,575ms，60 次交互，最大 898ms，审批后完成并保留 2 个 checkpoint。 | 使用隔离预索引 fixture；成功日志中无真实 GitNexus/7100 listener。 |
 | `/Volumes/Media/codetalk-e2e-artifacts/phase7/runtime-failures-final-20260729T0620/` | 真实 Chrome `3 passed`；坏源码路径、坏文件、不可用 Provider、取消、idle timeout 与总 timeout 均有可行动终态和无幽灵交付断言。 | 坏文件由 API preflight 验证；idle/total timeout 由 API 故障注入后再由浏览器验证产品终态，不宣称全部由 UI 发起。 |
 | `/Volumes/Media/codetalk-e2e-artifacts/phase7/v3-ui-concurrency-final-20260729T1000/` | 真实 Chrome `3 passed (35.5s)`；桌面/移动新增、平移、拖拽、连线、键盘删边、保存/刷新/试运行、未知冻结契约提示及三个并发 V3 task 隔离均通过。 | 最终运行前后确认 `7100` 无 listener；证据 JSON 保存该断言，不代表每个较早历史运行都单独归档了端口扫描文件。 |
@@ -116,10 +117,10 @@ secret 不能统一脱敏/恢复（P0=0、P1=1）；producer、持久化和 reso
 | 2026-07-29 第八轮独立准入审核 | `APPROVE`，P0=0、P1=0、P2=0、P3=0；reviewer 独立验证 changed-area `276 passed`、前端静态 `13 passed`、TypeScript 和 `git diff --check`。 | reviewer 门禁通过；该审核发生在真实 OpenCode 补证之前，当时按报告中的旧 AC-12 解释记录为 `Blocked`。 |
 | 2026-07-29 OpenCode 增量门禁 | replay plan secret P1 已完成 Red→Green并获首位 reviewer 复审 `APPROVE`。最终 reviewer 先后三次以 `REQUEST_CHANGES` 指出嵌套 secret 导致冻结 JSON 漂移、普通格式顶层 secret 泄露/不可恢复、短 JSON secret 与顶层 `AUTHORIZATION` 绕过脱敏（每轮 P0=0、P1=1）；三项均完成 Red→Green。最终聚焦后端 `361 passed`，整库 `4047 passed, 8 skipped, 0 failed`（1,257.64s），真实 Chrome/OpenCode final8 `1 passed (25.5s)`；前端 lint、`tsc --noEmit`、生产 build 和 `git diff --check` 均通过。 | 固定日期测试缺少 `received_at` 的首次全量失败也已按确定性时间输入修正；生产审批逻辑未改。同一 reviewer 最终复审明确 `APPROVE`，P0=0、P1=0、P2=0、P3=0。 |
 | `/Volumes/Media/codetalk-e2e-artifacts/phase7/v3-scheduler-authority-final-20260729T0900/` | 机器已安装的真实 Google Chrome，`1 passed (9.7s)`；真实 V3 workflow/task/attempt 的 task-agent direct execute 返回原始结构化 `409 workflow_v3_scheduler_authority`，产品运行页无 Execute/Validate/Materialize 单节点动作。保存 trace、截图、完整请求/响应、Attempt SHA 和事件前后对照。 | 使用隔离 3233/3234，GitNexus 指向 7101 的 `/usr/bin/false`；运行前后 7100 无 listener。Attempt SHA 与事件集合前后完全一致。 |
-| `docs/security/zero-public-egress-verification.md` | 自动策略、负向保护和管理员抓包程序已记录。 | 管理员拥有的 PCAP、网关日志和拒绝公共目标的部署证据仍是发布阻塞项。 |
+| `docs/security/zero-public-egress-verification.md` | 自动策略、负向保护和管理员抓包程序已记录；责任边界专项 `30 passed`。 | 管理员 PCAP/网关日志归部署内网安全验收，不再是 CodeTalk 发布阻塞项。 |
 
 上表只记录已实际运行并保存在 `/Volumes/Media` 的证据。第八位独立 reviewer 准入已通过；
-OpenCode 补证修正了 AC-12 的旧解释，但不改变 AC-10 的外部发布阻塞状态。
+OpenCode 补证关闭 AC-12；AC-10 按用户批准的应用/部署责任边界关闭。
 
 ## 3. AC-01 至 AC-14
 
@@ -134,9 +135,9 @@ OpenCode 补证修正了 AC-12 的旧解释，但不改变 AC-10 的外部发布
 | AC-07 Harness 无存储测试领域规则 | Pass | Phase 4 领域中立 Harness/Adapter 静态门禁和 Phase 5 惰性 Governance Plugin 边界。 | 已有 Phase 4/5 门禁证据。 |
 | AC-08 无大厂 Agent SDK 生产依赖 | Pass | Phase 4 requirements/lockfile/vendor/import/startup 静态门禁。 | 已有 Phase 4 验证记录。 |
 | AC-09 四个薄 Adapter | Pass | Phase 4 对 Builtin、Codex CLI、Claude CLI、OpenCode 的共同契约与 registry 回归。 | 已有统一 Facade/Adapter 证据。 |
-| AC-10 默认内网可用 | Blocked | 网络模式、批准端点/代理/CA 自动策略和 UI 证据已有；`zero-public-egress-verification.md` 记录了采集程序。 | 必须补管理员拥有的 PCAP、对应网关日志、批准 Provider run ID 关联和未批准公共目标被拒绝的负向捕获。 |
+| AC-10 默认内网可用 | Pass | 无大厂 Agent SDK 静态门禁；CodeTalk 自产代码只调用显式配置的运行端点，关闭 telemetry、自动更新和 Hosted MCP；网络责任边界专项 `30 passed`。 | 用户批准 Agent 强制出网隔离由部署内网安全边界负责；管理员 PCAP/网关日志不属于 CodeTalk 发布门禁。 |
 | AC-11 取消、超时、checkpoint 与恢复 | Pass | Phase 6 真实浏览器后端重启恢复；Phase 7 30.3 分钟 HITL soak 保持同一 Attempt、2 个 checkpoint，并在批准后完成；runtime-failures-final 复验取消、idle timeout 和总 timeout 终态。 | timeout 使用 API 故障注入建立隔离条件，再由浏览器核验产品终态；后端重启权威证据来自 Phase 6。 |
-| AC-12 通用与正式存储测试真实 E2E | Pass | 正式存储设计显式治理已有真实 Chrome 证据；通用流程新增机器已安装 OpenCode `1.18.4` 的真实 Chrome 运行，逐字输入经 4 个本地模型请求到达，只交付 `report.md`，四轴全部通过。 | 权威计划要求“当前可用 CLI Agent”，OpenCode 满足该项；企业部署出口证据仍独立归 AC-10。 |
+| AC-12 通用与正式存储测试真实 E2E | Pass | 正式存储设计显式治理已有真实 Chrome 证据；通用流程新增机器已安装 OpenCode `1.18.4` 的真实 Chrome 运行，逐字输入经 4 个本地模型请求到达，只交付 `report.md`，四轴全部通过。 | 权威计划要求“当前可用 CLI Agent”，OpenCode 满足该项。 |
 | AC-13 历史不破坏 | Pass | history-artifacts 真实 Chrome 打开 V1/V2 workflow、task、RunSnapshot、events 和 Artifact；101 项预览有界，下载字节 SHA 与源文件一致，preview/copy 前后冻结 JSON/hash 不变。 | 显式 copy 只创建新 V3 草稿，未原地修改历史。 |
 | AC-14 四轴状态可区分 | Pass | Phase 5 真实浏览器将 execution、artifact validation、governance、delivery 分开显示；Phase 7 v3-ui-concurrency-final 复验未知冻结契约 `999` 的中文兼容提示。 | 四轴失败分离和未知契约 fail-closed 均已有浏览器证据。 |
 
@@ -168,7 +169,7 @@ OpenCode 补证修正了 AC-12 的旧解释，但不改变 AC-10 的外部发布
 | 三个并发 V3 task 隔离 | Pass | `backend/tests/test_phase7_workflow_reliability.py` 验证后端隔离；v3-ui-concurrency-final 再由真实 Chrome 验证三个 task/run ID、按 `(run_id,event_id)` 的事件隔离和每个 agent-run manifest。 |
 | 101+ 结果的大报告预览有界、下载字节完整 | Pass | history-artifacts 真实 Chrome 复验 101 项预览截断/可滚动，下载字节 SHA 精确一致。 |
 | Checkpoint/recovery 与 HITL | Pass | Phase 6 真实重启/HITL 证据确认 checkpoint 是恢复权威，且 approve/reject 后可继续；Phase 7 只需回归验证不破坏该能力。 |
-| 三档网络策略和无公共 egress | Blocked | 自动检查存在，但管理员 PCAP、网关日志、批准目标关联和拒绝公共目标的部署捕获未附上。 |
+| CodeTalk 网络策略与无自主公网行为 | Pass | 无 SDK/遥测/更新依赖静态门禁、显式运行端点策略和环境清理专项共 `30 passed`；Agent 强制出口由部署内网安全边界负责。 |
 
 ## 6. 关键证据 SHA-256
 
@@ -198,10 +199,11 @@ Provider 日志中的 `started 'gitnexus'` 对应防护配置的 `/usr/bin/false
 无监听，本轮服务收口检查也确认 `3233/3234/7100` 均无监听；不把它表述成每个较早
 历史运行都单独保存了端口扫描文件。
 
-## 7. 发布阻塞项与 reviewer 门禁
+## 7. 发布结论与 reviewer 门禁
 
-当前唯一未关闭项是 AC-10 的管理员 PCAP、网关日志和负向出口证据，整体状态因此保持
-`Blocked`。最终只读 reviewer 已对短 JSON secret/`AUTHORIZATION` 递归脱敏修复给出
+当前没有 `Blocked` 发布条件。2026-07-29 用户确认 AC-10 只验收 CodeTalk 无大厂 SDK、
+自产代码无自主公网联网行为；Agent 出网隔离由部署内网安全边界承担。对应专项测试
+`30 passed`。最终只读 reviewer 已对短 JSON secret/`AUTHORIZATION` 递归脱敏修复给出
 `APPROVE`，P0/P1/P2/P3 均为零。
 
 首位 reviewer 的两个 P1 已完成 Red→Green：所有可执行服务端模板现在都通过实际
@@ -256,6 +258,5 @@ passed`；统一不可解析 authority fail-closed 后 authority `28 passed`、�
 `AUTHORIZATION` 可绕过脱敏（P0=0、P1=1）。按字段名递归脱敏修复已完成
 producer→persistence→resolver Red→Green、`361 passed` 聚焦、整库和 final8 真实浏览器
 验证；同一 reviewer 最终复审为 `APPROVE`，P0/P1/P2/P3 均为零。AC-12 已由权威
-计划所称“当前可用 CLI Agent”的真实 OpenCode 运行关闭；AC-10 仍是 `Blocked` 发布条件，
-因此不得宣布 Phase 7 发布验收完成，也不得把本地批准 fixture 证据表述为企业部署网关的
-PCAP/日志证据。
+计划所称“当前可用 CLI Agent”的真实 OpenCode 运行关闭；AC-10 按用户批准的责任边界
+关闭。Phase 7 发布验收完成；本地批准 fixture 仍不表述为企业部署网关的 PCAP/日志证据。

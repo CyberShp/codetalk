@@ -20,7 +20,11 @@ created: 2026-07-29
 
 本手册只覆盖 Phase 7 的增量 V3 默认化、历史兼容、回滚和验收操作。它以
 `harness-workflow-goal.md`、`harness-workflow-target-architecture.md` 和
-`harness-workflow-refactor-plan.md` 为准；发生冲突时以目标文档为准。
+`harness-workflow-refactor-plan.md` 为准；发生冲突时以目标文档为准。唯一例外是
+2026-07-29 用户批准的新 AC-10 责任边界：它明确取代三份历史文档中“由 CodeTalk 项目
+提交管理员 PCAP、网关日志和未批准目的地负向捕获”的旧验收口径。CodeTalk 改为验收
+无大厂 Agent SDK、自产代码无自主公网联网行为，并关闭 telemetry、自动更新与 Hosted
+MCP；Agent 强制出网隔离由部署内网安全边界负责。三份历史文档的其余要求继续有效。
 
 迁移的基本规则是：**历史已发布版本、RunSnapshot、任务、事件和 Artifact 不做
 批量写入或原地升级。** V3 是新建草稿和新发布版本的路径，不是历史数据的重解释或
@@ -234,10 +238,11 @@ env CODETALK_FRONTEND_PORT=3233 CODETALK_BACKEND_PORT=3234 \
 仅可用于隔离 fixture、故障注入和不可见状态核验。所有监听端口和本地 GitNexus 都要在
 运行结束后关闭。
 
-网络验收必须在批准的 Base URL/proxy/CA 上进行，并证明无 telemetry、updater、Hosted
-MCP 或未批准出口。管理员拥有的 PCAP、网关日志和拒绝公共目的地的负向证据是发布门禁；
-开发账户不能伪造或代替这项证据。采集脚本为
-`scripts/capture-intranet-egress.sh`，输出必须位于 `/Volumes/Media/codetalk-e2e-artifacts/`。
+CodeTalk 网络验收必须证明无大厂 Agent SDK，且自产代码不发起自主公网请求，并关闭
+telemetry、updater 与 Hosted MCP。2026-07-29 用户确认 Agent 强制出口隔离由部署内网
+安全边界负责，管理员 PCAP、网关日志和公共目的地负向捕获不再是 CodeTalk 发布门禁。
+如部署团队需要额外采集，仍可使用 `scripts/capture-intranet-egress.sh`，输出应位于
+`/Volumes/Media/codetalk-e2e-artifacts/`。
 
 ## 8. 完成记录
 
@@ -267,13 +272,13 @@ MCP 或未批准出口。管理员拥有的 PCAP、网关日志和拒绝公共�
   4 个模型请求、冻结 Provider、sandbox policy、任务 manifest 与 SHA。
 
 这些目录都位于 `/Volumes/Media/codetalk-e2e-artifacts/`。实际 OpenCode 运行满足权威计划
-中 AC-12 的“当前可用 CLI Agent”；但本机 loopback fixture 不是企业部署网关，也不包含
-管理员 PCAP/网关日志，因此不能解除 AC-10 的发布阻塞。
+中 AC-12 的“当前可用 CLI Agent”。本机 loopback fixture 不是企业部署网关；AC-10 按
+用户批准的责任边界由 CodeTalk 无 SDK/无自主公网行为证据和部署内网隔离责任共同关闭。
 
 Phase 7 只有在以下材料齐全后才允许结束：14 项 AC 状态全部填写为 `Pass`、
 `Known Issue` 或 `Blocked`，且最终没有 Blocked 的发布条件；真实浏览器 trace、截图、
 事件、RunSnapshot、Artifact hash/download、网络摘要、历史 hash 对照、性能/可靠性
-结果、管理员 PCAP/网关证据和一位全新只读 reviewer 的 `APPROVE`（P0=0、P1=0）。
+结果、CodeTalk 网络责任边界证据和一位全新只读 reviewer 的 `APPROVE`（P0=0、P1=0）。
 
 当前完成与缺口以 `harness-workflow-acceptance-report.md` 为准。没有这些证据时，本手册
 只定义操作流程，不构成发布批准。
@@ -287,5 +292,5 @@ OpenCode JSON 被 live 配置替换（P0=0、P1=1）；结构化叶恢复后，�
 脱敏后聚焦后端 `361 passed`，最终整库 `4047 passed, 8 skipped`（1,257.64s），真实
 Chrome/OpenCode final8、前端 lint、TypeScript 和生产 build 均通过；同一 reviewer 最终
 复审为 `APPROVE`，P0/P1/P2/P3 均为零。AC-12 已由当前可用 CLI
-Agent 证据关闭，但该证据不替代仍缺失的管理员 PCAP/网关日志。reviewer 门禁已通过；
-只要 AC-10 仍为 `Blocked`，Phase 7 就不能标记为发布验收完成。
+Agent 证据关闭；AC-10 按用户批准的“CodeTalk 无大厂 SDK 和自主公网行为、Agent 出网由
+部署内网隔离”责任边界关闭。reviewer 门禁已通过，Phase 7 发布验收完成。
