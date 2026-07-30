@@ -1,7 +1,7 @@
 """Reconcile persisted Workbench artifact paths with their authoritative disk layout.
 
 Older and alternate execution paths could persist human-readable workflow or node
-labels in ``artifact_dir``.  Those strings are metadata, not filesystem authority.
+labels in ``artifact_dir``. Those strings are metadata, not filesystem authority.
 The directory containing ``task_run.json`` and the frozen step id are the only
 stable sources used for execution.
 """
@@ -82,6 +82,7 @@ def _reconcile_task_run(
     if not (task_root / "task_run.json").is_file():
         return task_run
 
+    canonical_task_run_id = task_root.name
     step_ids, labels_to_ids = _workflow_step_identity(task_run.workflow_snapshot)
     corrected_runs: list[dict[str, Any]] = []
     changes: list[dict[str, str]] = []
@@ -120,15 +121,17 @@ def _reconcile_task_run(
 
         item["step_id"] = canonical_step_id
         item["artifact_dir"] = str(expected)
-        _rewrite_agent_envelope(expected, item)
+        _rewrite_agent_envelope(expected, item, task_run_id=canonical_task_run_id)
         corrected_runs.append(item)
 
-    task_changed = not _same_path(Path(str(task_run.artifact_dir)), task_root)
-    if task_changed:
+    task_id_changed = str(task_run.task_run_id) != canonical_task_run_id
+    task_path_changed = not _same_path(Path(str(task_run.artifact_dir)), task_root)
+    if task_id_changed or task_path_changed:
         changes.insert(
             0,
             {
-                "task_run_id": str(task_run.task_run_id),
+                "task_run_id_before": str(task_run.task_run_id),
+                "task_run_id_after": canonical_task_run_id,
                 "artifact_dir_before": str(task_run.artifact_dir),
                 "artifact_dir_after": str(task_root),
             },
@@ -137,13 +140,20 @@ def _reconcile_task_run(
     if persist and (changes or corrected_runs != list(task_run.agent_runs or [])):
         _persist_reconciliation(
             task_root=task_root,
+            task_run_id=canonical_task_run_id,
             corrected_runs=corrected_runs,
             changes=changes,
         )
 
+    corrected_bundle = dict(task_run.task_bundle or {})
+    if corrected_bundle:
+        corrected_bundle["task_run_id"] = canonical_task_run_id
+
     return replace(
         task_run,
+        task_run_id=canonical_task_run_id,
         artifact_dir=str(task_root),
+        task_bundle=corrected_bundle,
         agent_runs=corrected_runs,
     )
 
@@ -195,21 +205,46 @@ def _migrate_agent_directory(
     expected: Path,
     store_root: Path,
 ) -> None:
-    expected.mkdir(parents=True, exist_ok=True)
     try:
-        current_resolved = current.resolve()
+        current_resolved = current.expanduser().resolve()
+        expected_resolved = expected.expanduser().resolve()
     except OSError:
+        expected.mkdir(parents=True, exist_ok=True)
         return
+
     try:
         current_resolved.relative_to(store_root)
+        expected_resolved.relative_to(store_root)
     except ValueError:
+        expected.mkdir(parents=True, exist_ok=True)
         return
-    if not current_resolved.is_dir() or _same_path(current_resolved, expected):
+
+    if _same_path(current_resolved, expected_resolved):
+        expected.mkdir(parents=True, exist_ok=True)
         return
-    shutil.copytree(current_resolved, expected, dirs_exist_ok=True)
+
+    # Never copy a directory into one of its own descendants. This can happen
+    # when an old record stored the Task root itself as the Agent artifact root.
+    try:
+        expected_resolved.relative_to(current_resolved)
+    except ValueError:
+        pass
+    else:
+        expected.mkdir(parents=True, exist_ok=True)
+        return
+
+    expected.mkdir(parents=True, exist_ok=True)
+    if not current_resolved.is_dir():
+        return
+    shutil.copytree(current_resolved, expected_resolved, dirs_exist_ok=True)
 
 
-def _rewrite_agent_envelope(agent_root: Path, agent_run: dict[str, Any]) -> None:
+def _rewrite_agent_envelope(
+    agent_root: Path,
+    agent_run: dict[str, Any],
+    *,
+    task_run_id: str,
+) -> None:
     path = agent_root / "agent_run.json"
     payload = _read_json(path)
     if isinstance(payload, dict):
@@ -219,6 +254,7 @@ def _rewrite_agent_envelope(agent_root: Path, agent_run: dict[str, Any]) -> None
     bundle_path = agent_root / "task_bundle.json"
     bundle = _read_json(bundle_path)
     if isinstance(bundle, dict):
+        bundle["task_run_id"] = task_run_id
         bundle["step_id"] = str(agent_run.get("step_id") or bundle.get("step_id") or "")
         _atomic_write_json(bundle_path, bundle)
 
@@ -226,14 +262,19 @@ def _rewrite_agent_envelope(agent_root: Path, agent_run: dict[str, Any]) -> None
 def _persist_reconciliation(
     *,
     task_root: Path,
+    task_run_id: str,
     corrected_runs: list[dict[str, Any]],
     changes: list[dict[str, str]],
 ) -> None:
     task_path = task_root / "task_run.json"
     payload = _read_json(task_path)
     if isinstance(payload, dict):
+        payload["task_run_id"] = task_run_id
         payload["artifact_dir"] = str(task_root)
         payload["agent_runs"] = corrected_runs
+        task_bundle = payload.get("task_bundle")
+        if isinstance(task_bundle, dict):
+            task_bundle["task_run_id"] = task_run_id
         _atomic_write_json(task_path, payload)
 
     descriptors_path = task_root / "agent_execution_descriptors.json"
@@ -255,7 +296,7 @@ def _persist_reconciliation(
 def _read_json(path: Path) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, json.JSONDecodeError):
+    except (OSError, ValueError):
         return None
 
 
