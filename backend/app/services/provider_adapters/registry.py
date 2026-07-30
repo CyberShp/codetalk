@@ -6,14 +6,14 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
-from app.services.provider_adapters.builtin_model import (
-    BUILTIN_MODEL_CAPABILITIES,
-    BuiltinModelAdapter,
-)
+from app.services.provider_adapters.builtin_model import BUILTIN_MODEL_CAPABILITIES
 from app.services.provider_adapters.claude_code import ClaudeCliAdapter
 from app.services.provider_adapters.contracts import ProviderCapabilities
 from app.services.provider_adapters.codex_cli import CodexCliAdapter
 from app.services.provider_adapters.opencode import OpenCodeAdapter
+from app.services.provider_adapters.safe_builtin_model import (
+    LifecycleSafeBuiltinModelAdapter,
+)
 
 
 _TRANSPORT_ADAPTERS = {
@@ -41,7 +41,7 @@ def create_provider_adapter(
     if provider_id in {"builtin", "builtin-llm", "builtin_llm"} or transport == "builtin_llm":
         if builtin_execute_callable is None:
             raise ValueError("builtin provider requires an execute callable")
-        return BuiltinModelAdapter(
+        return LifecycleSafeBuiltinModelAdapter(
             artifact_dir,
             execute_callable=builtin_execute_callable,
         )
