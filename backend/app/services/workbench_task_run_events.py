@@ -211,6 +211,19 @@ class WorkbenchTaskRunEventStore:
                     return status
         return "prepared"
 
+    @staticmethod
+    def _public_status_from_v3_execution_status(execution_status: str) -> str:
+        status = str(execution_status or "").strip()
+        if status == "completed":
+            return "completed"
+        if status == "waiting_for_input":
+            return "waiting_for_input"
+        if status == "cancelled":
+            return "cancelled"
+        if status in {"running", "queued", "prepared"}:
+            return status
+        return "failed"
+
     def mark_outcomes(
         self,
         task_run_id: str,
@@ -266,7 +279,11 @@ class WorkbenchTaskRunEventStore:
                 payload = _read_json(task_path)
                 if not isinstance(payload, dict):
                     raise KeyError(task_run_id)
+                public_status = self._public_status_from_v3_execution_status(
+                    execution_status
+                )
                 payload.update({
+                    "status": public_status,
                     "execution_status": execution_status,
                     "artifact_validation_status": artifact_validation_status,
                     "governance_status": governance_status,
@@ -276,6 +293,7 @@ class WorkbenchTaskRunEventStore:
                 })
                 runtime = dict(payload.get("runtime") or {})
                 runtime.update({
+                    "status": public_status,
                     "execution_status": execution_status,
                     "artifact_validation_status": artifact_validation_status,
                     "governance_status": governance_status,
@@ -284,6 +302,8 @@ class WorkbenchTaskRunEventStore:
                     "quality_status": quality_status,
                     "updated_at": _now(),
                 })
+                if execution_status == "completed":
+                    runtime.pop("error", None)
                 payload["runtime"] = runtime
                 _write_json(task_path, payload)
                 return payload

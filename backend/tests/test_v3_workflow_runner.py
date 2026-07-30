@@ -853,6 +853,8 @@ def test_event_store_persists_v3_axes_and_rejects_impossible_delivery(tmp_path: 
     )
 
     assert persisted["execution_status"] == "completed"
+    assert persisted["status"] == "completed"
+    assert persisted["runtime"]["status"] == "completed"
     assert persisted["artifact_validation_status"] == "failed"
     assert persisted["delivery_status"] == "blocked"
     with pytest.raises(ValueError, match="invalid workflow status combination"):
@@ -865,6 +867,34 @@ def test_event_store_persists_v3_axes_and_rejects_impossible_delivery(tmp_path: 
             quality_status="passed",
             legacy_delivery_status="complete",
         )
+
+
+def test_event_store_v3_outcomes_clear_stale_failed_runtime_status(tmp_path: Path) -> None:
+    task_run = _task_run(tmp_path)
+    _persist_task_run(tmp_path, task_run)
+    store = WorkbenchTaskRunEventStore(tmp_path)
+    store.mark_status(
+        task_run.task_run_id,
+        "failed",
+        completed_at="2026-07-30T19:55:53+00:00",
+        error="后台执行在完成前被中断；已保留诊断和已生成的文件。",
+    )
+
+    persisted = store.mark_v3_outcomes(
+        task_run.task_run_id,
+        execution_status="completed",
+        artifact_validation_status="passed",
+        governance_status="passed",
+        delivery_status="ready",
+        quality_status="passed",
+        legacy_delivery_status="complete",
+    )
+
+    assert persisted["status"] == "completed"
+    assert persisted["execution_status"] == "completed"
+    assert persisted["runtime"]["status"] == "completed"
+    assert persisted["runtime"]["execution_status"] == "completed"
+    assert "error" not in persisted["runtime"]
 
 
 def test_api_read_reconciliation_preserves_v3_four_axis_projection(

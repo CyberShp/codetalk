@@ -6541,6 +6541,76 @@ def test_step_artifact_validation_accepts_recovered_unreported_source_evidence(t
     assert "source-evidence.json" in validation.accepted_artifacts
 
 
+def test_step_artifact_validation_recovers_declared_artifact_written_to_agent_cwd(tmp_path):
+    from app.services.workbench_workflow_runner import _validate_step_artifacts
+
+    artifact_dir = tmp_path / "agent"
+    artifact_dir.mkdir()
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    (artifact_dir / "source-evidence.json").write_text(
+        json.dumps([{
+            "file_path": "lib/vhost/vhost.c",
+            "start_line": 1,
+            "end_line": 2,
+            "excerpt": "int vhost_flow(void) { return 0; }",
+            "symbols": ["vhost_flow"],
+            "sha256": "source-sha",
+        }]),
+        encoding="utf-8",
+    )
+    invocation = artifact_dir / "agent_invocation.json"
+    invocation.write_text(json.dumps({"cwd": str(repo_dir)}), encoding="utf-8")
+    flow = repo_dir / "flow.md"
+    flow.write_text("# vhost flow\n", encoding="utf-8")
+    now = time.time()
+    os.utime(invocation, (now - 20, now - 20))
+    os.utime(flow, (now, now))
+
+    validation = _validate_step_artifacts(
+        artifact_dir,
+        ["source-evidence.json", "flow.md"],
+        candidate_artifacts=["source-evidence.json"],
+    )
+
+    assert validation.status == "ok"
+    assert "flow.md" in validation.accepted_artifacts
+    assert (artifact_dir / "flow.md").read_text(encoding="utf-8") == "# vhost flow\n"
+    recovery = json.loads(
+        (artifact_dir / "cwd_artifact_recovery.json").read_text(encoding="utf-8")
+    )
+    assert recovery["reason"] == "declared_artifact_recovered_from_agent_cwd"
+    assert validation.warnings == [recovery["reason"]]
+
+
+def test_step_artifact_validation_does_not_recover_stale_agent_cwd_artifact(tmp_path):
+    from app.services.workbench_workflow_runner import _validate_step_artifacts
+
+    artifact_dir = tmp_path / "agent"
+    artifact_dir.mkdir()
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    invocation = artifact_dir / "agent_invocation.json"
+    invocation.write_text(json.dumps({"cwd": str(repo_dir)}), encoding="utf-8")
+    flow = repo_dir / "flow.md"
+    flow.write_text("# stale flow\n", encoding="utf-8")
+    now = time.time()
+    os.utime(invocation, (now, now))
+    os.utime(flow, (now - 120, now - 120))
+
+    validation = _validate_step_artifacts(
+        artifact_dir,
+        ["flow.md"],
+        candidate_artifacts=[],
+    )
+
+    assert validation.status == "invalid"
+    assert {"artifact": "flow.md", "reason": "missing_required_artifact"} in (
+        validation.rejected_artifacts
+    )
+    assert not (artifact_dir / "flow.md").exists()
+
+
 def test_step_artifact_validation_keeps_valid_source_evidence_cards(tmp_path):
     from app.services.workbench_workflow_runner import _validate_step_artifacts
 
@@ -10665,6 +10735,92 @@ def test_prepare_deep_blob_profile_injects_required_module_evidence_hints(tmp_pa
     assert "blob_request_submit_op" in symbols
     assert "blob_persist_complete" in symbols
     assert "bs_sequence_start" in symbols
+
+
+def test_prepare_deep_bdev_profile_injects_required_module_evidence_hints(tmp_path):
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+
+    repo = tmp_path / "spdk"
+    bdev = repo / "lib" / "bdev" / "bdev.c"
+    part = repo / "lib" / "bdev" / "part.c"
+    zone = repo / "lib" / "bdev" / "bdev_zone.c"
+    bdev.parent.mkdir(parents=True)
+    bdev.write_text(
+        "struct spdk_bdev_mgr { int init_complete; };\n"
+        "struct spdk_bdev_shared_resource { int retry_count; };\n"
+        "enum bdev_io_retry_state { BDEV_IO_RETRY_NONE };\n"
+        "static void bdev_queue_nomem_io_head(void) {\n}\n"
+        "static void bdev_ch_retry_io(void) {\n}\n"
+        "static bool bdev_io_should_split(void) {\n    return false;\n}\n"
+        "static void bdev_io_split(void) {\n}\n"
+        "int spdk_bdev_readv_blocks_ext(void) {\n    return 0;\n}\n"
+        "static void bdev_io_submit(void) {\n}\n"
+        "static void bdev_io_complete(void) {\n}\n"
+        "int spdk_bdev_open_ext(void) {\n    return 0;\n}\n"
+        "void spdk_bdev_close(void) {\n}\n"
+        "int spdk_bdev_register(void) {\n    return 0;\n}\n"
+        "void spdk_bdev_unregister(void) {\n}\n"
+        "int spdk_bdev_module_claim_bdev(void) {\n    return 0;\n}\n"
+        "static void bdev_abort_queued_io(void) {\n}\n"
+        "int spdk_bdev_abort(void) {\n    return 0;\n}\n"
+        "int spdk_bdev_reset(void) {\n    return 0;\n}\n"
+        "void spdk_bdev_quiesce(void) {\n}\n"
+        "static int bdev_lock_lba_range(void) {\n    return 0;\n}\n",
+        encoding="utf-8",
+    )
+    part.write_text(
+        "void spdk_bdev_part_submit_request(void) {\n}\n",
+        encoding="utf-8",
+    )
+    zone.write_text(
+        "int spdk_bdev_get_zone_info(void) {\n    return 0;\n}\n",
+        encoding="utf-8",
+    )
+    store = WorkflowStore(tmp_path / "workflows.db")
+    store.save_workflow(
+        {
+            "id": "deep-bdev-source-context",
+            "name": "deep bdev source context",
+            "version": 1,
+            "execution_profiles": [
+                {"id": "rapid", "label": "速度型", "max_subagents": 1},
+                {"id": "deep", "label": "深度型", "max_subagents": 4},
+            ],
+            "inputs": [],
+            "steps": [
+                {"id": "analyze", "type": "agent_task", "provider": "builtin-llm"}
+            ],
+            "outputs": [],
+        }
+    )
+
+    prepared = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=store,
+    ).prepare(
+        workflow_id="deep-bdev-source-context",
+        workspace_id="ws-deep",
+        repo_path=str(repo),
+        inputs={},
+        execution_profile_id="deep",
+        task_context={"name": "E2E SPDK builtin 深度 · lib/bdev"},
+    )
+
+    files = prepared.task_bundle["local_source_context"]["files"]
+    symbols = {
+        symbol
+        for item in files
+        for symbol in item.get("symbols") or []
+    }
+    assert "spdk_bdev_register" in symbols
+    assert "spdk_bdev_open_ext" in symbols
+    assert "bdev_io_should_split" in symbols
+    assert "bdev_queue_nomem_io_head" in symbols
+    assert "bdev_abort_queued_io" in symbols
+    assert "bdev_lock_lba_range" in symbols
+    assert "spdk_bdev_part_submit_request" in symbols
+    assert "spdk_bdev_get_zone_info" in symbols
 
 
 def test_executor_handoff_carries_step_source_analysis_limits():

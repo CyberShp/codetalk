@@ -36,6 +36,7 @@ from app.services.agent_run_harness import (
     ArtifactValidationResult,
     ArtifactValidationHarness,
     _generic_agent_invocation_contract,
+    _safe_required_artifact,
 )
 from app.services.ai_thread_artifacts import ArtifactContractError
 from app.services.harness_facade import AgentHarnessFacade, HarnessRunRequest
@@ -7293,6 +7294,11 @@ def _validate_step_artifacts(
     candidate_artifacts: list[str] | None = None,
     task_bundle: dict[str, Any] | None = None,
 ):
+    cwd_recovery = _recover_declared_artifacts_from_agent_cwd(
+        artifact_dir=artifact_dir,
+        required_artifacts=required_artifacts,
+        task_bundle=task_bundle,
+    )
     prevalidation_recovery = _recover_source_evidence_artifact_from_task_bundle(
         artifact_dir=artifact_dir,
         required_artifacts=required_artifacts,
@@ -7309,9 +7315,13 @@ def _validate_step_artifacts(
     if candidate_artifacts is None:
         if prevalidation_recovery is not None:
             validation.warnings.append(prevalidation_recovery["reason"])
+        if cwd_recovery is not None:
+            validation.warnings.append(cwd_recovery["reason"])
         return validation
 
     candidates = {str(item) for item in candidate_artifacts}
+    if cwd_recovery is not None:
+        candidates.update(str(item) for item in cwd_recovery.get("artifacts") or [])
     if prevalidation_recovery is not None:
         recovered_artifact = str(prevalidation_recovery.get("artifact") or "")
         if recovered_artifact:
@@ -7328,6 +7338,8 @@ def _validate_step_artifacts(
     if not missing_candidates:
         if prevalidation_recovery is not None:
             validation.warnings.append(prevalidation_recovery["reason"])
+        if cwd_recovery is not None:
+            validation.warnings.append(cwd_recovery["reason"])
         return validation
 
     missing_set = set(missing_candidates)
@@ -7367,8 +7379,96 @@ def _validate_step_artifacts(
                 if prevalidation_recovery is not None
                 else []
             ),
+            *(
+                [cwd_recovery["reason"]]
+                if cwd_recovery is not None
+                else []
+            ),
         ],
     )
+
+
+def _recover_declared_artifacts_from_agent_cwd(
+    *,
+    artifact_dir: Path,
+    required_artifacts: list[str],
+    task_bundle: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    invocation = _read_json(artifact_dir / "agent_invocation.json")
+    cwd_text = ""
+    if isinstance(invocation, dict):
+        cwd_text = str(invocation.get("cwd") or "")
+    if not cwd_text and isinstance(task_bundle, dict):
+        cwd_text = str(task_bundle.get("repo_path") or "")
+    if not cwd_text:
+        return None
+
+    try:
+        cwd = Path(cwd_text).resolve()
+    except (OSError, RuntimeError):
+        return None
+    if not cwd.is_dir():
+        return None
+
+    try:
+        artifact_root = artifact_dir.resolve()
+    except (OSError, RuntimeError):
+        artifact_root = artifact_dir
+    if cwd == artifact_root:
+        return None
+
+    lower_bound = 0.0
+    invocation_path = artifact_dir / "agent_invocation.json"
+    try:
+        lower_bound = invocation_path.stat().st_mtime - 1.0
+    except OSError:
+        pass
+
+    recovered: list[dict[str, Any]] = []
+    for artifact in required_artifacts:
+        safe_artifact = _safe_required_artifact(artifact)
+        if not safe_artifact:
+            continue
+        target = artifact_dir / safe_artifact
+        if target.exists():
+            continue
+        source = cwd / safe_artifact
+        try:
+            resolved_source = source.resolve()
+            resolved_source.relative_to(cwd)
+            source_stat = resolved_source.stat()
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if not resolved_source.is_file():
+            continue
+        if lower_bound and source_stat.st_mtime < lower_bound:
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(resolved_source, target)
+        recovered.append({
+            "artifact": safe_artifact,
+            "source": str(resolved_source),
+            "path": str(target),
+            "size_bytes": source_stat.st_size,
+        })
+
+    if not recovered:
+        return None
+
+    recovery = {
+        "status": "recovered",
+        "reason": "declared_artifact_recovered_from_agent_cwd",
+        "message": (
+            "Agent 将声明交付件写入了源码工作区根目录；"
+            "CodeTalk 已复制本轮新生成的声明文件到正式 artifact 目录并继续校验。"
+        ),
+        "artifacts": [item["artifact"] for item in recovered],
+        "recovered_artifacts": recovered,
+        "cwd": str(cwd),
+        "required_artifacts": list(required_artifacts),
+    }
+    _write_json(artifact_dir / "cwd_artifact_recovery.json", recovery)
+    return recovery
 
 
 def _recover_source_evidence_artifact_from_task_bundle(
