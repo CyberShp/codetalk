@@ -47,6 +47,8 @@ def test_registry_builtin_prepare_creates_unique_existing_staging_epochs(tmp_pat
     assert second_dir.is_dir()
     first_dir.relative_to(tmp_path / ".builtin-model-staging")
     second_dir.relative_to(tmp_path / ".builtin-model-staging")
+    assert len(first_dir.name) == 12
+    assert len(second_dir.name) == 12
 
     adapter.finalize_artifacts(first)
     adapter.finalize_artifacts(second)
