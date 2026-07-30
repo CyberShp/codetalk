@@ -12,6 +12,15 @@ from app.services.provider_adapters.contracts import ProviderCapabilities
 from app.services.provider_adapters.codex_cli import CodexCliAdapter
 from app.services.provider_adapters.opencode import OpenCodeAdapter
 from app.services.provider_adapters.safe_builtin_model import BuiltinModelAdapter
+from app.services.workbench_artifact_path_authority import (
+    install_workbench_artifact_path_authority,
+)
+
+
+# WorkbenchWorkflowRunner imports this registry before it loads a Task Run. Install
+# the reconciliation seam here so persisted human-readable paths cannot become
+# execution authority even for old Task Runs created before the fix.
+install_workbench_artifact_path_authority()
 
 
 _TRANSPORT_ADAPTERS = {
