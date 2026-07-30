@@ -6,14 +6,12 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
-from app.services.provider_adapters.builtin_model import (
-    BUILTIN_MODEL_CAPABILITIES,
-    BuiltinModelAdapter,
-)
+from app.services.provider_adapters.builtin_model import BUILTIN_MODEL_CAPABILITIES
 from app.services.provider_adapters.claude_code import ClaudeCliAdapter
 from app.services.provider_adapters.contracts import ProviderCapabilities
 from app.services.provider_adapters.codex_cli import CodexCliAdapter
 from app.services.provider_adapters.opencode import OpenCodeAdapter
+from app.services.provider_adapters.safe_builtin_model import BuiltinModelAdapter
 
 
 _TRANSPORT_ADAPTERS = {
