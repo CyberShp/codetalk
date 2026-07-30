@@ -1,7 +1,7 @@
 """Lifecycle-safe built-in model adapter.
 
 The original adapter intentionally lets a synchronous model callable continue in a
-daemon thread after CodeTalk has timed out or rejected its result.  Provider staging
+daemon thread after CodeTalk has timed out or rejected its result. Provider staging
 must therefore outlive the public execute() call and may only be removed after that
 worker has stopped using it.
 """
@@ -11,7 +11,6 @@ from __future__ import annotations
 import shutil
 import threading
 import uuid
-from pathlib import Path
 
 from app.services.harness_facade import HarnessRunRequest
 from app.services.provider_adapters.builtin_model import (
@@ -21,7 +20,7 @@ from app.services.provider_adapters.builtin_model import (
 from app.services.provider_adapters.contracts import ProviderSession
 
 
-class LifecycleSafeBuiltinModelAdapter(_BaseBuiltinModelAdapter):
+class BuiltinModelAdapter(_BaseBuiltinModelAdapter):
     """Keep provider staging alive until its owning worker reaches a safe point."""
 
     def __init__(self, *args, **kwargs) -> None:
@@ -32,7 +31,7 @@ class LifecycleSafeBuiltinModelAdapter(_BaseBuiltinModelAdapter):
 
     def prepare(self, request: HarnessRunRequest) -> ProviderSession:
         # A workflow run can prepare the same provider more than once during retry
-        # or recovery.  The provider session identity must not reuse request.run_id,
+        # or recovery. The provider session identity must not reuse request.run_id,
         # otherwise the later epoch overwrites the earlier state in _sessions.
         run_prefix = str(request.run_id or "builtin").strip() or "builtin"
         session_id = f"{run_prefix}_{uuid.uuid4().hex}"
@@ -41,7 +40,7 @@ class LifecycleSafeBuiltinModelAdapter(_BaseBuiltinModelAdapter):
             / ".builtin-model-staging"
             / uuid.uuid4().hex
         )
-        # prepare() returns a usable ProviderSession.  Creating the directory here
+        # prepare() returns a usable ProviderSession. Creating the directory here
         # also removes the race window before the runner seeds execution inputs.
         staging_dir.mkdir(parents=True, exist_ok=False)
         session = ProviderSession(
@@ -82,8 +81,8 @@ class LifecycleSafeBuiltinModelAdapter(_BaseBuiltinModelAdapter):
                 for thread in threading.enumerate()
             )
             # Timeout/cancel/facade-finalize can arrive while the synchronous model
-            # callable is still writing diagnostics.  Defer deletion to that worker's
-            # finally path.  When invoked by the worker itself, all provider writes
+            # callable is still writing diagnostics. Defer deletion to that worker's
+            # finally path. When invoked by the worker itself, all provider writes
             # have already returned and the staging epoch is safe to remove.
             if worker_alive and current_name != worker_name:
                 return
