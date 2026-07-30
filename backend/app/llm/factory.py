@@ -195,7 +195,11 @@ def create_builtin_model_adapter(
     Dependencies stay injectable so tests and offline deployments can supply a
     local callable without loading an SDK or contacting a model endpoint.
     """
-    from app.services.provider_adapters.builtin_model import BuiltinModelAdapter
+    # This factory is used by execution paths outside provider_adapters.registry.
+    # It must therefore resolve to the same lifecycle-safe implementation instead
+    # of silently reintroducing the original 32-character staging epoch and eager
+    # cleanup behavior.
+    from app.services.provider_adapters.safe_builtin_model import BuiltinModelAdapter
 
     return BuiltinModelAdapter(
         artifact_dir,
