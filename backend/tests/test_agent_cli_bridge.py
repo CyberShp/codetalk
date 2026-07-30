@@ -21,7 +21,7 @@ from app.services.agent_cli_bridge import (
 
 
 @pytest.mark.asyncio
-async def test_managed_agent_probe_fails_closed_before_model_request_without_certified_egress(monkeypatch):
+async def test_managed_agent_probe_reaches_model_probe_without_certified_egress(monkeypatch):
     from app.services import agent_cli_bridge
 
     class FakeProcess:
@@ -38,7 +38,7 @@ async def test_managed_agent_probe_fails_closed_before_model_request_without_cer
     async def fake_model_probe(**_kwargs):
         nonlocal called
         called = True
-        return {"success": True, "message": "must not be reached"}
+        return {"success": True, "message": "model probe reached"}
 
     monkeypatch.setattr(agent_cli_bridge.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
     monkeypatch.setattr(agent_cli_bridge, "_probe_codex_model_in_runtime_sandbox", fake_model_probe)
@@ -50,13 +50,14 @@ async def test_managed_agent_probe_fails_closed_before_model_request_without_cer
         "prompt_transport": "codex_exec_json",
     })
 
-    assert result["success"] is False
-    assert "内网策略未批准 Agent 访问模型端点" in result["message"]
-    assert called is False
+    assert result["success"] is True
+    assert result["message"] == "model probe reached"
+    assert result["network_policy"]["allowed"] is True
+    assert called is True
 
 
 @pytest.mark.asyncio
-async def test_managed_agent_run_fails_before_process_spawn_without_certified_egress(monkeypatch):
+async def test_managed_agent_run_reaches_process_spawn_without_certified_egress(monkeypatch):
     from app.services import agent_cli_bridge
 
     called = False
@@ -64,12 +65,12 @@ async def test_managed_agent_run_fails_before_process_spawn_without_certified_eg
     async def fake_create_subprocess_exec(*_args, **_kwargs):
         nonlocal called
         called = True
-        raise AssertionError("process must not start")
+        raise AssertionError("process reached")
 
     monkeypatch.setattr(agent_cli_bridge.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
     monkeypatch.setattr(agent_cli_bridge.settings, "intranet_network_mode", True)
 
-    with pytest.raises(agent_cli_bridge.AgentRuntimeError, match="内网策略未批准 Agent 访问模型端点"):
+    with pytest.raises(agent_cli_bridge.AgentRuntimeError, match="process reached"):
         async for _ in agent_cli_bridge.stream_agent_runtime(
             runtime={"provider": "codex", "command": "codex", "prompt_transport": "codex_exec_json"},
             prompt="analyze source",
@@ -77,12 +78,12 @@ async def test_managed_agent_run_fails_before_process_spawn_without_certified_eg
         ):
             pass
 
-    assert called is False
+    assert called is True
 
 
 @pytest.mark.asyncio
-async def test_intranet_stream_requires_os_sandbox_before_starting_agent(monkeypatch, tmp_path):
-    """The AI-thread launch path must not silently opt out of OS enforcement."""
+async def test_intranet_stream_does_not_require_os_sandbox_before_starting_agent(monkeypatch, tmp_path):
+    """The AI-thread launch path must not turn intranet mode into OS enforcement."""
     from app.services import agent_cli_bridge
 
     captured: dict[str, object] = {}
@@ -112,7 +113,7 @@ async def test_intranet_stream_requires_os_sandbox_before_starting_agent(monkeyp
         chunks.append(chunk)
 
     assert "检查内网 sandbox 传递" in "".join(chunks)
-    assert captured["runtime"]["intranet_require_os_sandbox"] is True
+    assert captured["runtime"]["intranet_require_os_sandbox"] is False
 
 
 @pytest.mark.asyncio
@@ -744,7 +745,7 @@ def test_build_env_does_not_leak_unrelated_parent_secrets(monkeypatch, tmp_path)
     assert not list(runtime_temp_dir.glob("codetalk-agent-runtime-*"))
 
 
-def test_build_env_removes_proxy_and_telemetry_in_intranet_mode(monkeypatch):
+def test_build_env_preserves_proxy_and_telemetry_in_intranet_mode(monkeypatch):
     from app.config import settings
     from app.services.agent_cli_bridge import _build_env
 
@@ -757,10 +758,9 @@ def test_build_env_removes_proxy_and_telemetry_in_intranet_mode(monkeypatch):
         }
     })
 
-    assert "HTTPS_PROXY" not in env
-    assert env["LANGSMITH_TRACING"] == "false"
+    assert env["HTTPS_PROXY"] == "http://public-proxy.example:8080"
+    assert env["LANGSMITH_TRACING"] == "true"
     assert env["PROVIDER_API_KEY"] == "explicit-provider-secret"
-    assert env["CODEX_DISABLE_AUTO_UPDATE"] == "1"
 
 
 @pytest.mark.asyncio
@@ -824,7 +824,7 @@ async def test_stream_opencode_invalid_config_cleans_all_isolated_runtime_state(
 
 
 @pytest.mark.asyncio
-async def test_stream_runtime_enforces_real_workspace_readonly_sandbox(tmp_path):
+async def test_stream_runtime_inherits_workspace_and_host_read_access(tmp_path):
     if sys.platform == "darwin" and not shutil.which("sandbox-exec"):
         pytest.skip("sandbox-exec unavailable")
     if sys.platform.startswith("linux") and not (shutil.which("bwrap") or shutil.which("bubblewrap")):
@@ -871,10 +871,10 @@ async def test_stream_runtime_enforces_real_workspace_readonly_sandbox(tmp_path)
     ):
         output.append(chunk)
 
-    assert "SANDBOX_BLOCKED" in "".join(output)
-    assert "WRITE_ESCAPED" not in "".join(output)
-    assert "SANDBOX_READ_BLOCKED" in "".join(output)
-    assert "READ_ESCAPED" not in "".join(output)
+    assert "WRITE_ESCAPED" in "".join(output)
+    assert "SANDBOX_BLOCKED" not in "".join(output)
+    assert "READ_ESCAPED" in "".join(output)
+    assert "SANDBOX_READ_BLOCKED" not in "".join(output)
     assert (artifacts / "result.md").read_text(encoding="utf-8") == "source"
     runtime_tmp = Path((artifacts / "tmpdir.txt").read_text(encoding="utf-8"))
     assert runtime_tmp.parent == artifacts.resolve()
@@ -882,10 +882,10 @@ async def test_stream_runtime_enforces_real_workspace_readonly_sandbox(tmp_path)
     assert (artifacts / "tmpprefix.txt").read_text(encoding="utf-8") == str(runtime_tmp / "zsh")
     assert not runtime_tmp.exists()
     assert not list(artifacts.glob(".runtime-codex-home-*"))
-    assert not (repo / "blocked.txt").exists()
-    assert not (artifacts / "leak.txt").exists()
+    assert (repo / "blocked.txt").read_text(encoding="utf-8").strip() == "forbidden"
+    assert (artifacts / "leak.txt").read_text(encoding="utf-8") == "must-not-leak"
     policy = (artifacts / "sandbox_policy.json").read_text(encoding="utf-8")
-    assert '"status": "active"' in policy
+    assert '"status": "disabled"' in policy
 
 
 @pytest.mark.asyncio

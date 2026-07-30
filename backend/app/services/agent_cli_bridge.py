@@ -58,8 +58,9 @@ def _runtime_requires_network(runtime: dict[str, Any]) -> bool:
 
 def _network_policy_error(context: Any) -> str:
     return (
-        "内网策略未批准 Agent 访问模型端点："
-        f"Agent 网络策略拒绝：{context.reason}。{context.remediation}"
+        "Agent 运行环境未能连接模型端点："
+        f"{getattr(context, 'reason', 'runtime_connection_failed')}。"
+        f"{getattr(context, 'remediation', '请检查模型配置或当前网络。')}"
     )
 
 
@@ -975,12 +976,7 @@ def _configured_runtime_read_paths(args: list[str]) -> list[str]:
 
 
 def _command_runtime_read_paths(command: str) -> list[str]:
-    """Expose an explicitly configured virtualenv runtime read-only.
-
-    macOS sandbox-exec can launch ``.venv/bin/python`` while still denying the
-    interpreter's sibling ``pyvenv.cfg``. The configured command is trusted,
-    so expose only its owning virtualenv when that marker is present.
-    """
+    """Expose an explicitly configured virtualenv runtime for audit metadata."""
 
     try:
         executable = Path(command).expanduser()

@@ -82,6 +82,10 @@ def _canonical_repo_path(repo_path: str) -> str:
     return str(Path(repo_path).expanduser().resolve())
 
 
+def _workspace_has_repo_path(ws: dict) -> bool:
+    return bool(str(ws.get("repo_path") or "").strip())
+
+
 async def _find_workspace_by_canonical_repo_path(
     db: aiosqlite.Connection, resolved_repo_path: str
 ) -> aiosqlite.Row | None:
@@ -90,7 +94,8 @@ async def _find_workspace_by_canonical_repo_path(
     ) as cur:
         rows = await cur.fetchall()
     for row in rows:
-        if _canonical_repo_path(row["repo_path"]) == resolved_repo_path:
+        repo_path = str(row["repo_path"] or "").strip()
+        if repo_path and _canonical_repo_path(repo_path) == resolved_repo_path:
             return row
     return None
 
@@ -111,7 +116,7 @@ def _duplicate_workspace_error(existing: aiosqlite.Row) -> HTTPException:
 
 class WorkspaceCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    repo_path: str = Field(min_length=1, max_length=1000)
+    repo_path: str = Field(default="", max_length=1000)
 
 
 class WorkspaceMaterialResponse(BaseModel):
@@ -220,7 +225,10 @@ async def _get_workspace_or_404(ws_id: str, db: aiosqlite.Connection) -> dict:
 
 
 def _workspace_repo_root(ws: dict) -> Path:
-    root = Path(str(ws.get("repo_path") or "")).expanduser().resolve()
+    repo_path = str(ws.get("repo_path") or "").strip()
+    if not repo_path:
+        raise HTTPException(status_code=409, detail="工作空间未绑定本地文件夹，无法读取源码")
+    root = Path(repo_path).expanduser().resolve()
     if not root.exists():
         raise HTTPException(status_code=404, detail=f"代码路径不存在：{root}")
     if not root.is_dir():
@@ -294,6 +302,11 @@ def _workspace_index_fallback_warning(ws: dict) -> str | None:
 
 
 def _workspace_index_warning_or_409(ws: dict, *, action: str) -> str | None:
+    if not _workspace_has_repo_path(ws):
+        raise HTTPException(
+            status_code=409,
+            detail=f"工作空间未绑定本地文件夹，无法{action}",
+        )
     warning = _workspace_index_fallback_warning(ws)
     if warning is None:
         return None
@@ -357,6 +370,15 @@ async def _index_workspace(ws_id: str, repo_path: str) -> None:
     """Index a workspace repo via GitNexusAdapter; updates indexed: 0=running, 1=done, -1=failed."""
     from app.adapters.base import AnalysisRequest
     from app.adapters.gitnexus import GitNexusAdapter
+    if not str(repo_path or "").strip():
+        async with aiosqlite.connect(settings.sqlite_db) as db:
+            await db.execute(
+                "UPDATE workspaces SET indexed = -1, index_progress = 0, "
+                "last_index_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                ("未绑定本地文件夹", ws_id),
+            )
+            await db.commit()
+        return
 
     async with aiosqlite.connect(settings.sqlite_db) as db:
         await db.execute(
@@ -486,35 +508,41 @@ async def list_workspaces(
 async def create_workspace(
     data: WorkspaceCreate, db: aiosqlite.Connection = Depends(get_db)
 ):
-    repo = Path(data.repo_path).expanduser()
-    if not repo.exists():
-        raise HTTPException(status_code=422, detail=f"代码路径不存在：{data.repo_path}")
-    if not repo.is_dir():
-        raise HTTPException(status_code=422, detail=f"代码路径不是目录：{data.repo_path}")
-    resolved_repo_path = _canonical_repo_path(data.repo_path)
+    submitted_repo_path = data.repo_path.strip()
+    resolved_repo_path = ""
+    if submitted_repo_path:
+        repo = Path(submitted_repo_path).expanduser()
+        if not repo.exists():
+            raise HTTPException(status_code=422, detail=f"代码路径不存在：{submitted_repo_path}")
+        if not repo.is_dir():
+            raise HTTPException(status_code=422, detail=f"代码路径不是目录：{submitted_repo_path}")
+        resolved_repo_path = _canonical_repo_path(submitted_repo_path)
 
     ws_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
     try:
         await db.execute("BEGIN IMMEDIATE")
-        existing = await _find_workspace_by_canonical_repo_path(db, resolved_repo_path)
-        if existing:
-            await db.rollback()
-            raise _duplicate_workspace_error(existing)
+        if resolved_repo_path:
+            existing = await _find_workspace_by_canonical_repo_path(db, resolved_repo_path)
+            if existing:
+                await db.rollback()
+                raise _duplicate_workspace_error(existing)
         await db.execute(
             """INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at)
-               VALUES (?, ?, ?, 0, ?, ?)""",
-            (ws_id, data.name, resolved_repo_path, now, now),
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (ws_id, data.name, resolved_repo_path, 0 if resolved_repo_path else -1, now, now),
         )
         await db.commit()
     except aiosqlite.IntegrityError:
         await db.rollback()
-        existing = await _find_workspace_by_canonical_repo_path(db, resolved_repo_path)
-        if existing:
-            raise _duplicate_workspace_error(existing)
+        if resolved_repo_path:
+            existing = await _find_workspace_by_canonical_repo_path(db, resolved_repo_path)
+            if existing:
+                raise _duplicate_workspace_error(existing)
         raise
 
-    _schedule_background_task(_index_workspace(ws_id, resolved_repo_path))
+    if resolved_repo_path:
+        _schedule_background_task(_index_workspace(ws_id, resolved_repo_path))
 
     async with db.execute("SELECT * FROM workspaces WHERE id = ?", (ws_id,)) as cur:
         row = await cur.fetchone()
@@ -761,6 +789,8 @@ async def get_index_status(ws_id: str, db: aiosqlite.Connection = Depends(get_db
 @router.post("/{ws_id}/reindex", status_code=202)
 async def reindex_workspace(ws_id: str, db: aiosqlite.Connection = Depends(get_db)):
     ws = await _get_workspace_or_404(ws_id, db)
+    if not _workspace_has_repo_path(ws):
+        raise HTTPException(status_code=409, detail="工作空间未绑定本地文件夹，无法重新索引")
     _schedule_background_task(_index_workspace(ws_id, ws["repo_path"]))
     return {"status": "indexing", "message": "重新索引已启动"}
 
@@ -1355,6 +1385,8 @@ async def workspace_chat_stream(
     ws = await _get_workspace_or_404(ws_id, db)
 
     # Fix 1: indexed gate — chat requires a fully indexed workspace
+    if not _workspace_has_repo_path(ws):
+        raise HTTPException(status_code=409, detail="工作空间未绑定本地文件夹，无法读取源码对话")
     if ws["indexed"] != 1:
         raise HTTPException(status_code=409, detail="工作空间尚未完成索引，请等待索引完成后再对话")
 

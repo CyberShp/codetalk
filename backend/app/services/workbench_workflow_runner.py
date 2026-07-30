@@ -3028,6 +3028,10 @@ class WorkbenchWorkflowRunner:
             artifact_dir=artifact_dir,
             repo_path=str(task_run.repo_path or ""),
         )
+        audit = _apply_source_coverage_consistency_audit(
+            audit=audit,
+            artifact_dir=artifact_dir,
+        )
         execution_profile = task_run.task_bundle.get("execution_profile")
         profile_id = (
             str(execution_profile.get("id") or "rapid")
@@ -3435,13 +3439,23 @@ class WorkbenchWorkflowRunner:
             artifact_dir,
             required_artifacts,
             candidate_artifacts=list(execution.artifacts),
+            task_bundle=(
+                quality_retry_bundle
+                if isinstance(quality_retry_bundle, dict)
+                else None
+            ),
         )
         if validation.status == "ok":
             record_external_agent_artifact_consumption(
                 task_root / "input_consumption.json",
                 artifacts=list(validation.accepted_artifacts),
             )
-        artifact_recovery = _artifact_recovery_after_terminal_rejection(
+        prevalidation_artifact_recovery = _read_json(
+            artifact_dir / "artifact_recovery.json"
+        )
+        if not isinstance(prevalidation_artifact_recovery, dict):
+            prevalidation_artifact_recovery = None
+        artifact_recovery = prevalidation_artifact_recovery or _artifact_recovery_after_terminal_rejection(
             artifact_dir=artifact_dir,
             execution=asdict(execution),
             validation=asdict(validation),
@@ -5893,6 +5907,154 @@ def _apply_claim_evidence_ledger_to_quality_audit(
     return result
 
 
+_UNCOVERED_SCOPE_RE = re.compile(
+    r"(未覆盖|未追溯|missing\s+work|not[_\s-]*covered|not\s+covered)",
+    re.IGNORECASE,
+)
+
+
+def _apply_source_coverage_consistency_audit(
+    *,
+    audit: dict[str, Any],
+    artifact_dir: Path,
+) -> dict[str, Any]:
+    """Block reports that mark verified evidence files as uncovered."""
+
+    original_issues = audit.get("issues") or []
+    issues = [dict(item) for item in original_issues if isinstance(item, dict)]
+    for finding in _source_coverage_consistency_findings(artifact_dir):
+        if any(
+            item.get("code") == finding["code"]
+            and item.get("artifact") == finding["artifact"]
+            and item.get("files") == finding["files"]
+            for item in issues
+        ):
+            continue
+        issues.append(finding)
+    if len(issues) == len([item for item in original_issues if isinstance(item, dict)]):
+        return audit
+    result = dict(audit or {})
+    result["issues"] = issues
+    result["issue_count"] = len(issues)
+    result["deliverable"] = False
+    result["status"] = "needs_rework"
+    axes = dict(result.get("quality_axes") or {})
+    axes["source_coverage_consistency"] = {
+        "status": "blocked",
+        "issue_count": sum(
+            1
+            for item in issues
+            if item.get("code") == "source_coverage_statement_contradicts_evidence"
+        ),
+    }
+    result["quality_axes"] = axes
+    return result
+
+
+def _source_coverage_consistency_findings(artifact_dir: Path) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+    root = artifact_dir.resolve()
+    for report_path in sorted(artifact_dir.rglob("*.md")):
+        if report_path.is_symlink() or not report_path.is_file():
+            continue
+        evidence_files = _source_evidence_files_for_report(
+            artifact_dir=artifact_dir,
+            report_path=report_path,
+        )
+        if not evidence_files:
+            continue
+        text = report_path.read_text(encoding="utf-8", errors="replace")
+        uncovered_text = _uncovered_scope_text(text)
+        if not uncovered_text:
+            continue
+        conflicts = _evidence_files_mentioned_in_uncovered_scope(
+            evidence_files=evidence_files,
+            uncovered_text=uncovered_text,
+        )
+        if not conflicts:
+            continue
+        try:
+            artifact = report_path.resolve().relative_to(root).as_posix()
+        except ValueError:
+            artifact = report_path.name
+        findings.append({
+            "code": "source_coverage_statement_contradicts_evidence",
+            "severity": "blocking",
+            "artifact": artifact,
+            "files": conflicts,
+            "message": (
+                "报告的未覆盖/Missing Work 段落把已进入 source-evidence.json 的源码文件列为未覆盖，"
+                "需要改成具体未分析的函数、分支或行段，不能整文件否定已验证证据。"
+            ),
+        })
+    return findings
+
+
+def _source_evidence_files_for_report(
+    *,
+    artifact_dir: Path,
+    report_path: Path,
+) -> list[str]:
+    candidates = [
+        report_path.parent / "source-evidence.json",
+        artifact_dir / "source-evidence.json",
+    ]
+    evidence_files: list[str] = []
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        payload = _read_json(candidate)
+        cards = payload if isinstance(payload, list) else payload.get("evidence", [])
+        if not isinstance(cards, list):
+            continue
+        for card in cards:
+            if not isinstance(card, dict):
+                continue
+            file_path = str(card.get("file_path") or card.get("path") or "").strip()
+            if file_path:
+                evidence_files.append(file_path)
+    return list(dict.fromkeys(evidence_files))
+
+
+def _uncovered_scope_text(text: str) -> str:
+    lines = text.splitlines()
+    collected: list[str] = []
+    collecting = False
+    heading_level = 0
+    for line in lines:
+        heading = re.match(r"^(#{1,6})\s+", line)
+        if heading and collecting and len(heading.group(1)) <= heading_level:
+            collecting = False
+        if _UNCOVERED_SCOPE_RE.search(line):
+            collecting = True
+            heading_level = len(heading.group(1)) if heading else 6
+        if collecting:
+            collected.append(line)
+    return "\n".join(collected)
+
+
+def _evidence_files_mentioned_in_uncovered_scope(
+    *,
+    evidence_files: list[str],
+    uncovered_text: str,
+) -> list[str]:
+    lowered = uncovered_text.lower()
+    conflicts: list[str] = []
+    for file_path in evidence_files:
+        normalized = file_path.replace("\\", "/")
+        basename = Path(normalized).name
+        basename_pattern = (
+            rf"(?<![\w.-]){re.escape(basename.lower())}(?![\w.-])"
+            if basename
+            else ""
+        )
+        if normalized.lower() in lowered or (
+            basename_pattern and re.search(basename_pattern, lowered)
+        ):
+            conflicts.append(file_path)
+    return list(dict.fromkeys(conflicts))
+
+
 def _apply_profile_coverage_to_quality_audit(
     *,
     audit: dict[str, Any],
@@ -6449,7 +6611,13 @@ def _builtin_llm_messages(
                 "回答中的源码判断必须引用 file_path 与该片段明确给出的 start_line/end_line；"
                 "必须区分函数前置声明与包含函数体的定义，不能把声明当作实现入口，"
                 "也不能根据 symbols 列表臆测未出现在 excerpt 中的行为。只有当 source_context 为空时，"
-                "才可以说明未获得源码片段。遵守 skills 和 MCP 边界，并输出可落盘的工作流产物。"
+                "才可以说明未获得源码片段。写风险、缺陷、泄漏、未释放、缺少校验、未处理错误等结论前，"
+                "必须检查同一 cited excerpt 是否已经给出反证；如果片段包含 free/put/close、错误返回、"
+                "边界检查或状态检查等保护行为，必须描述该保护行为或标记当前证据不足，禁止得出相反结论。"
+                "遵守 skills 和 MCP 边界，并输出可落盘的工作流产物。"
+                "若 required_artifacts 包含 source-evidence.json，content 必须是源码证据卡片数组，"
+                "每个元素必须包含 file_path、start_line、end_line、excerpt、symbols、sha256，"
+                "且只能逐字复用 execution_contract.source_context.files 中的当前源码片段身份与 excerpt。"
                 "只返回 JSON：{\"summary\": string, \"artifacts\": [{\"path\": string, \"content\": string|object|array}]}。"
                 "path 必须等于 required_artifacts 或 declared_outputs 中声明的 artifact。"
                 "质量复跑时 quality_retry_required_artifacts 是唯一允许生成的文件集合，"
@@ -7123,7 +7291,13 @@ def _validate_step_artifacts(
     required_artifacts: list[str],
     *,
     candidate_artifacts: list[str] | None = None,
+    task_bundle: dict[str, Any] | None = None,
 ):
+    prevalidation_recovery = _recover_source_evidence_artifact_from_task_bundle(
+        artifact_dir=artifact_dir,
+        required_artifacts=required_artifacts,
+        task_bundle=task_bundle,
+    )
     validator = ArtifactValidationHarness(artifact_dir)
     required = {str(item) for item in required_artifacts}
     if {"mr_snapshot.json", "diff.patch", "changed_files.json"}.issubset(required):
@@ -7133,9 +7307,15 @@ def _validate_step_artifacts(
             required_artifacts=required_artifacts
         )
     if candidate_artifacts is None:
+        if prevalidation_recovery is not None:
+            validation.warnings.append(prevalidation_recovery["reason"])
         return validation
 
     candidates = {str(item) for item in candidate_artifacts}
+    if prevalidation_recovery is not None:
+        recovered_artifact = str(prevalidation_recovery.get("artifact") or "")
+        if recovered_artifact:
+            candidates.add(recovered_artifact)
     missing_candidates = [
         artifact
         for artifact in required_artifacts
@@ -7146,6 +7326,8 @@ def _validate_step_artifacts(
         )
     ]
     if not missing_candidates:
+        if prevalidation_recovery is not None:
+            validation.warnings.append(prevalidation_recovery["reason"])
         return validation
 
     missing_set = set(missing_candidates)
@@ -7178,8 +7360,161 @@ def _validate_step_artifacts(
                 for item in missing_candidates
             ],
         ],
-        warnings=list(validation.warnings),
+        warnings=[
+            *validation.warnings,
+            *(
+                [prevalidation_recovery["reason"]]
+                if prevalidation_recovery is not None
+                else []
+            ),
+        ],
     )
+
+
+def _recover_source_evidence_artifact_from_task_bundle(
+    *,
+    artifact_dir: Path,
+    required_artifacts: list[str],
+    task_bundle: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if "source-evidence.json" not in {str(item) for item in required_artifacts}:
+        return None
+    if not isinstance(task_bundle, dict):
+        return None
+    artifact_path = artifact_dir / "source-evidence.json"
+    if _source_evidence_artifact_is_card_array(artifact_path):
+        return None
+    cards = _source_evidence_cards_from_task_bundle(task_bundle)
+    if not cards:
+        return None
+    original_path = artifact_dir / "source-evidence.agent-output.json"
+    if artifact_path.exists() and not original_path.exists():
+        shutil.copyfile(artifact_path, original_path)
+    _write_json(artifact_path, cards)
+    recovery = {
+        "status": "recovered",
+        "reason": "source_evidence_contract_materialized_from_execution_source_context",
+        "message": (
+            "Agent 输出的 source-evidence.json 不是源码证据卡片数组；"
+            "已从 task_bundle 中的已验证源码上下文物化正式证据文件，并继续进入源码校验。"
+        ),
+        "artifact": "source-evidence.json",
+        "original_artifact": (
+            "source-evidence.agent-output.json" if original_path.exists() else ""
+        ),
+        "recovered_count": len(cards),
+        "required_artifacts": list(required_artifacts),
+    }
+    _write_json(artifact_dir / "artifact_recovery.json", recovery)
+    return recovery
+
+
+def _source_evidence_artifact_is_card_array(path: Path) -> bool:
+    if not path.exists() or path.is_dir():
+        return False
+    payload = _read_json(path)
+    if not isinstance(payload, list) or not payload:
+        return False
+    required = {"file_path", "start_line", "end_line", "excerpt", "symbols", "sha256"}
+    return all(
+        isinstance(item, dict)
+        and required.issubset(item.keys())
+        and str(item.get("file_path") or "").strip()
+        and str(item.get("excerpt") or "")
+        and isinstance(item.get("symbols"), list)
+        for item in payload
+    )
+
+
+def _source_evidence_cards_from_task_bundle(
+    task_bundle: dict[str, Any],
+) -> list[dict[str, Any]]:
+    seen: set[tuple[str, int, int]] = set()
+    cards: list[dict[str, Any]] = []
+    for item in _source_context_file_candidates_from_task_bundle(task_bundle):
+        card = _source_context_file_to_source_evidence_card(item, index=len(cards) + 1)
+        if card is None:
+            continue
+        key = (
+            str(card.get("file_path") or ""),
+            int(card.get("start_line") or 0),
+            int(card.get("end_line") or 0),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        cards.append(card)
+        if len(cards) >= 48:
+            break
+    return cards
+
+
+def _source_context_file_candidates_from_task_bundle(
+    task_bundle: dict[str, Any],
+) -> Iterable[dict[str, Any]]:
+    paths = (
+        ("execution_contract", "source_context", "files"),
+        ("local_source_context", "files"),
+        ("workflow_contract", "local_source_context", "files"),
+        ("context_bundle", "local_source_context", "files"),
+    )
+    for path in paths:
+        current: Any = task_bundle
+        for key in path:
+            current = current.get(key) if isinstance(current, dict) else None
+        if not isinstance(current, list):
+            continue
+        for item in current:
+            if isinstance(item, dict):
+                yield item
+
+
+def _source_context_file_to_source_evidence_card(
+    item: dict[str, Any],
+    *,
+    index: int,
+) -> dict[str, Any] | None:
+    file_path = str(item.get("file_path") or "").strip().replace("\\", "/")
+    excerpt = str(item.get("excerpt") or "")
+    sha256 = str(item.get("sha256") or "").strip()
+    if not file_path or Path(file_path).is_absolute() or not excerpt or not sha256:
+        return None
+    try:
+        start_line = int(item.get("start_line") or 0)
+    except (TypeError, ValueError):
+        return None
+    if start_line < 1:
+        return None
+    try:
+        end_line = int(item.get("end_line") or 0)
+    except (TypeError, ValueError):
+        end_line = 0
+    if end_line < start_line:
+        end_line = start_line + max(1, len(excerpt.splitlines())) - 1
+    symbols = [str(value).strip() for value in item.get("symbols") or [] if str(value).strip()]
+    if not symbols:
+        symbols = _extract_local_symbols(excerpt, limit=8)
+    if not symbols:
+        symbols = [Path(file_path).name]
+    return {
+        "evidence_id": f"SRC-{index:02d}",
+        "file_path": file_path,
+        "classification": str(
+            item.get("classification")
+            or ("test" if _is_test_source_path(file_path) else "source")
+        ),
+        "start_line": start_line,
+        "end_line": end_line,
+        "excerpt": excerpt,
+        "symbols": symbols[:12],
+        "matched_terms": [
+            str(value).strip()
+            for value in item.get("matched_terms") or []
+            if str(value).strip()
+        ][:12],
+        "sha256": sha256,
+        "validation_status": "materialized_from_execution_source_context",
+    }
 
 
 def _artifact_recovery_after_terminal_rejection(
@@ -11400,26 +11735,43 @@ def _resolve_plan_node_inputs(
     bindings = plan_node.get("resolved_input_bindings")
     if not isinstance(bindings, dict):
         return {}
+    required_by_port = {
+        str(port.get("id") or ""): bool(port.get("required", True))
+        for port in plan_node.get("input_ports") or []
+        if isinstance(port, dict) and str(port.get("id") or "")
+    }
     resolved: dict[str, Any] = {}
     for target_port, raw_binding in sorted(bindings.items()):
+        target_port_id = str(target_port)
+        target_required = required_by_port.get(target_port_id, True)
         if isinstance(raw_binding, list):
-            resolved[str(target_port)] = [
+            values = [
                 _resolve_single_plan_node_input(
-                    target_port=str(target_port),
+                    target_port=target_port_id,
                     raw_binding=item,
                     input_snapshot=input_snapshot,
                     direct_dependency_outputs=direct_dependency_outputs,
+                    target_required=target_required,
                 )
                 for item in raw_binding
             ]
+            values = [item for item in values if item is not _OPTIONAL_INPUT_MISSING]
+            if values or target_required:
+                resolved[target_port_id] = values
             continue
-        resolved[str(target_port)] = _resolve_single_plan_node_input(
-            target_port=str(target_port),
+        value = _resolve_single_plan_node_input(
+            target_port=target_port_id,
             raw_binding=raw_binding,
             input_snapshot=input_snapshot,
             direct_dependency_outputs=direct_dependency_outputs,
+            target_required=target_required,
         )
+        if value is not _OPTIONAL_INPUT_MISSING:
+            resolved[target_port_id] = value
     return resolved
+
+
+_OPTIONAL_INPUT_MISSING = object()
 
 
 def _resolve_single_plan_node_input(
@@ -11428,6 +11780,7 @@ def _resolve_single_plan_node_input(
     raw_binding: Any,
     input_snapshot: dict[str, Any],
     direct_dependency_outputs: dict[str, dict[str, Any]],
+    target_required: bool = True,
 ) -> Any:
     if not isinstance(raw_binding, dict):
         raise ValueError(f"compiled binding is invalid for {target_port}")
@@ -11441,6 +11794,8 @@ def _resolve_single_plan_node_input(
         return input_snapshot[source_input_id]
     source_outputs = direct_dependency_outputs.get(source_id)
     if not isinstance(source_outputs, dict) or source_port not in source_outputs:
+        if not target_required:
+            return _OPTIONAL_INPUT_MISSING
         raise ValueError(f"compiled binding source output is missing: {source_id}.{source_port}")
     return source_outputs[source_port]
 

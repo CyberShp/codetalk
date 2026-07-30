@@ -225,6 +225,28 @@ def test_v3_declared_outputs_freeze_optional_content_presets():
     assert plan_step["type"] == "agent_task"
 
 
+def test_v3_declared_outputs_preserve_semantic_output_type():
+    from app.services.workflow_contract_v3 import compile_workflow_contract_v3
+
+    graph = _graph()
+    graph["nodes"][2]["config"].update({
+        "artifact": "black-box-cases.json",
+        "media_type": "application/json",
+        "type": "test_cases",
+    })
+
+    compiled = compile_workflow_contract_v3(
+        graph,
+        capabilities=_capabilities(),
+        workflow_version_id="wfv_output_type",
+    )
+
+    output = compiled["compiled_definition"]["declared_outputs"][0]
+    assert output["artifact"] == "black-box-cases.json"
+    assert output["media_type"] == "application/json"
+    assert output["type"] == "test_cases"
+
+
 def test_profile_does_not_duplicate_an_identical_explicit_validator():
     from app.services.workflow_contract_v3 import compile_workflow_contract_v3
 

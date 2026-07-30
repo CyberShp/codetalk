@@ -30,7 +30,7 @@ def test_codex_sanitized_config_preserves_service_tier_for_model_routing(tmp_pat
     assert "notify" not in sanitized
 
 
-def test_macos_sandbox_wraps_command_and_persists_audit(tmp_path):
+def test_required_macos_sandbox_mode_is_recorded_but_not_applied(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     artifact_dir = tmp_path / "artifacts"
@@ -46,49 +46,36 @@ def test_macos_sandbox_wraps_command_and_persists_audit(tmp_path):
         which=lambda command: "/usr/bin/sandbox-exec" if command == "sandbox-exec" else None,
     )
 
-    assert launch.status == "active"
-    assert launch.wrapper[:2] == ["/usr/bin/sandbox-exec", "-f"]
-    profile_path = Path(launch.wrapper[2])
-    assert profile_path.exists()
-    assert artifact_dir.resolve() not in profile_path.resolve().parents
-    assert profile_path.stat().st_mode & 0o777 == 0o600
-    profile = profile_path.read_text(encoding="utf-8")
-    assert "(deny default)" in profile
-    assert "(allow file-read*)\n" not in profile
-    assert "(allow ipc-posix-shm*)" in profile
-    assert f'(allow file-read* (subpath "{repo.resolve()}"))' in profile
-    assert '(allow file-read* (subpath "/opt"))' in profile
-    assert str(artifact_dir.resolve()) in profile
+    assert launch.status == "disabled"
+    assert launch.wrapper == []
     audit = json.loads((artifact_dir / "sandbox_policy.json").read_text(encoding="utf-8"))
-    assert audit["status"] == "active"
+    assert audit["status"] == "disabled"
+    assert audit["engine"] == "none"
+    assert audit["requested_mode"] == "required"
     assert audit["network"] == "outbound_allowed"
-    assert audit["workspace_access"] == "read_only"
+    assert audit["workspace_access"] == "process_default"
 
 
-def test_linux_bubblewrap_mounts_workspace_readonly_and_artifacts_writable(tmp_path):
+def test_linux_sandbox_mode_does_not_wrap_or_block_agent(tmp_path):
     artifact_dir = tmp_path / "artifacts"
     repo = tmp_path / "repo"
     repo.mkdir()
     launch = prepare_agent_sandbox(
-        runtime={"sandbox_mode": "required", "sandbox_allow_network": False},
+        runtime={
+            "sandbox_mode": "required",
+            "sandbox_allow_network": False,
+            "requires_network": False,
+        },
         cwd=str(repo),
         artifact_dir=artifact_dir,
         platform_name="linux",
         which=lambda command: "/usr/bin/bwrap" if command == "bwrap" else None,
     )
 
-    assert launch.status == "active"
-    assert launch.wrapper[0] == "/usr/bin/bwrap"
-    assert "--ro-bind" in launch.wrapper
-    assert "--bind" in launch.wrapper
-    assert "--unshare-net" in launch.wrapper
-    assert str(repo.resolve()) in launch.wrapper
-    assert str(artifact_dir.resolve()) in launch.wrapper
-    assert ["--ro-bind", "/", "/"] != launch.wrapper[3:6]
-    assert not any(
-        launch.wrapper[index : index + 3] == ["--ro-bind", "/", "/"]
-        for index in range(len(launch.wrapper) - 2)
-    )
+    assert launch.status == "disabled"
+    assert launch.wrapper == []
+    assert launch.audit["requested_mode"] == "required"
+    assert launch.audit["network"] == "not_requested"
 
 
 def test_opencode_gets_only_provider_specific_writable_state(tmp_path, monkeypatch):
@@ -195,47 +182,52 @@ def test_opencode_invalid_config_fails_without_leaving_runtime_state(tmp_path):
     assert list(artifact_dir.glob(".runtime-opencode-home-*")) == []
 
 
-def test_required_sandbox_fails_closed_when_platform_tool_is_missing(tmp_path):
-    with pytest.raises(AgentSandboxError, match="隔离"):
-        prepare_agent_sandbox(
-            runtime={"sandbox_mode": "required"},
-            cwd=str(tmp_path),
-            artifact_dir=tmp_path / "artifacts",
-            platform_name="darwin",
-            which=lambda _command: None,
-        )
+def test_required_sandbox_does_not_fail_when_platform_tool_is_missing(tmp_path):
+    launch = prepare_agent_sandbox(
+        runtime={"sandbox_mode": "required"},
+        cwd=str(tmp_path),
+        artifact_dir=tmp_path / "artifacts",
+        platform_name="darwin",
+        which=lambda _command: None,
+    )
+
+    assert launch.status == "disabled"
+    assert launch.wrapper == []
 
 
-def test_intranet_execution_fails_closed_when_auto_sandbox_tool_is_missing(tmp_path):
-    """A certified deployment egress policy never permits an unsandboxed Agent."""
-    with pytest.raises(AgentSandboxError, match="内网 Agent 运行需要 OS 隔离"):
-        prepare_agent_sandbox(
-            runtime={
-                "sandbox_mode": "auto",
-                "intranet_require_os_sandbox": True,
-            },
-            cwd=str(tmp_path),
-            artifact_dir=tmp_path / "artifacts",
-            platform_name="darwin",
-            which=lambda _command: None,
-        )
+def test_intranet_legacy_os_sandbox_hint_does_not_make_auto_mode_fail_closed(tmp_path):
+    launch = prepare_agent_sandbox(
+        runtime={
+            "sandbox_mode": "auto",
+            "intranet_require_os_sandbox": True,
+        },
+        cwd=str(tmp_path),
+        artifact_dir=tmp_path / "artifacts",
+        platform_name="darwin",
+        which=lambda _command: None,
+    )
+
+    assert launch.status == "disabled"
+    assert launch.wrapper == []
 
 
-def test_intranet_execution_rejects_explicitly_disabled_os_sandbox(tmp_path):
-    with pytest.raises(AgentSandboxError, match="内网 Agent 运行需要 OS 隔离"):
-        prepare_agent_sandbox(
-            runtime={
-                "sandbox_mode": "off",
-                "intranet_require_os_sandbox": True,
-            },
-            cwd=str(tmp_path),
-            artifact_dir=tmp_path / "artifacts",
-            platform_name="darwin",
-            which=lambda _command: None,
-        )
+def test_intranet_legacy_os_sandbox_hint_does_not_override_explicit_off(tmp_path):
+    launch = prepare_agent_sandbox(
+        runtime={
+            "sandbox_mode": "off",
+            "intranet_require_os_sandbox": True,
+        },
+        cwd=str(tmp_path),
+        artifact_dir=tmp_path / "artifacts",
+        platform_name="darwin",
+        which=lambda _command: None,
+    )
+
+    assert launch.status == "disabled"
+    assert launch.wrapper == []
 
 
-def test_auto_sandbox_records_actionable_degraded_mode(tmp_path):
+def test_auto_sandbox_records_direct_runtime_mode(tmp_path):
     artifact_dir = tmp_path / "artifacts"
     launch = prepare_agent_sandbox(
         runtime={"sandbox_mode": "auto"},
@@ -245,11 +237,12 @@ def test_auto_sandbox_records_actionable_degraded_mode(tmp_path):
         which=lambda _command: None,
     )
 
-    assert launch.status == "degraded"
+    assert launch.status == "disabled"
     assert launch.wrapper == []
-    assert "不支持" in launch.message
+    assert "直接启动 Agent" in launch.message
     audit = json.loads((artifact_dir / "sandbox_policy.json").read_text(encoding="utf-8"))
-    assert audit["status"] == "degraded"
+    assert audit["status"] == "disabled"
+    assert audit["engine"] == "none"
 
 
 def test_sandbox_does_not_follow_workspace_controlled_skill_symlinks(tmp_path):

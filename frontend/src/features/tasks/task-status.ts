@@ -16,17 +16,17 @@ export const taskQualityLabels: Record<string, string> = {
 
 export const taskArtifactValidationLabels: Record<string, string> = {
   not_requested: "未请求", not_started: "待校验", running: "校验中",
-  passed: "已通过", failed: "未通过",
+  passed: "已通过", failed: "未通过", syncing: "同步中",
 };
 
 export const taskGovernanceLabels: Record<string, string> = {
   not_requested: "未请求", running: "治理中", passed: "已通过",
-  warning: "有警告", failed: "未通过", waived: "已豁免",
+  warning: "有警告", failed: "未通过", waived: "已豁免", syncing: "同步中",
 };
 
 export const taskDeliveryLabels: Record<string, string> = {
   none: "暂无交付", partial: "部分交付", complete: "交付完整",
-  pending: "准备中", ready: "可交付", blocked: "已阻断", failed: "部分交付",
+  pending: "准备中", ready: "可交付", blocked: "已阻断", failed: "部分交付", syncing: "同步中",
 };
 
 export function taskStatusLabel(labels: Record<string, string>, value: string) {

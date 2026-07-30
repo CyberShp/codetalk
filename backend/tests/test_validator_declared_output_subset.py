@@ -377,6 +377,72 @@ def test_source_evidence_verifies_connected_declared_artifact_against_source(
     assert _tree(tmp_path) == before
 
 
+def test_source_evidence_accepts_missing_final_newline_for_blank_terminal_line(
+    tmp_path: Path,
+) -> None:
+    artifact_root, source_root, card = _write_source_evidence_fixture(tmp_path)
+    source = source_root / card["file_path"]
+    source.write_text(
+        "static int queue_submit(int value) {\n"
+        "    return value;\n"
+        "}\n"
+        "\n",
+        encoding="utf-8",
+    )
+    card.update({
+        "end_line": 4,
+        "excerpt": "static int queue_submit(int value) {\n"
+        "    return value;\n"
+        "}",
+        "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+    })
+    (artifact_root / "evidence.json").write_text(json.dumps([card]), encoding="utf-8")
+
+    result = DEFAULT_VALIDATOR_REGISTRY.run(
+        "source_evidence",
+        artifact_root=artifact_root,
+        source_root=source_root,
+        declared_outputs=[_output("evidence", "evidence.json")],
+        required_output_ids=["evidence"],
+    )
+
+    assert result.status == "passed"
+
+
+def test_source_evidence_accepts_horizontal_alignment_only_difference(
+    tmp_path: Path,
+) -> None:
+    artifact_root, source_root, card = _write_source_evidence_fixture(tmp_path)
+    source = source_root / card["file_path"]
+    source.write_text(
+        "int queue_submit(int value) {\n"
+        "\treturn value +\n"
+        "\t\t\t1;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    card.update({
+        "start_line": 1,
+        "end_line": 4,
+        "excerpt": "int queue_submit(int value) {\n"
+        " return value +\n"
+        " 1;\n"
+        "}",
+        "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+    })
+    (artifact_root / "evidence.json").write_text(json.dumps([card]), encoding="utf-8")
+
+    result = DEFAULT_VALIDATOR_REGISTRY.run(
+        "source_evidence",
+        artifact_root=artifact_root,
+        source_root=source_root,
+        declared_outputs=[_output("evidence", "evidence.json")],
+        required_output_ids=["evidence"],
+    )
+
+    assert result.status == "passed"
+
+
 @pytest.mark.parametrize(
     ("mutation", "expected_code"),
     [

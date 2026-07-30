@@ -1008,7 +1008,7 @@ async def test_background_preflight_blocks_unready_agent_before_runner_starts(tm
     async def blocked_preflight(task_run_id: str):
         return {
             "status": "blocked",
-            "message": "所选 Agent 未通过启动前可用性检查：内网策略未批准 Agent 访问模型端点。",
+            "message": "所选 Agent 未通过启动前可用性检查：运行环境暂时无法连接模型端点。",
         }
 
     def should_not_run(**_kwargs):
@@ -1032,7 +1032,7 @@ async def test_background_preflight_blocks_unready_agent_before_runner_starts(tm
     blocked = [item for item in events if item["event_type"] == "provider_readiness_blocked"]
     assert blocked
     assert blocked[-1]["event_kind"] == "error"
-    assert "内网策略未批准" in blocked[-1]["payload"]["user_message"]
+    assert "运行环境暂时无法连接模型端点" in blocked[-1]["payload"]["user_message"]
 
 
 @pytest.mark.asyncio

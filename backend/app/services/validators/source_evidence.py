@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Iterable
 
@@ -113,7 +114,7 @@ def _validate_card(
     if start < 1 or end < start or end > len(lines):
         return _card_issue("source_line_range_invalid", "源码证据行号超出文件范围。", output_id, file_path, index, {"line_count": len(lines), "start_line": start, "end_line": end})
     selected = "\n".join(lines[start - 1 : end])
-    if excerpt.rstrip("\n") != selected:
+    if not _excerpt_text_matches(excerpt, selected):
         return _card_issue("source_excerpt_mismatch", "源码证据片段与指定行号不一致。", output_id, file_path, index)
     missing_symbols = sorted(symbol for symbol in symbols if symbol not in selected)
     if missing_symbols:
@@ -122,6 +123,19 @@ def _validate_card(
     if digest.lower() != actual_digest:
         return _card_issue("source_sha256_mismatch", "源码证据摘要与文件内容不一致。", output_id, file_path, index, {"actual_sha256": actual_digest})
     return None
+
+
+def _excerpt_text_matches(declared: str, selected: str) -> bool:
+    if declared.rstrip("\n") == selected.rstrip("\n"):
+        return True
+    return _normalize_horizontal_source_whitespace(declared) == _normalize_horizontal_source_whitespace(selected)
+
+
+def _normalize_horizontal_source_whitespace(value: str) -> str:
+    return "\n".join(
+        re.sub(r"[ \t]+", " ", line.rstrip())
+        for line in value.rstrip("\n").splitlines()
+    )
 
 
 def _card_issue(code: str, message: str, output_id: str, path: str, index: int, details: dict | None = None) -> ValidationIssue:

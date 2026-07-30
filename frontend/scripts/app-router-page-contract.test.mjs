@@ -50,3 +50,18 @@ test("workbench sibling routes use the release gate without importing a page mod
   assert.match(designerSource, /destination="\/workflows"/);
   assert.match(semanticSource, /destination="\/semantic-library"/);
 });
+
+test("workspace creation keeps the optional local folder browser wired", () => {
+  const pageSource = readFileSync(
+    new URL("../src/app/workspaces/new/page.tsx", import.meta.url),
+    "utf8",
+  );
+  const apiSource = readFileSync(new URL("../src/lib/api.ts", import.meta.url), "utf8");
+
+  assert.match(pageSource, /本地文件夹路径[\s\S]{0,80}可选/);
+  assert.match(pageSource, /浏览/);
+  assert.match(pageSource, /api\.workspaces\.browseFolders/);
+  assert.match(pageSource, /repo_path:\s*submittedRepoPath/);
+  assert.match(apiSource, /browseFolders/);
+  assert.match(apiSource, /\/api\/workspaces\/folders/);
+});

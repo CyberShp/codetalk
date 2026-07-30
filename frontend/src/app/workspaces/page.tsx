@@ -65,40 +65,57 @@ export default function WorkspacesPage() {
           className="grid min-h-0 flex-1 grid-cols-1 content-start gap-4 overflow-y-auto overscroll-contain pb-6 pr-1 sm:grid-cols-2 lg:grid-cols-3"
           data-testid="workspace-list"
         >
-          {workspaces.map((ws) => (
-            <Link
-              key={ws.id}
-              href={`/workspaces/${ws.id}`}
-              className="ct-interactive-card block p-5 rounded-xl border border-outline-variant/30 bg-surface-container-low hover:bg-surface-container transition-colors"
-            >
-              <div className="flex items-start gap-3">
-                <FolderOpen size={20} className="text-primary shrink-0 mt-0.5" />
-                <div className="min-w-0">
-                  <p className="font-medium text-on-surface truncate">{ws.name}</p>
-                  <p className="text-xs text-on-surface-variant mt-0.5 truncate">
-                    {ws.repo_path}
-                  </p>
-                  <div className="flex items-center gap-2 mt-2">
-                    <span
-                      className={`text-xs px-2 py-0.5 rounded-full ${
-                        ws.indexed === 1
-                          ? "bg-green-400/10 text-green-400"
-                          : ws.indexed === -1
-                            ? "bg-red-400/10 text-red-400 cursor-help"
-                            : "bg-amber-400/10 text-amber-400"
-                      }`}
-                      title={ws.indexed === -1 && ws.last_index_error ? ws.last_index_error : undefined}
-                    >
-                      {ws.indexed === 1 ? "已索引" : ws.indexed === -1 ? `索引失败${ws.last_index_error ? " ⓘ" : ""}` : "索引中"}
-                    </span>
-                    <span className="text-xs text-on-surface-variant">
-                      {ws.reports.length} 份报告
-                    </span>
+          {workspaces.map((ws) => {
+            const hasRepoPath = Boolean(ws.repo_path.trim());
+            const indexBadgeClass = !hasRepoPath
+              ? "bg-slate-400/10 text-slate-400"
+              : ws.indexed === 1
+                ? "bg-green-400/10 text-green-400"
+                : ws.indexed === -1
+                  ? "bg-red-400/10 text-red-400 cursor-help"
+                  : "bg-amber-400/10 text-amber-400";
+            const indexLabel = !hasRepoPath
+              ? "未绑定本地文件夹"
+              : ws.indexed === 1
+                ? "已索引"
+                : ws.indexed === -1
+                  ? `索引失败${ws.last_index_error ? " ⓘ" : ""}`
+                  : "索引中";
+            const indexTitle = !hasRepoPath
+              ? "创建时未填写本地文件夹"
+              : ws.indexed === -1 && ws.last_index_error
+                ? ws.last_index_error
+                : undefined;
+
+            return (
+              <Link
+                key={ws.id}
+                href={`/workspaces/${ws.id}`}
+                className="ct-interactive-card block p-5 rounded-xl border border-outline-variant/30 bg-surface-container-low hover:bg-surface-container transition-colors"
+              >
+                <div className="flex items-start gap-3">
+                  <FolderOpen size={20} className="text-primary shrink-0 mt-0.5" />
+                  <div className="min-w-0">
+                    <p className="font-medium text-on-surface truncate">{ws.name}</p>
+                    <p className="text-xs text-on-surface-variant mt-0.5 truncate">
+                      {hasRepoPath ? ws.repo_path : "未绑定本地文件夹"}
+                    </p>
+                    <div className="flex items-center gap-2 mt-2">
+                      <span
+                        className={`text-xs px-2 py-0.5 rounded-full ${indexBadgeClass}`}
+                        title={indexTitle}
+                      >
+                        {indexLabel}
+                      </span>
+                      <span className="text-xs text-on-surface-variant">
+                        {ws.reports.length} 份报告
+                      </span>
+                    </div>
                   </div>
                 </div>
-              </div>
-            </Link>
-          ))}
+              </Link>
+            );
+          })}
         </div>
       )}
     </div>

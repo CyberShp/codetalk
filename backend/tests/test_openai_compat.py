@@ -251,11 +251,11 @@ async def test_factory_managed_client_checks_each_model_request_before_transport
     client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     monkeypatch.setattr(
         "app.llm.openai_compat.require_runtime_model_request_url",
-        lambda _url: (_ for _ in ()).throw(ValueError("model_endpoint_path_forbidden")),
+        lambda _url: (_ for _ in ()).throw(ValueError("runtime_connection_failed")),
     )
 
     try:
-        with pytest.raises(ValueError, match="model_endpoint_path_forbidden"):
+        with pytest.raises(ValueError, match="runtime_connection_failed"):
             await client.complete([{"role": "user", "content": "hello"}], max_tokens=32)
     finally:
         await client.close()

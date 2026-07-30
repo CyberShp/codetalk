@@ -163,3 +163,14 @@ test("V3 attempts expose only the scheduler-owned workflow execution action", ()
   );
   assert.match(legacyRunView, /executePreparedAgentRun\(stepId\)/);
 });
+
+test("Designer exposes formal release profile and profile-generated execution plan", () => {
+  assert.match(designer, /<option value="formal_release">正式发布<\/option>/);
+  assert.match(designer, /function ProfileExecutionPreview/);
+  assert.match(designer, /workflow-profile-execution-preview/);
+  assert.match(designer, /independent_review: "独立 Reviewer"/);
+  assert.match(designer, /human_approval: "人工审批"/);
+  assert.match(designer, /发布前请确认 Profile 生成的 Validator、Reviewer 和人工审批/);
+  assert.match(designer, /profileGeneratedPlanNodes\(compiled\.compiled_plan\)\.length > 0/);
+  assert.match(designer, /setBottomTab\("plan"\)/);
+});

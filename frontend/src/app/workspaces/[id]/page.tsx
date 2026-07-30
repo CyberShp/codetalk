@@ -45,12 +45,22 @@ function IndexBadge({
   lastIndexError,
   indexProgress = 0,
   capacityLabel = "",
+  hasRepoPath = true,
 }: {
   indexed: number;
   lastIndexError?: string | null;
   indexProgress?: number;
   capacityLabel?: string;
+  hasRepoPath?: boolean;
 }) {
+  if (!hasRepoPath) {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-slate-400/10 text-slate-400">
+        <FolderOpen size={12} />
+        未绑定本地文件夹
+      </span>
+    );
+  }
   if (indexed === 1) {
     return (
       <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-green-400/10 text-green-400">
@@ -241,11 +251,13 @@ function ReportCard({
 function SourceSearchPanel({
   wsId,
   indexed,
+  hasRepoPath,
   initialPath = "",
   initialLine = null,
 }: {
   wsId: string;
   indexed: number;
+  hasRepoPath: boolean;
   initialPath?: string;
   initialLine?: number | null;
 }) {
@@ -257,7 +269,7 @@ function SourceSearchPanel({
   const [loadingFile, setLoadingFile] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const openedInitialSourceRef = useRef("");
-  const canSearch = indexed === 1;
+  const canSearch = hasRepoPath && indexed === 1;
 
   const runSearch = async () => {
     const q = query.trim();
@@ -344,7 +356,7 @@ function SourceSearchPanel({
             onKeyDown={(e) => {
               if (e.key === "Enter") void runSearch();
             }}
-            placeholder={canSearch ? "搜索路径或内容，例如 lib/nvmf、test/nvmf、spdk_nvmf_connect" : "索引完成后可搜索源码"}
+            placeholder={canSearch ? "搜索路径或内容，例如 lib/nvmf、test/nvmf、spdk_nvmf_connect" : hasRepoPath ? "索引完成后可搜索源码" : "绑定本地文件夹后可搜索源码"}
             disabled={!canSearch || searching}
             className="flex-1 bg-transparent text-sm text-on-surface outline-none placeholder:text-on-surface-variant/40 disabled:opacity-50"
           />
@@ -360,7 +372,11 @@ function SourceSearchPanel({
         </button>
       </div>
 
-      {!canSearch && (
+      {!hasRepoPath ? (
+        <div className="rounded-lg border border-outline-variant/20 bg-surface-container-low px-4 py-3 text-xs text-on-surface-variant">
+          工作空间未绑定本地文件夹，暂时不能搜索源码文件。
+        </div>
+      ) : !canSearch && (
         <div className="rounded-lg border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-xs text-amber-500">
           工作空间索引完成后可搜索源码文件。
         </div>
@@ -468,7 +484,7 @@ function AIThreadBridge({
       <div className="ct-workspace-ai-bridge__stats">
         <span>{completedReports} 份完成报告</span>
         <span>{activeMaterials} 个活跃材料</span>
-        <span>{workspace.indexed === 1 ? "索引就绪" : "等待索引"}</span>
+        <span>{workspace.repo_path ? (workspace.indexed === 1 ? "索引就绪" : "等待索引") : "未绑定源码"}</span>
       </div>
       <button
         type="button"
@@ -902,7 +918,8 @@ export default function WorkspaceDetailPage() {
     );
   }
 
-  const canAnalyze = workspace.indexed === 1 && analyzeStatus !== "running";
+  const hasRepoPath = Boolean(workspace.repo_path.trim());
+  const canAnalyze = hasRepoPath && workspace.indexed === 1 && analyzeStatus !== "running";
 
   // Reports with no task_id are pre-versioning legacy rows.
   const legacyReports = workspace.reports.filter((r) => r.task_id === null);
@@ -930,9 +947,11 @@ export default function WorkspaceDetailPage() {
           <FolderOpen size={28} className="text-primary shrink-0" />
           <div>
             <h1 className="text-2xl font-bold text-on-surface">{workspace.name}</h1>
-            <p className="text-sm text-on-surface-variant mt-0.5">{workspace.repo_path}</p>
+            <p className="text-sm text-on-surface-variant mt-0.5">
+              {hasRepoPath ? workspace.repo_path : "未绑定本地文件夹"}
+            </p>
             <div className="flex items-center gap-2 mt-2 flex-wrap">
-              <IndexBadge indexed={workspace.indexed} lastIndexError={workspace.last_index_error} indexProgress={indexProgress} capacityLabel={indexCapacityLabel} />
+              <IndexBadge indexed={workspace.indexed} lastIndexError={workspace.last_index_error} indexProgress={indexProgress} capacityLabel={indexCapacityLabel} hasRepoPath={hasRepoPath} />
               <AnalyzeBadge status={analyzeStatus} progress={analyzeProgress} />
             </div>
           </div>
@@ -942,7 +961,7 @@ export default function WorkspaceDetailPage() {
           <div className="flex items-center gap-2">
             <button
               onClick={handleReindex}
-              disabled={reindexing || workspace.indexed === 0}
+              disabled={reindexing || workspace.indexed === 0 || !hasRepoPath}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-outline-variant/40 text-on-surface-variant hover:bg-surface-container disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               <RefreshCw size={13} className={reindexing ? "animate-spin" : ""} />
@@ -1110,6 +1129,7 @@ export default function WorkspaceDetailPage() {
                     const ver = versions.find((v) => v.task_id === selectedVersionTaskId);
                     return `该版本暂无报告${ver ? `（任务状态：${ver.status}）` : ""}`;
                   }
+                  if (!hasRepoPath) return "未绑定本地文件夹，暂时不能生成源码分析报告";
                   if (workspace.indexed === 1) return "尚未生成报告，点击「生成报告」开始分析";
                   if (workspace.indexed === 0) return "等待索引完成后可生成报告";
                   return "索引失败，请重新索引后生成报告";
@@ -1284,6 +1304,7 @@ export default function WorkspaceDetailPage() {
         <SourceSearchPanel
           wsId={wsId}
           indexed={workspace.indexed}
+          hasRepoPath={hasRepoPath}
           initialPath={initialSourcePath}
           initialLine={initialSourceLine}
         />

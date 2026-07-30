@@ -4,7 +4,7 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_network_policy_snapshot_comes_only_from_deployment_settings(client, monkeypatch):
+async def test_network_policy_snapshot_reports_codetalk_passthrough_runtime(client, monkeypatch):
     from app.config import settings
 
     monkeypatch.setattr(settings, "network_policy_v2_enabled", True)
@@ -21,8 +21,8 @@ async def test_network_policy_snapshot_comes_only_from_deployment_settings(clien
     monkeypatch.setattr(settings, "approved_ca_bundle_path", "/etc/codetalk/corp-ca.pem")
     monkeypatch.setattr(settings, "deployment_egress_policy_id", "egress-prod-1")
 
-    # User-editable values must neither be reflected in the snapshot nor gain
-    # authority over the deployment network boundary.
+    # User-editable values and legacy deployment controls must not turn this
+    # endpoint back into a network-boundary configuration surface.
     await client.put(
         "/api/settings/general",
         json={
@@ -41,23 +41,23 @@ async def test_network_policy_snapshot_comes_only_from_deployment_settings(clien
     body = response.json()
     assert body == {
         "mode": "intranet",
-        "policy_id": "corp-policy-2026",
-        "boundary": "approved_proxy_gateway",
-        "approved_proxy_configured": True,
-        "approved_proxy_config_id": "proxy-prod-1",
-        "approved_no_proxy": True,
-        "approved_ca_configured": True,
-        "deployment_egress_policy_id": "egress-prod-1",
-        "telemetry": "disabled",
-        "remote_tracing": "disabled",
-        "hosted_mcp": "forbidden",
+        "policy_id": "codetalk-passthrough",
+        "boundary": "none",
+        "approved_proxy_configured": False,
+        "approved_proxy_config_id": None,
+        "approved_no_proxy": False,
+        "approved_ca_configured": False,
+        "deployment_egress_policy_id": None,
+        "telemetry": "managed_by_environment",
+        "remote_tracing": "managed_by_environment",
+        "hosted_mcp": "managed_by_environment",
         "cli_network_ready": True,
         "cli_block_reason": None,
-        "cli_remediation": None,
-        "source": "deployment",
+        "cli_remediation": "CodeTalk 不拦截网络访问；连接结果由运行环境和公司内网决定。",
+        "source": "codetalk_runtime",
         "migration_preview": {
             "contract_version": 1,
-            "source": "network_mode",
+            "source": "codetalk_runtime",
             "effective_mode": "intranet",
             "read_only": True,
             "automatic_write": False,
@@ -71,7 +71,7 @@ async def test_network_policy_snapshot_comes_only_from_deployment_settings(clien
 
 
 @pytest.mark.asyncio
-async def test_network_policy_snapshot_reports_strict_mode_cli_block(client, monkeypatch):
+async def test_network_policy_snapshot_does_not_block_strict_mode_cli(client, monkeypatch):
     from app.config import settings
 
     monkeypatch.setattr(settings, "network_policy_v2_enabled", True)
@@ -85,13 +85,13 @@ async def test_network_policy_snapshot_reports_strict_mode_cli_block(client, mon
     assert response.status_code == 200
     body = response.json()
     assert body["mode"] == "strict_compliance"
-    assert body["cli_network_ready"] is False
-    assert body["cli_block_reason"] == "strict_compliance_os_isolation_required"
-    assert "OS 网络隔离" in body["cli_remediation"]
+    assert body["cli_network_ready"] is True
+    assert body["cli_block_reason"] is None
+    assert "CodeTalk 不拦截网络访问" in body["cli_remediation"]
 
 
 @pytest.mark.asyncio
-async def test_llm_probe_returns_redacted_actionable_policy_error(client, monkeypatch):
+async def test_llm_probe_failure_points_to_model_or_runtime_not_policy_gate(client, monkeypatch):
     from app.config import settings
 
     monkeypatch.setattr(settings, "network_policy_v2_enabled", True)
@@ -113,9 +113,9 @@ async def test_llm_probe_returns_redacted_actionable_policy_error(client, monkey
     assert response.status_code == 200
     body = response.json()
     assert body["success"] is False
-    assert "部署网络策略" in body["message"]
-    assert "管理员" in body["message"]
-    assert "模型地址未获管理员批准" in body["message"]
+    assert "部署网络策略" not in body["message"]
+    assert "管理员" not in body["message"]
+    assert "未获管理员批准" not in body["message"]
     assert "host_not_allowlisted" not in body["message"]
-    assert body["code"] == "network_policy_blocked"
+    assert body["code"] == "model_connection_failed"
     assert "sk-super-secret" not in body["message"]

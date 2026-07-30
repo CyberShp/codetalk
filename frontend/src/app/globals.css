@@ -5806,6 +5806,16 @@ textarea:focus-visible {
   padding-inline: 8px !important;
 }
 
+.ct-workbench-shell .ct-workflow-inspector input[type="checkbox"] {
+  width: 14px !important;
+  height: 14px !important;
+  min-height: 14px !important;
+  flex: 0 0 14px;
+  padding: 0 !important;
+  border-radius: 4px !important;
+  box-sizing: border-box;
+}
+
 .ct-workbench-shell .ct-workflow-inspector textarea {
   padding: 8px !important;
 }

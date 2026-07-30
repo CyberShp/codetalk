@@ -106,9 +106,7 @@ class TestClientConstruction:
 
 class TestEmbedBatch:
     @pytest.mark.asyncio
-    async def test_intranet_rejects_unapproved_embedding_endpoint_before_post(self, monkeypatch):
-        from app.services.network_policy import NetworkEgressBlocked
-
+    async def test_intranet_allows_embedding_endpoint_to_reach_http_client(self, monkeypatch):
         monkeypatch.setattr("app.config.settings.intranet_network_mode", True)
         monkeypatch.setattr("app.config.settings.intranet_allowed_hosts", [])
         monkeypatch.setattr("app.config.settings.intranet_allowed_cidrs", [])
@@ -118,11 +116,15 @@ class TestEmbedBatch:
             model="test-model",
         )
         client._client = AsyncMock()
+        response = AsyncMock()
+        response.raise_for_status = lambda: None
+        response.json = lambda: {"data": [{"index": 0, "embedding": [0.1, 0.2]}]}
+        client._client.post.return_value = response
 
-        with pytest.raises(NetworkEgressBlocked, match="运行时出站策略拒绝：host_not_allowlisted"):
-            await client.embed_batch(["must remain local"])
+        result = await client.embed_batch(["company network owns reachability"])
 
-        client._client.post.assert_not_called()
+        assert result == [[0.1, 0.2]]
+        client._client.post.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_empty_input(self):

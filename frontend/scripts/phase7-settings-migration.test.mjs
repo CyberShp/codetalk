@@ -9,10 +9,11 @@ const types = readFileSync(new URL("../src/lib/types.ts", import.meta.url), "utf
 test("Phase 7 settings migration preview stays read-only and is rendered", () => {
   assert.match(types, /interface DeploymentNetworkMigrationPreview/);
   assert.match(types, /contract_version:\s*number/);
-  assert.match(types, /source:\s*"network_mode"\s*\|\s*"legacy_intranet_network_mode"/);
+  assert.match(types, /source:\s*"codetalk_runtime"\s*\|\s*"network_mode"\s*\|\s*"legacy_intranet_network_mode"/);
   assert.match(types, /migration_preview:\s*DeploymentNetworkMigrationPreview/);
   assert.match(api, /getNetworkPolicy/);
-  assert.match(settings, /旧版网络模式迁移预览/);
+  assert.match(settings, /运行环境网络/);
+  assert.match(settings, /CodeTalk 不要求迁移或配置出站边界/);
   assert.match(types, /legacy_intranet_network_mode/);
   assert.match(settings, /migration\.admin_guidance/);
   assert.doesNotMatch(api, /(?:update|create|delete)NetworkMigration/);
@@ -20,7 +21,7 @@ test("Phase 7 settings migration preview stays read-only and is rendered", () =>
 
 test("Phase 7 settings handles an unknown migration contract version safely", () => {
   assert.match(settings, /migration\.contract_version !== 1/);
-  assert.match(settings, /不支持的设置迁移契约版本/);
-  assert.match(settings, /当前部署设置保持只读/);
-  assert.match(settings, /联系管理员升级后端或确认部署配置/);
+  assert.match(settings, /运行环境状态暂不可读/);
+  assert.match(settings, /这不会影响模型或 Agent 使用/);
+  assert.match(settings, /CodeTalk 不要求用户配置网络边界/);
 });

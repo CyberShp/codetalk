@@ -418,6 +418,11 @@ async def create_task_attempt(task_id: str, payload: TaskRunCreateRequest) -> di
                 workflow_snapshot_override=(
                     effective_definition if is_v3_contract else None
                 ),
+                task_context={
+                    "name": task.name,
+                    "description": task.description,
+                    "tags": task.tags,
+                },
             )
         except (FileNotFoundError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=f"任务输入不完整或无效：{exc}") from exc

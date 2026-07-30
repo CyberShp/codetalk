@@ -808,6 +808,35 @@ def test_v3_input_binding_uses_declared_input_id_when_canvas_node_id_differs() -
     assert resolved == {"analysis_target": user_text}
 
 
+def test_v3_optional_input_binding_is_omitted_when_not_supplied() -> None:
+    from app.services.workbench_workflow_runner import _resolve_plan_node_inputs
+
+    resolved = _resolve_plan_node_inputs(
+        plan_node={
+            "input_ports": [
+                {"id": "repo_path", "type": "directory", "required": True},
+                {"id": "design_doc", "type": "file", "required": False},
+            ],
+            "resolved_input_bindings": {
+                "repo_path": {
+                    "source_node_id": "repo",
+                    "source_input_id": "repo",
+                    "source_port_id": "value",
+                },
+                "design_doc": {
+                    "source_node_id": "design",
+                    "source_input_id": "design",
+                    "source_port_id": "value",
+                },
+            },
+        },
+        input_snapshot={"repo": {"path": "/workspace/spdk"}},
+        direct_dependency_outputs={},
+    )
+
+    assert resolved == {"repo_path": {"path": "/workspace/spdk"}}
+
+
 def test_event_store_persists_v3_axes_and_rejects_impossible_delivery(tmp_path: Path) -> None:
     task_run = _task_run(tmp_path)
     _persist_task_run(tmp_path, task_run)
@@ -1207,6 +1236,105 @@ def test_v3_runner_rejects_stale_declared_file_not_reported_by_provider_adapter(
         item["artifact"] == "report.md"
         for item in result["validation"]["rejected_artifacts"]
     )
+
+
+def test_v3_runner_recovers_invalid_source_evidence_before_step_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.harness_facade import HarnessRunResult
+
+    artifact_dir = tmp_path / "task" / "agent_runs" / "analyze"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "agent_run.json").write_text(
+        json.dumps(
+            {
+                "run_id": "provider-session",
+                "provider": "agent-runtime:codex",
+                "command": ["codex"],
+                "cwd": str(tmp_path),
+                "prompt_transport": "codex_exec_json",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (artifact_dir / "task_bundle.json").write_text(
+        json.dumps(
+            {
+                "task_run_id": "task",
+                "compiled_contract_version": 3,
+                "required_artifacts": ["flow.md", "source-evidence.json"],
+                "execution_contract": {
+                    "source_context": {
+                        "files": [{
+                            "file_path": "lib/bdev/bdev.c",
+                            "start_line": 10,
+                            "end_line": 12,
+                            "excerpt": "int spdk_bdev_register(void) {\n\treturn 0;\n}",
+                            "symbols": ["spdk_bdev_register"],
+                            "sha256": "d3703caf0aa49b1f0d0816a4b4b11adb7bb57d61eb85b724a51a3568c7f61f1d",
+                        }]
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (artifact_dir / "workflow_snapshot.json").write_text(
+        json.dumps({"compiled_contract_version": 3}),
+        encoding="utf-8",
+    )
+
+    def execute_once(self, *args, **kwargs):
+        (artifact_dir / "flow.md").write_text("# flow\n", encoding="utf-8")
+        (artifact_dir / "source-evidence.json").write_text(
+            json.dumps([{"id": "source_evidence_trace_summary"}]),
+            encoding="utf-8",
+        )
+        return HarnessRunResult(
+            session_id="provider-session",
+            status="completed",
+            exit_code=0,
+            started_at="2026-07-28T00:00:00Z",
+            completed_at="2026-07-28T00:00:01Z",
+            duration_ms=1000,
+            artifacts=["flow.md", "source-evidence.json"],
+        )
+
+    monkeypatch.setattr(
+        "app.services.workbench_workflow_runner.AgentHarnessFacade.execute",
+        execute_once,
+    )
+
+    result = WorkbenchWorkflowRunner(tmp_path)._execute_agent_step_unprotected(
+        task_run_id="task",
+        step={
+            "id": "analyze",
+            "type": "agent_task",
+            "required_artifacts": ["flow.md", "source-evidence.json"],
+        },
+        agent_run={
+            "step_id": "analyze",
+            "run_id": "provider-session",
+            "provider": "agent-runtime:codex",
+            "artifact_dir": str(artifact_dir),
+            "required_artifacts": ["flow.md", "source-evidence.json"],
+        },
+        prior_step_results=[],
+        resolved_inputs={},
+        timeout_sec=30,
+    )
+
+    assert result["status"] == "completed"
+    assert result["validation"]["status"] == "ok"
+    assert result["artifact_recovery"]["reason"] == (
+        "source_evidence_contract_materialized_from_execution_source_context"
+    )
+    recovered = json.loads(
+        (artifact_dir / "source-evidence.json").read_text(encoding="utf-8")
+    )
+    assert recovered[0]["file_path"] == "lib/bdev/bdev.c"
+    assert (artifact_dir / "source-evidence.agent-output.json").exists()
 
 
 def test_v3_runner_refuses_unknown_custom_provider_instead_of_using_legacy_adapter(

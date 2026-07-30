@@ -605,6 +605,137 @@ def test_storage_test_design_generates_role_correct_professional_outputs_from_ex
     ) == []
 
 
+def test_storage_test_design_skips_test_harness_evidence_for_product_sfmea(
+    tmp_path,
+):
+    from app.services.governance_plugins.contracts import (
+        DeclaredGovernanceOutput,
+        GovernanceOutputEdge,
+    )
+    from app.services.governance_plugins.registry import create_governance_plugin_registry
+    from app.services.test_activity_contract import BLACK_BOX_REQUIRED_DIMENSIONS
+
+    product = tmp_path / "lib" / "iscsi" / "login.c"
+    product.parent.mkdir(parents=True)
+    product.write_text(
+        "int login_step(int valid) {\n"
+        "    if (!valid) return -1;\n"
+        "    return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    product_cleanup = tmp_path / "lib" / "iscsi" / "cleanup.c"
+    product_cleanup.write_text(
+        "int cleanup_step(int active) {\n"
+        "    if (active) return -1;\n"
+        "    return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    harness = tmp_path / "test" / "app" / "fuzz" / "iscsi_fuzz.c"
+    harness.parent.mkdir(parents=True)
+    harness.write_text(
+        "void iscsi_put_pdu(void *pdu) {\n"
+        "    if (!pdu) return;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    base = _governance_request(tmp_path)
+    declarations = (
+        DeclaredGovernanceOutput(
+            artifact_id="sfmea",
+            path="sfmea.json",
+            producer_node_id=base.node_id,
+            producer_port_id="sfmea",
+        ),
+        DeclaredGovernanceOutput(
+            artifact_id="black_box_cases",
+            path="black_box_cases.json",
+            producer_node_id=base.node_id,
+            producer_port_id="black_box_cases",
+        ),
+    )
+    request = replace(
+        base,
+        requested_output_ids=("sfmea", "black_box_cases"),
+        declared_outputs=declarations,
+        output_edges=tuple(
+            GovernanceOutputEdge(
+                edge_id=f"edge-{output.artifact_id}",
+                source_node_id=base.node_id,
+                source_port_id=output.producer_port_id,
+                target_artifact_id=output.artifact_id,
+            )
+            for output in declarations
+        ),
+        inputs={
+            "target": "SPDK iSCSI login error and recovery behavior",
+            "repo_path": str(tmp_path),
+            "source_evidence": [
+                {
+                    "file_path": "lib/iscsi/login.c",
+                    "start_line": 1,
+                    "end_line": 3,
+                    "excerpt": (
+                        "int login_step(int valid) {\n"
+                        "    if (!valid) return -1;\n"
+                        "    return 0;"
+                    ),
+                    "symbols": ["login_step"],
+                    "sha256": hashlib.sha256(product.read_bytes()).hexdigest(),
+                },
+                {
+                    "file_path": "lib/iscsi/cleanup.c",
+                    "start_line": 1,
+                    "end_line": 3,
+                    "excerpt": (
+                        "int cleanup_step(int active) {\n"
+                        "    if (active) return -1;\n"
+                        "    return 0;"
+                    ),
+                    "symbols": ["cleanup_step"],
+                    "sha256": hashlib.sha256(product_cleanup.read_bytes()).hexdigest(),
+                },
+                {
+                    "file_path": "test/app/fuzz/iscsi_fuzz.c",
+                    "start_line": 1,
+                    "end_line": 3,
+                    "excerpt": (
+                        "void iscsi_put_pdu(void *pdu) {\n"
+                        "    if (!pdu) return;\n"
+                        "}"
+                    ),
+                    "symbols": ["iscsi_put_pdu"],
+                    "sha256": hashlib.sha256(harness.read_bytes()).hexdigest(),
+                },
+            ],
+        },
+    )
+
+    result = create_governance_plugin_registry().invoke(request)
+
+    assert result.governance_status == "passed", (
+        result.validation.issues[0].details if result.validation else result
+    )
+    payloads = {
+        item.artifact_id: json.loads(item.content)
+        for item in result.produced_artifacts
+    }
+    assert {row["source_evidence"][0] for row in payloads["sfmea"]} == {
+        "lib/iscsi/cleanup.c",
+        "lib/iscsi/login.c",
+    }
+    assert {
+        case["source_or_test_evidence"][0]
+        for case in payloads["black_box_cases"]
+    } == {"lib/iscsi/cleanup.c", "lib/iscsi/login.c"}
+    assert len(payloads["black_box_cases"]) == 2 * len(BLACK_BOX_REQUIRED_DIMENSIONS)
+    assert len({
+        case["scenario_name"]
+        for case in payloads["black_box_cases"]
+    }) == len(payloads["black_box_cases"])
+
+
 def test_storage_test_design_uses_frozen_port_keys_with_random_ids_and_custom_paths(
     tmp_path,
 ):

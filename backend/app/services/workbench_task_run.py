@@ -83,6 +83,60 @@ _COMPATIBILITY_EXECUTION_PROFILES = (
         "max_subagents": 4,
     },
 )
+_DEEP_SOURCE_CONTEXT_BUDGET = {
+    "limit": 24,
+    "min_source_files": 12,
+    "min_test_files": 0,
+    "max_candidates_to_read": 240,
+    "excerpt_radius": 80,
+}
+_DEEP_MODULE_EVIDENCE_HINTS = {
+    "lib/blob": [
+        ("lib/blob/blobstore.h", "spdk_blob_state", "blob state model"),
+        ("lib/blob/blobstore.h", "struct spdk_blob", "blob runtime state"),
+        ("lib/blob/blobstore.h", "struct spdk_blob_store", "blobstore global state"),
+        ("lib/blob/blobstore.h", "struct spdk_bs_channel", "blobstore channel resources"),
+        ("lib/blob/blobstore.c", "spdk_bs_load", "load existing blobstore"),
+        ("lib/blob/blobstore.c", "spdk_bs_init", "initialize new blobstore"),
+        ("lib/blob/blobstore.c", "spdk_bs_unload", "unload blobstore"),
+        ("lib/blob/blobstore.c", "spdk_bs_destroy", "destroy blobstore"),
+        ("lib/blob/blobstore.c", "bs_create_blob", "create blob"),
+        ("lib/blob/blobstore.c", "bs_open_blob", "open blob"),
+        ("lib/blob/blobstore.c", "spdk_blob_close", "close blob"),
+        ("lib/blob/blobstore.c", "bs_delete_blob", "delete blob"),
+        ("lib/blob/blobstore.c", "blob_request_submit_op", "blob io split"),
+        ("lib/blob/blobstore.c", "blob_request_submit_op_single", "single blob io"),
+        ("lib/blob/blobstore.c", "bs_allocate_and_copy_cluster", "thin provisioning allocation"),
+        ("lib/blob/blobstore.c", "blob_persist", "metadata persist"),
+        ("lib/blob/blobstore.c", "blob_persist_complete", "metadata persist completion"),
+        ("lib/blob/request.c", "bs_sequence_start", "request sequence start"),
+        ("lib/blob/request.c", "bs_sequence_finish", "request sequence completion"),
+        ("lib/blob/request.c", "bs_user_op_abort", "request abort"),
+    ],
+    "lib/nvme": [
+        ("lib/nvme/nvme.c", "spdk_nvme_probe", "probe public entry"),
+        ("lib/nvme/nvme.c", "spdk_nvme_connect", "connect public entry"),
+        ("lib/nvme/nvme.c", "spdk_nvme_probe_poll_async", "async probe poll"),
+        ("lib/nvme/nvme_transport.c", "nvme_transport_register", "transport registry"),
+        ("lib/nvme/nvme_transport.c", "nvme_transport_ctrlr_connect_qpair", "transport qpair connect"),
+        ("lib/nvme/nvme_internal.h", "enum nvme_ctrlr_state", "controller state model"),
+        ("lib/nvme/nvme_internal.h", "enum nvme_qpair_state", "qpair state model"),
+        ("lib/nvme/nvme_internal.h", "struct spdk_nvme_qpair", "qpair runtime state"),
+        ("lib/nvme/nvme_internal.h", "struct spdk_nvme_ctrlr", "controller runtime state"),
+        ("lib/nvme/nvme_ctrlr.c", "nvme_ctrlr_set_state", "controller state transition"),
+        ("lib/nvme/nvme_ctrlr.c", "nvme_ctrlr_process_init", "controller init fsm"),
+        ("lib/nvme/nvme_ctrlr.c", "spdk_nvme_ctrlr_alloc_io_qpair", "io qpair allocation"),
+        ("lib/nvme/nvme_ctrlr.c", "spdk_nvme_ctrlr_free_io_qpair", "io qpair free"),
+        ("lib/nvme/nvme_ctrlr.c", "nvme_ctrlr_reconnect_io_qpair", "qpair reconnect"),
+        ("lib/nvme/nvme_ns_cmd.c", "_nvme_ns_cmd_rw", "namespace io split"),
+        ("lib/nvme/nvme_qpair.c", "nvme_qpair_submit_request", "qpair submit"),
+        ("lib/nvme/nvme_qpair.c", "nvme_qpair_manual_complete_request", "qpair completion"),
+        ("lib/nvme/nvme_poll_group.c", "spdk_nvme_poll_group_process_completions", "poll group completions"),
+        ("lib/nvme/nvme_pcie_common.c", "nvme_pcie_qpair_submit_tracker", "pcie submit"),
+        ("lib/nvme/nvme_tcp.c", "nvme_tcp_qpair_submit_request", "tcp submit"),
+        ("lib/nvme/nvme_rdma.c", "nvme_rdma_ctrlr_connect_qpair", "rdma connect"),
+    ],
+}
 
 
 def _now() -> str:
@@ -120,6 +174,76 @@ def resolve_execution_profile(
         available = ", ".join(str(item.get("id")) for item in profiles)
         raise ValueError(f"执行档位不可用：{requested_id}（可选：{available}）")
     return json.loads(json.dumps(selected, ensure_ascii=False))
+
+
+def _optional_positive_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _source_context_budget_for_step(
+    step: dict[str, Any],
+    *,
+    execution_profile: dict[str, Any],
+) -> dict[str, int]:
+    profile_id = str(execution_profile.get("id") or "").strip().lower()
+    raw_limit = _optional_positive_int(step.get("source_context_limit"))
+    raw_min_source = _optional_positive_int(step.get("source_context_min_source_files"))
+    raw_min_test = _optional_positive_int(step.get("source_context_min_test_files"))
+    if profile_id == "deep":
+        return {
+            "limit": max(raw_limit or 12, _DEEP_SOURCE_CONTEXT_BUDGET["limit"]),
+            "min_source_files": max(
+                raw_min_source or 1,
+                _DEEP_SOURCE_CONTEXT_BUDGET["min_source_files"],
+            ),
+            "min_test_files": (
+                raw_min_test
+                if raw_min_test is not None
+                else _DEEP_SOURCE_CONTEXT_BUDGET["min_test_files"]
+            ),
+            "max_candidates_to_read": _DEEP_SOURCE_CONTEXT_BUDGET[
+                "max_candidates_to_read"
+            ],
+            "excerpt_radius": _DEEP_SOURCE_CONTEXT_BUDGET["excerpt_radius"],
+        }
+    return {
+        "limit": max(1, raw_limit or 12),
+        "min_source_files": max(1, raw_min_source or 1),
+        "min_test_files": max(0, raw_min_test if raw_min_test is not None else 2),
+        "max_candidates_to_read": 80,
+        "excerpt_radius": 4,
+    }
+
+
+def _deep_module_evidence_hints(
+    *,
+    execution_profile: dict[str, Any],
+    query: str,
+    search_roots: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    if str(execution_profile.get("id") or "").strip().lower() != "deep":
+        return []
+    query_text = str(query or "").lower()
+    roots = {str(value).strip().lower() for value in search_roots or [] if str(value).strip()}
+    hints: list[dict[str, Any]] = []
+    for module_root, module_hints in _DEEP_MODULE_EVIDENCE_HINTS.items():
+        if module_root not in query_text and module_root not in roots:
+            continue
+        for path, term, label in module_hints:
+            hints.append({
+                "path": path,
+                "term": term,
+                "label": label,
+                "contract_required": True,
+                "allow_same_file": True,
+            })
+    return hints
 
 
 @dataclass(frozen=True)
@@ -194,6 +318,7 @@ class WorkbenchTaskRunPreparer:
         parent_task_run_id: str = "",
         execution_profile_id: str = "",
         workflow_snapshot_override: dict[str, Any] | None = None,
+        task_context: dict[str, Any] | None = None,
     ) -> PreparedWorkbenchTaskRun:
         workflow_snapshot = (
             dict(workflow_snapshot_override)
@@ -262,10 +387,13 @@ class WorkbenchTaskRunPreparer:
             ],
             stage_specs=stage_specs,
         )
+        task_context_payload = _task_context_payload(task_context)
+        task_query_hints = _task_context_query_hints(task_context_payload)
         context_bundle = build_workbench_context_bundle(
             workspace_id=workspace_id,
             repo_path=repo_path,
             input_snapshot=input_snapshot,
+            query_hints=task_query_hints,
             evidence_memory=self.evidence_memory,
             semantic_library=self.semantic_library,
         )
@@ -277,6 +405,8 @@ class WorkbenchTaskRunPreparer:
             limit: int = 12,
             min_source_files: int = 1,
             min_test_files: int = 2,
+            max_candidates_to_read: int = 80,
+            excerpt_radius: int = 4,
             evidence_hints: list[dict[str, Any]] | None = None,
             search_roots: list[str] | None = None,
         ) -> dict[str, Any]:
@@ -298,6 +428,8 @@ class WorkbenchTaskRunPreparer:
                 limit,
                 min_source_files,
                 min_test_files,
+                max_candidates_to_read,
+                excerpt_radius,
                 normalized_hints,
                 normalized_roots,
             )
@@ -308,6 +440,8 @@ class WorkbenchTaskRunPreparer:
                     limit=limit,
                     min_source_files=min_source_files,
                     min_test_files=min_test_files,
+                    max_candidates_to_read=max_candidates_to_read,
+                    excerpt_radius=excerpt_radius,
                     evidence_hints=evidence_hints,
                     search_roots=list(normalized_roots),
                 )
@@ -318,23 +452,25 @@ class WorkbenchTaskRunPreparer:
             for step in workflow_snapshot.get("steps") or []
             if isinstance(step, dict) and step.get("type") == "agent_task"
         ]
+        agent_source_budgets = [
+            _source_context_budget_for_step(step, execution_profile=execution_profile)
+            for step in agent_source_steps
+        ]
         task_source_context_limit = max(
-            [max(1, int(step.get("source_context_limit") or 12)) for step in agent_source_steps]
-            or [12]
+            [budget["limit"] for budget in agent_source_budgets] or [12]
         )
         task_source_context_min_test_files = max(
-            [
-                max(0, int(step.get("source_context_min_test_files") or 2))
-                for step in agent_source_steps
-            ]
-            or [2]
+            [budget["min_test_files"] for budget in agent_source_budgets] or [2]
         )
         task_source_context_min_source_files = max(
-            [
-                max(1, int(step.get("source_context_min_source_files") or 1))
-                for step in agent_source_steps
-            ]
-            or [1]
+            [budget["min_source_files"] for budget in agent_source_budgets] or [1]
+        )
+        task_source_context_max_candidates = max(
+            [budget["max_candidates_to_read"] for budget in agent_source_budgets]
+            or [80]
+        )
+        task_source_context_excerpt_radius = max(
+            [budget["excerpt_radius"] for budget in agent_source_budgets] or [4]
         )
         task_source_evidence_hints = [
             dict(item)
@@ -348,11 +484,20 @@ class WorkbenchTaskRunPreparer:
             for value in step.get("source_context_search_roots") or []
             if str(value).strip()
         )
+        task_source_evidence_hints.extend(
+            _deep_module_evidence_hints(
+                execution_profile=execution_profile,
+                query=str(context_bundle.get("query") or ""),
+                search_roots=task_source_search_roots,
+            )
+        )
         local_source_context = prepared_source_context(
             str(context_bundle.get("query") or ""),
             limit=task_source_context_limit,
             min_source_files=task_source_context_min_source_files,
             min_test_files=task_source_context_min_test_files,
+            max_candidates_to_read=task_source_context_max_candidates,
+            excerpt_radius=task_source_context_excerpt_radius,
             evidence_hints=task_source_evidence_hints,
             search_roots=task_source_search_roots,
         )
@@ -465,6 +610,7 @@ class WorkbenchTaskRunPreparer:
                 if isinstance(item, dict)
             ],
             "execution_profile": execution_profile,
+            "task_context": task_context_payload,
             "network_policy": network_policy,
             "input_consumption": input_consumption,
             "workspace_id": workspace_id,
@@ -543,28 +689,42 @@ class WorkbenchTaskRunPreparer:
                 workspace_id=workspace_id,
                 repo_path=repo_path,
                 input_snapshot=step_input_snapshot,
+                query_hints=task_query_hints,
                 evidence_memory=self.evidence_memory,
                 semantic_library=self.semantic_library,
             )
+            step_source_context_budget = _source_context_budget_for_step(
+                step,
+                execution_profile=execution_profile,
+            )
+            step_source_evidence_hints = [
+                dict(item)
+                for item in step.get("source_evidence_hints") or []
+                if isinstance(item, dict)
+            ]
+            step_source_search_roots = [
+                str(value)
+                for value in step.get("source_context_search_roots") or []
+                if str(value).strip()
+            ]
+            step_source_evidence_hints.extend(
+                _deep_module_evidence_hints(
+                    execution_profile=execution_profile,
+                    query=str(step_context_bundle.get("query") or ""),
+                    search_roots=step_source_search_roots,
+                )
+            )
             step_local_source_context = prepared_source_context(
                 str(step_context_bundle.get("query") or ""),
-                limit=max(1, int(step.get("source_context_limit") or 12)),
-                min_source_files=max(
-                    1, int(step.get("source_context_min_source_files") or 1)
-                ),
-                min_test_files=max(
-                    0, int(step.get("source_context_min_test_files") or 2)
-                ),
-                evidence_hints=[
-                    dict(item)
-                    for item in step.get("source_evidence_hints") or []
-                    if isinstance(item, dict)
+                limit=step_source_context_budget["limit"],
+                min_source_files=step_source_context_budget["min_source_files"],
+                min_test_files=step_source_context_budget["min_test_files"],
+                max_candidates_to_read=step_source_context_budget[
+                    "max_candidates_to_read"
                 ],
-                search_roots=[
-                    str(value)
-                    for value in step.get("source_context_search_roots") or []
-                    if str(value).strip()
-                ],
+                excerpt_radius=step_source_context_budget["excerpt_radius"],
+                evidence_hints=step_source_evidence_hints,
+                search_roots=step_source_search_roots,
             )
             step_context_bundle["local_source_context"] = step_local_source_context
             step_agent_instructions = collect_agent_instructions(
@@ -623,6 +783,7 @@ class WorkbenchTaskRunPreparer:
                 expected_output_schemas=output_schemas_by_step.get(step_id, []),
                 expected_semantic_outputs=semantic_import_outputs_by_step.get(step_id, []),
                 test_activity_contract=step_test_activity_contract,
+                task_context=task_context_payload,
             )
             step_bundle = {
                 **task_bundle,
@@ -816,11 +977,12 @@ def build_workbench_context_bundle(
     workspace_id: str,
     repo_path: str = "",
     input_snapshot: dict[str, Any],
+    query_hints: list[str] | None = None,
     evidence_memory: EvidenceMemoryStore | None = None,
     semantic_library: TestSemanticLibraryStore | None = None,
     limit: int = 8,
 ) -> dict[str, Any]:
-    query = _context_query_from_inputs(input_snapshot)
+    query = _context_query_from_inputs(input_snapshot, query_hints=query_hints)
     evidence = []
     deployment_evidence = []
     semantic_cases = []
@@ -1132,10 +1294,18 @@ def build_local_source_context(
     # lifecycle and session implementations can enter the ledger. Additional
     # same-file slices are expanded later from this SHA-validated selection.
     required_files: list[dict[str, Any]] = []
-    required_paths: set[tuple[str, str]] = set()
+    required_paths: set[tuple[str, str, str]] = set()
     for item in required_candidates:
         classification = str(item.get("classification") or "source")
-        key = (classification, str(item.get("file_path") or ""))
+        key = (
+            classification,
+            str(item.get("file_path") or ""),
+            (
+                f"{int(item.get('start_line') or 0)}:{int(item.get('end_line') or 0)}"
+                if bool(item.get("allow_same_file"))
+                else ""
+            ),
+        )
         if key in required_paths:
             continue
         required_paths.add(key)
@@ -1244,9 +1414,9 @@ def _materialize_source_evidence_hints(
         text = data.decode("utf-8", errors="replace")
         if term.lower() not in text.lower():
             continue
-        excerpt, start_line, end_line = _source_excerpt(
+        excerpt, start_line, end_line = _source_hint_excerpt(
             text,
-            tokens=[term.lower()],
+            term=term,
             radius=excerpt_radius,
             max_chars=4000,
         )
@@ -1268,6 +1438,7 @@ def _materialize_source_evidence_hints(
             "status": "validated_source_file",
             "evidence_hint": True,
             "contract_required": bool(hint.get("contract_required")),
+            "allow_same_file": bool(hint.get("allow_same_file")),
             "evidence_label": str(hint.get("label") or "").strip(),
         })
     return cards
@@ -1951,13 +2122,15 @@ def _source_search_roots(
         for value in [*(search_roots or []), *(path_hints or [])]
         if str(value).strip()
     ]
-    inferred_requested = [
-        match.strip("/")
-        for match in re.findall(
-            r"(?<![A-Za-z0-9_.-])(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+",
-            str(query or ""),
-        )
-    ]
+    query_text = str(query or "")
+    inferred_requested = []
+    for match in re.finditer(
+        r"(?<![A-Za-z0-9_.-])(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+",
+        query_text,
+    ):
+        if match.start() > 0 and query_text[match.start() - 1] in {"/", "\\"}:
+            continue
+        inferred_requested.append(match.group(0).strip("/"))
     requested = [*explicit_requested, *inferred_requested]
     safe = []
     for value in _unique_strings(requested):
@@ -2134,6 +2307,70 @@ def _source_excerpt(
         excerpt = excerpt[:max_chars]
         end = start + len(excerpt.splitlines())
     return excerpt, start + 1, end
+
+
+def _source_hint_excerpt(
+    text: str,
+    *,
+    term: str,
+    radius: int,
+    max_chars: int = 4000,
+) -> tuple[str, int, int]:
+    lines = text.splitlines()
+    if not lines:
+        return "", 0, 0
+    escaped = re.escape(str(term or "").strip())
+    if escaped:
+        term_text = str(term or "").strip()
+        type_pattern = (
+            re.compile(rf"^\s*{escaped}\b")
+            if re.match(r"^(?:struct|enum|union)\s+", term_text)
+            else re.compile(rf"^\s*(?:struct|enum|union)\s+{escaped}\b")
+        )
+        same_line_function_pattern = re.compile(
+            rf"^\s*(?:static\s+)?(?:inline\s+)?[A-Za-z_][\w\s\*\(\)]{{0,100}}\s+{escaped}\s*\("
+        )
+        split_line_function_pattern = re.compile(rf"^\s*{escaped}\s*\(")
+        for index, line in enumerate(lines):
+            is_definition = bool(
+                same_line_function_pattern.search(line)
+                or type_pattern.search(line)
+            )
+            if not is_definition and split_line_function_pattern.search(line):
+                prefix = lines[index - 1].strip() if index > 0 else ""
+                signature_tail = "\n".join(lines[index : min(len(lines), index + 6)])
+                is_definition = bool(
+                    prefix
+                    and re.match(
+                        r"^(?:static\s+)?(?:inline\s+)?(?:void|int|bool|char|size_t|uint\d+_t|struct\s+\w+|\w+_t|\w+\s*\*)",
+                        prefix,
+                    )
+                    and "{"
+                    in signature_tail
+                    and (
+                        ";" not in signature_tail
+                        or signature_tail.find("{") < signature_tail.find(";")
+                    )
+                )
+            if not is_definition:
+                continue
+            start = index
+            if split_line_function_pattern.search(line) and index > 0:
+                start = index - 1
+            if start > 0 and lines[start - 1].strip().startswith("/*"):
+                start = index - 1
+            end = min(len(lines), index + max(18, min(80, radius)))
+            excerpt = "\n".join(lines[start:end])
+            if len(excerpt) > max_chars:
+                excerpt = excerpt[:max_chars]
+                end = start + len(excerpt.splitlines())
+            return excerpt, start + 1, end
+    return _source_excerpt(
+        text,
+        tokens=[str(term or "").lower()],
+        radius=radius,
+        max_chars=max_chars,
+    )
 
 
 def _source_token_matches_line(token: str, line: str) -> bool:
@@ -2679,6 +2916,7 @@ def build_executor_handoff_contract(
     expected_output_schemas: list[dict[str, Any]],
     expected_semantic_outputs: list[dict[str, Any]],
     test_activity_contract: dict[str, Any] | None = None,
+    task_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the user-facing execution contract passed to an Agent or builtin LLM."""
     input_defs = {
@@ -2690,6 +2928,7 @@ def build_executor_handoff_contract(
         input_snapshot=input_snapshot,
         input_defs=input_defs,
     )
+    task_targets = _task_context_analysis_targets(task_context)
     source_context = (
         workflow_contract.get("local_source_context")
         if isinstance(workflow_contract.get("local_source_context"), dict)
@@ -2709,7 +2948,7 @@ def build_executor_handoff_contract(
         },
         "repo_path": str(repo_path or ""),
         "goal": str(step.get("goal") or ""),
-        "analysis_targets": [
+        "analysis_targets": task_targets + [
             item for item in scalar_inputs
             if _looks_like_analysis_target(item)
         ],
@@ -2728,6 +2967,9 @@ def build_executor_handoff_contract(
             ),
         },
         "source_context": _execution_source_context(
+            source_context=source_context,
+        ),
+        "source_coverage_policy": _source_coverage_policy(
             source_context=source_context,
         ),
         "source_analysis_limits": {
@@ -2779,12 +3021,22 @@ def build_executor_handoff_contract(
             "user_requested_outputs": _user_requested_outputs(scalar_inputs),
             "expected_output_schemas": expected_output_schemas,
             "expected_semantic_outputs": expected_semantic_outputs,
+            "artifact_requirements": _artifact_requirements_for_builtin_outputs(
+                required_artifacts=required_artifacts,
+                declared_outputs=_declared_outputs_for_step(
+                    workflow_contract=workflow_contract,
+                    step_id=step_id,
+                    required_artifacts=required_artifacts,
+                ),
+            ),
             "rule": (
                 "Produce every required artifact under the executor artifact directory. "
                 "JSON artifacts must satisfy their declared schemas."
             ),
         },
     }
+    if task_context:
+        contract["task_context"] = dict(task_context)
     # Test Activity is a legacy specialist contract.  Its absence is meaningful
     # for V3: an empty placeholder would still make downstream code infer that
     # governance was requested.
@@ -2893,12 +3145,56 @@ def _execution_source_context(*, source_context: dict[str, Any]) -> dict[str, An
                 "content_match_count": int(item.get("content_match_count") or 0),
                 "behavior_score": int(item.get("behavior_score") or 0),
                 "matched_terms": [str(term) for term in item.get("matched_terms") or []],
-                "symbols": [str(symbol) for symbol in item.get("symbols") or []],
+                "symbols": _source_context_symbols_for_excerpt(item),
                 "excerpt": str(item.get("excerpt") or ""),
             }
             for item in files
         ],
     }
+
+
+def _source_coverage_policy(*, source_context: dict[str, Any]) -> dict[str, Any]:
+    files = [
+        str(item.get("file_path") or "").strip()
+        for item in source_context.get("files") or []
+        if isinstance(item, dict) and str(item.get("file_path") or "").strip()
+    ]
+    return {
+        "evidence_files": _unique_strings(files),
+        "rules": [
+            "Coverage claims must distinguish verified source excerpts, files actually read by the executor, and files not analyzed.",
+            "Do not list a file as uncovered if it appears in source-evidence.json, execution_contract.source_context.files, or the report body as analyzed evidence.",
+            "Do not claim a file was fully covered unless the executor actually read the complete file; line excerpts are partial coverage.",
+            "When scope is partial, write the precise missing functions, branches, or line ranges instead of a broad uncovered file list.",
+        ],
+    }
+
+
+def _source_context_symbols_for_excerpt(item: dict[str, Any]) -> list[str]:
+    excerpt = str(item.get("excerpt") or "")
+    declared = _unique_strings(
+        str(symbol) for symbol in item.get("symbols") or [] if str(symbol).strip()
+    )
+    present = [symbol for symbol in declared if symbol in excerpt]
+    if present:
+        return present
+    inferred = _source_symbols(excerpt)
+    if inferred:
+        return inferred[:12]
+    return _source_identifiers_from_excerpt(excerpt)[:12]
+
+
+def _source_identifiers_from_excerpt(excerpt: str) -> list[str]:
+    keywords = {
+        "break", "case", "char", "const", "continue", "do", "else", "enum",
+        "for", "if", "int", "return", "sizeof", "static", "struct", "switch",
+        "uint8_t", "uint32_t", "uint64_t", "void", "while",
+    }
+    return _unique_strings(
+        token
+        for token in re.findall(r"\b[A-Za-z_][A-Za-z0-9_]{2,}\b", excerpt)
+        if token not in keywords and not token.isdigit()
+    )
 
 
 def _scalar_execution_inputs(
@@ -2928,6 +3224,119 @@ def _looks_like_analysis_target(item: dict[str, Any]) -> bool:
         for key in ("input_id", "role", "type")
     )
     return any(token in marker for token in ("analysis", "target", "目标", "对象", "范围"))
+
+
+def _task_context_payload(value: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    name = str(value.get("name") or "").strip()
+    description = str(value.get("description") or "").strip()
+    tags = _unique_strings(str(item) for item in value.get("tags") or [])
+    payload = {
+        "name": name,
+        "description": description,
+        "tags": tags,
+    }
+    return {key: item for key, item in payload.items() if item not in ("", [])}
+
+
+def _task_context_query_hints(value: dict[str, Any]) -> list[str]:
+    hints: list[str] = []
+    for key in ("name", "description"):
+        text = str(value.get(key) or "").strip()
+        if text:
+            hints.append(text)
+    hints.extend(str(item) for item in value.get("tags") or [] if str(item).strip())
+    return hints
+
+
+def _task_context_analysis_targets(value: dict[str, Any] | None) -> list[dict[str, Any]]:
+    context = _task_context_payload(value)
+    text = " ".join(_task_context_query_hints(context)).strip()
+    if not text:
+        return []
+    return [{
+        "input_id": "task_context",
+        "role": "任务目标",
+        "type": "task_context",
+        "value": text,
+    }]
+
+
+def _artifact_requirements_for_builtin_outputs(
+    *,
+    required_artifacts: list[str],
+    declared_outputs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    required = {str(item).strip() for item in required_artifacts if str(item).strip()}
+    requirements: list[dict[str, Any]] = []
+    for output in declared_outputs:
+        artifact = str(output.get("artifact") or "").strip()
+        output_id = str(output.get("id") or output.get("output_id") or "").strip()
+        output_type = str(output.get("type") or "").strip()
+        if artifact not in required:
+            continue
+        if _is_source_claim_markdown_output(output):
+            requirements.append({
+                "artifact": artifact,
+                "format": "markdown",
+                "items": "source_claims",
+                "rules": [
+                    "Every source-based claim must be entailed by the cited execution_contract.source_context.files excerpt.",
+                    "Before writing risk, defect, leak, missing cleanup, missing validation, unhandled error, or not released, check the cited excerpt for direct counter-evidence.",
+                    "If the excerpt shows protective behavior such as free(...), put(...), close(...), return-on-error, bounds checks, or state checks, describe that behavior instead of claiming the opposite.",
+                    "If the provided excerpt is ambiguous or incomplete, state that the current evidence does not prove the risk instead of asserting it as a defect.",
+                    "Follow execution_contract.source_coverage_policy when writing covered/uncovered scope: do not mark evidence files as uncovered, and do not call excerpt-level analysis full-file coverage.",
+                ],
+            })
+        if artifact == "source-evidence.json" or (
+            output_type == "json" and output_id in {"source_evidence", "source-evidence"}
+        ):
+            requirements.append({
+                "artifact": artifact,
+                "format": "json_array",
+                "items": "source_evidence_card",
+                "required_fields": [
+                    "file_path",
+                    "start_line",
+                    "end_line",
+                    "excerpt",
+                    "symbols",
+                    "sha256",
+                ],
+                "rules": [
+                    "Each card must copy file_path, start_line, end_line, sha256 and excerpt from one execution_contract.source_context.files item.",
+                    "excerpt must exactly equal the full text for start_line..end_line from the current repo file.",
+                    "symbols must be a non-empty array and every symbol must appear literally inside excerpt.",
+                    "Do not wrap source evidence cards inside summary objects such as source_files_read or evidence_to_conclusion_mapping.",
+                ],
+            })
+    return requirements
+
+
+def _is_source_claim_markdown_output(output: dict[str, Any]) -> bool:
+    artifact = str(output.get("artifact") or "").strip().lower()
+    output_type = str(output.get("type") or "").strip().lower()
+    if (
+        output_type not in {"markdown", "md", "text/markdown"}
+        and not artifact.endswith(".md")
+    ):
+        return False
+    preset_text = json.dumps(
+        output.get("content_presets") or [],
+        ensure_ascii=False,
+        sort_keys=True,
+    ).lower()
+    source_markers = (
+        "source_evidence",
+        "flow_doc",
+        "storage_flow",
+        "source",
+        "源码",
+        "证据",
+        "流程",
+    )
+    return any(marker in preset_text for marker in source_markers)
 
 
 def _user_requested_outputs(inputs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -5016,8 +5425,12 @@ def _is_v3_compiled_contract(
     return raw is not None and raw != ""
 
 
-def _context_query_from_inputs(input_snapshot: dict[str, Any]) -> str:
-    parts: list[str] = []
+def _context_query_from_inputs(
+    input_snapshot: dict[str, Any],
+    *,
+    query_hints: list[str] | None = None,
+) -> str:
+    parts: list[str] = [str(item) for item in query_hints or [] if str(item).strip()]
     for value in input_snapshot.values():
         if isinstance(value, str):
             parts.append(value)

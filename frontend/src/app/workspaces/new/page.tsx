@@ -80,7 +80,6 @@ export default function NewWorkspacePage() {
       const submittedName = String(formData.get("name") ?? "").trim();
       const submittedRepoPath = repoPath.trim();
       if (!submittedName) { setError("请输入工作空间名称"); return; }
-      if (!submittedRepoPath) { setError("请输入代码仓库路径"); return; }
 
       submittingRef.current = true;
       setSubmitting(true);
@@ -160,7 +159,7 @@ export default function NewWorkspacePage() {
 
         <div>
           <label htmlFor="workspace-repo-path" className="block text-sm font-medium text-on-surface mb-1.5">
-            代码仓库路径
+            本地文件夹路径 <span className="text-on-surface-variant/60">（可选）</span>
           </label>
           <div className="relative">
             <FolderSearch
@@ -173,7 +172,7 @@ export default function NewWorkspacePage() {
               type="text"
               value={repoPath}
               onChange={(event) => setRepoPath(event.currentTarget.value)}
-              placeholder="本地文件夹路径，如 /home/user/project"
+              placeholder="本地文件夹路径，可留空，如 /home/user/project"
               className="w-full pl-10 pr-24 py-2.5 bg-surface-container border border-outline-variant/30 rounded-lg text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20 transition-colors font-data"
             />
             <button
@@ -186,7 +185,7 @@ export default function NewWorkspacePage() {
             </button>
           </div>
           <p className="text-xs text-on-surface-variant/60 mt-1">
-            服务器上可访问的本地路径，创建后将自动触发代码索引
+            填写服务器可访问的本地路径后会自动触发代码索引；留空时可先创建工作空间，后续补充材料或继续 AI 调查
           </p>
         </div>
 

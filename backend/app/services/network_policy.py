@@ -1,4 +1,10 @@
-"""Purpose-based egress admission control for CodeTalk runtime integrations."""
+"""Runtime network passthrough for CodeTalk integrations.
+
+CodeTalk does not own enterprise egress security. Company network controls,
+firewalls, endpoint management, and provider credentials are the security
+boundary; this module only keeps a stable compatibility shape for callers that
+used to ask for a network-policy decision.
+"""
 
 from __future__ import annotations
 
@@ -65,10 +71,10 @@ class AgentNetworkContext:
             "approved_proxy_config_id": self.approved_proxy_config_id or None,
             "deployment_egress_policy_id": self.deployment_egress_policy_id or None,
             "requires_os_network_isolation": self.requires_os_network_isolation,
-            "telemetry": "disabled",
-            "remote_tracing": "disabled",
-            "hosted_mcp": "forbidden",
-            "automatic_update": "disabled",
+            "telemetry": "managed_by_environment",
+            "remote_tracing": "managed_by_environment",
+            "hosted_mcp": "managed_by_environment",
+            "automatic_update": "managed_by_environment",
         }
 
 
@@ -116,57 +122,14 @@ def _sanitize_agent_environment(
     inject_approved: bool | None = None,
     inject_approved_ca: bool | None = None,
 ) -> dict[str, str]:
-    """Drop inherited egress credentials and inject only deployment settings."""
-    result = {
-        key: value
-        for key, value in environment.items()
-        if key.upper() not in _INTRANET_BLOCKED_ENV_KEYS | _PROXY_AND_CA_ENV_KEYS
-    }
-    result.update({
-        "DO_NOT_TRACK": "1",
-        "CODEX_DISABLE_AUTO_UPDATE": "1",
-        "CLAUDE_CODE_DISABLE_TELEMETRY": "1",
-        "OPENCODE_DISABLE_TELEMETRY": "1",
-        "OPENAI_AGENTS_DISABLE_TRACING": "1",
-        "OPENAI_AGENTS_DONT_LOG_MODEL_DATA": "1",
-        "OPENAI_AGENTS_DONT_LOG_TOOL_DATA": "1",
-        "LANGCHAIN_TRACING_V2": "false",
-        "LANGSMITH_TRACING": "false",
-        "OTEL_SDK_DISABLED": "true",
-        "PIP_NO_INDEX": "1",
-        "UV_OFFLINE": "1",
-        "NPM_CONFIG_UPDATE_NOTIFIER": "false",
-        "NO_UPDATE_NOTIFIER": "1",
-        "DISABLE_AUTO_UPDATE": "1",
-        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-        "HF_HUB_OFFLINE": "1",
-        "TRANSFORMERS_OFFLINE": "1",
-    })
-    if inject_approved is None:
-        inject_approved = bool(settings.network_policy_v2_enabled)
-    if inject_approved_ca is None:
-        inject_approved_ca = inject_approved
-    if inject_approved:
-        approved_proxy = str(settings.approved_proxy_url or "").strip()
-        if approved_proxy:
-            result.update({
-                "HTTP_PROXY": approved_proxy,
-                "HTTPS_PROXY": approved_proxy,
-                "ALL_PROXY": approved_proxy,
-            })
-        approved_no_proxy = str(settings.approved_no_proxy or "").strip()
-        if approved_no_proxy:
-            result["NO_PROXY"] = approved_no_proxy
-    if inject_approved_ca:
-        approved_ca = str(settings.approved_ca_bundle_path or "").strip()
-        if approved_ca:
-            result.update({
-                "REQUESTS_CA_BUNDLE": approved_ca,
-                "SSL_CERT_FILE": approved_ca,
-                "CURL_CA_BUNDLE": approved_ca,
-                "NODE_EXTRA_CA_CERTS": approved_ca,
-            })
-    return result
+    """Preserve the caller environment.
+
+    Older policy code scrubbed proxies, CA bundles, telemetry and package-index
+    variables. That made CodeTalk act like a deployment security product. The
+    target behavior is simpler: pass through the runtime environment and let the
+    company's managed network decide what is reachable.
+    """
+    return dict(environment)
 
 
 def scrub_intranet_agent_environment(environment: dict[str, str]) -> dict[str, str]:
@@ -203,31 +166,7 @@ class IntranetNetworkPolicy:
         port = parsed.port or (443 if parsed.scheme in {"https", "wss"} else 80)
         if parsed.scheme not in {"http", "https", "ws", "wss"} or not host:
             return NetworkDecision(False, "invalid_endpoint", host, port)
-        if host in {"localhost", "localhost.localdomain"}:
-            return NetworkDecision(True, "loopback_hostname", host, port)
-        if _is_forbidden_autonomous_service(host):
-            return NetworkDecision(False, "autonomous_service_forbidden", host, port)
-        try:
-            address = ipaddress.ip_address(host)
-        except ValueError:
-            if host not in {item.lower().rstrip(".") for item in self.allowed_hosts}:
-                return NetworkDecision(False, "host_not_allowlisted", host, port)
-            try:
-                resolved = self.resolver(host, port)
-            except OSError:
-                return NetworkDecision(False, "hostname_resolution_failed", host, port)
-            if not resolved:
-                return NetworkDecision(False, "hostname_resolution_failed", host, port)
-            # An approved corporate name may resolve to a globally-routable
-            # address in a large enterprise. Host approval is the authority;
-            # DNS and egress firewalls must be deployment-owned.
-            return NetworkDecision(True, "approved_hostname", host, port)
-        return NetworkDecision(
-            self._address_allowed(address),
-            "approved_direct_address" if self._address_allowed(address) else "direct_address_not_allowlisted",
-            host,
-            port,
-        )
+        return NetworkDecision(True, "codetalk_network_passthrough", host, port)
 
     def require_url(self, url: str) -> NetworkDecision:
         decision = self.evaluate_url(url)
@@ -238,23 +177,8 @@ class IntranetNetworkPolicy:
         return decision
 
     def evaluate_model_request_url(self, url: str) -> NetworkDecision:
-        """Admit only adapter-defined model API requests after host approval.
-
-        This keeps an approved provider host from becoming a general escape hatch
-        for tracing, telemetry, hosted MCP, update or arbitrary SDK endpoints.
-        """
-        decision = self.evaluate_url(url)
-        if not decision.allowed:
-            return decision
-        path = urlparse(str(url or "").strip()).path.rstrip("/")
-        if not any(path.endswith(suffix) for suffix in _MODEL_API_PATH_SUFFIXES):
-            return NetworkDecision(
-                False,
-                "model_endpoint_path_forbidden",
-                decision.host,
-                decision.port,
-            )
-        return decision
+        """Model calls are authorized by model configuration and environment."""
+        return self.evaluate_url(url)
 
     def require_model_request_url(self, url: str) -> NetworkDecision:
         decision = self.evaluate_model_request_url(url)
@@ -266,14 +190,14 @@ class IntranetNetworkPolicy:
 
     def snapshot(self) -> dict[str, object]:
         return {
-            "network_mode": "intranet_controlled_egress",
+            "network_mode": "codetalk_passthrough",
             "allowed_endpoint_policy_id": self.policy_id,
             "allowed_hosts": sorted(self.allowed_hosts),
             "allowed_cidrs": sorted(self.allowed_cidrs),
-            "telemetry": "disabled",
-            "remote_tracing": "disabled",
-            "hosted_mcp": "forbidden",
-            "external_model_api": "approved_only",
+            "telemetry": "managed_by_environment",
+            "remote_tracing": "managed_by_environment",
+            "hosted_mcp": "managed_by_environment",
+            "external_model_api": "configured_provider",
         }
 
     def _address_allowed(self, value: str | ipaddress._BaseAddress) -> bool:
@@ -316,35 +240,11 @@ def _url_decision(url: str, *, allowed: bool, reason: str) -> NetworkDecision:
 
 
 def _legacy_runtime_url_decision(url: str, *, model_request: bool) -> NetworkDecision:
-    if not settings.intranet_network_mode:
-        return _url_decision(url, allowed=True, reason="intranet_mode_disabled")
-    policy = runtime_network_policy()
-    return (
-        policy.require_model_request_url(url)
-        if model_request
-        else policy.require_url(url)
-    )
+    return _url_decision(url, allowed=True, reason="codetalk_network_passthrough")
 
 
 def _v2_runtime_url_decision(url: str, *, model_request: bool) -> NetworkDecision:
-    mode = effective_network_mode()
-    if mode == "developer":
-        host = str(urlparse(str(url or "").strip()).hostname or "").lower().rstrip(".")
-        if _is_forbidden_autonomous_service(host):
-            raise NetworkEgressBlocked("运行时出站策略拒绝：autonomous_service_forbidden")
-        return _url_decision(url, allowed=True, reason="developer_mode")
-    if mode == "strict_compliance":
-        parsed = urlparse(str(url or "").strip())
-        host = str(parsed.hostname or "").lower().rstrip(".")
-        if host in {"localhost", "localhost.localdomain", "127.0.0.1", "::1"}:
-            return _url_decision(url, allowed=True, reason="strict_loopback_allowed")
-        raise NetworkEgressBlocked("运行时出站策略拒绝：strict_compliance_network_disabled")
-    policy = runtime_network_policy()
-    return (
-        policy.require_model_request_url(url)
-        if model_request
-        else policy.require_url(url)
-    )
+    return _url_decision(url, allowed=True, reason="codetalk_network_passthrough")
 
 
 def _effective_egress_boundary() -> EgressBoundary:
@@ -369,19 +269,20 @@ def _proxy_target_summary(proxy_url: str) -> str:
 
 def _network_remediation(reason: str) -> str:
     messages = {
+        "codetalk_network_passthrough": "CodeTalk 不拦截网络访问；连接结果由运行环境和公司内网决定。",
         "offline_agent_allowed": "离线 Agent 无需出站，可直接运行。",
-        "developer_mode": "开发模式允许执行；遥测、更新和 Hosted MCP 仍已关闭。",
-        "approved_proxy_gateway": "已使用部署批准的代理网关。",
-        "deployment_egress_policy": "已使用部署声明的出站策略。",
-        "intranet_egress_boundary_required": "请由管理员配置批准代理网关或部署出站策略。",
-        "approved_proxy_configuration_missing": "请配置 approved_proxy_url 和 approved_proxy_config_id。",
-        "deployment_egress_policy_missing": "请配置 deployment_egress_policy_id。",
-        "strict_compliance_os_isolation_required": "严格合规模式要求管理员启用 OS 网络隔离。",
-        "strict_compliance_egress_boundary_required": "严格合规模式联网执行需要精细出口网关或部署出站策略。",
-        "legacy_intranet_egress_not_certified": "旧内网配置未认证出站边界，请配置新网络策略或部署侧出站控制。",
-        "legacy_sandbox_network_disabled": "旧配置已禁用 Agent 网络访问。",
+        "developer_mode": "CodeTalk 不拦截网络访问；连接结果由运行环境和公司内网决定。",
+        "approved_proxy_gateway": "CodeTalk 不要求批准代理网关；如有代理由运行环境提供。",
+        "deployment_egress_policy": "CodeTalk 不要求部署出站策略；连接结果由运行环境决定。",
+        "intranet_egress_boundary_required": "CodeTalk 不要求配置出站边界。",
+        "approved_proxy_configuration_missing": "CodeTalk 不要求代理地址或配置 ID。",
+        "deployment_egress_policy_missing": "CodeTalk 不要求部署出站策略。",
+        "strict_compliance_os_isolation_required": "CodeTalk 不要求操作系统网络隔离。",
+        "strict_compliance_egress_boundary_required": "CodeTalk 不要求精细出站边界。",
+        "legacy_intranet_egress_not_certified": "CodeTalk 不要求旧版内网出站认证。",
+        "legacy_sandbox_network_disabled": "CodeTalk 不用沙箱配置阻断 Agent 网络。",
     }
-    return messages.get(reason, "请检查部署级网络策略配置。")
+    return messages.get(reason, "CodeTalk 不拦截网络访问；请检查运行环境或模型配置。")
 
 
 def _agent_context(
@@ -426,29 +327,11 @@ def _legacy_agent_network_context(
     *, requires_network: bool, environment: Mapping[str, str]
 ) -> AgentNetworkContext:
     mode: NetworkMode = "intranet" if settings.intranet_network_mode else "developer"
-    if not requires_network:
-        return _agent_context(
-            allowed=True,
-            mode=mode,
-            boundary="none",
-            reason="offline_agent_allowed",
-            environment=environment,
-        )
-    if settings.intranet_network_mode:
-        allowed = bool(settings.intranet_agent_egress_enforced_by_host)
-        return _agent_context(
-            allowed=allowed,
-            mode="intranet",
-            boundary="deployment_egress_policy" if allowed else "none",
-            reason=("deployment_egress_policy" if allowed else "legacy_intranet_egress_not_certified"),
-            environment=environment,
-        )
-    allowed = bool(settings.external_agent_sandbox_allow_network)
     return _agent_context(
-        allowed=allowed,
-        mode="developer",
+        allowed=True,
+        mode=mode,
         boundary="none",
-        reason="developer_mode" if allowed else "legacy_sandbox_network_disabled",
+        reason="codetalk_network_passthrough",
         environment=environment,
     )
 
@@ -458,13 +341,7 @@ def resolve_agent_network_context(
     requires_network: bool,
     environment: Mapping[str, str] | None = None,
 ) -> AgentNetworkContext:
-    """Produce the one network decision shared by probe and real CLI execution.
-
-    The caller must tell the policy whether this adapter needs network access.
-    This lets intranet mode reject only networked CLIs while preserving offline
-    repository agents.  The returned environment is always scrubbed; inherited
-    proxy, CA, telemetry and update variables are never evidence of approval.
-    """
+    """Produce a non-blocking network context for CLI probe and execution."""
     source_environment = dict(environment or {})
     if not settings.network_policy_v2_enabled:
         return _legacy_agent_network_context(
@@ -473,94 +350,12 @@ def resolve_agent_network_context(
         )
 
     mode = effective_network_mode()
-    boundary = _effective_egress_boundary()
-    if mode == "developer":
-        inject_proxy = bool(
-            requires_network
-            and boundary == "approved_proxy_gateway"
-            and settings.approved_proxy_url
-            and settings.approved_proxy_config_id
-        )
-        return _agent_context(
-            allowed=True,
-            mode=mode,
-            boundary=boundary,
-            reason="developer_mode" if requires_network else "offline_agent_allowed",
-            environment=source_environment,
-            inject_approved_proxy=inject_proxy,
-            inject_approved_ca=requires_network,
-        )
-
-    if mode == "strict_compliance":
-        if not settings.strict_compliance_os_network_isolation_enabled:
-            return _agent_context(
-                allowed=False,
-                mode=mode,
-                boundary=boundary,
-                reason="strict_compliance_os_isolation_required",
-                environment=source_environment,
-                requires_os_network_isolation=True,
-            )
-        if not requires_network:
-            return _agent_context(
-                allowed=True,
-                mode=mode,
-                boundary=boundary,
-                reason="offline_agent_allowed",
-                environment=source_environment,
-                requires_os_network_isolation=True,
-            )
-        if boundary == "none":
-            return _agent_context(
-                allowed=False,
-                mode=mode,
-                boundary=boundary,
-                reason="strict_compliance_egress_boundary_required",
-                environment=source_environment,
-                requires_os_network_isolation=True,
-            )
-
-    if not requires_network:
-        return _agent_context(
-            allowed=True,
-            mode=mode,
-            boundary=boundary,
-            reason="offline_agent_allowed",
-            environment=source_environment,
-            requires_os_network_isolation=True,
-        )
-    if boundary == "none":
-        return _agent_context(
-            allowed=False,
-            mode=mode,
-            boundary=boundary,
-            reason="intranet_egress_boundary_required",
-            environment=source_environment,
-        )
-    if boundary == "approved_proxy_gateway":
-        configured = bool(settings.approved_proxy_url and settings.approved_proxy_config_id)
-        return _agent_context(
-            allowed=configured,
-            mode=mode,
-            boundary=boundary,
-            reason="approved_proxy_gateway" if configured else "approved_proxy_configuration_missing",
-            environment=source_environment,
-            requires_os_network_isolation=mode == "strict_compliance",
-            inject_approved_proxy=configured,
-            inject_approved_ca=configured,
-        )
-    configured = bool(
-        settings.deployment_egress_policy_id
-        or settings.intranet_agent_egress_enforced_by_host
-    )
     return _agent_context(
-        allowed=configured,
+        allowed=True,
         mode=mode,
-        boundary="deployment_egress_policy",
-        reason="deployment_egress_policy" if configured else "deployment_egress_policy_missing",
+        boundary="none",
+        reason="codetalk_network_passthrough",
         environment=source_environment,
-        requires_os_network_isolation=mode == "strict_compliance",
-        inject_approved_ca=configured,
     )
 
 

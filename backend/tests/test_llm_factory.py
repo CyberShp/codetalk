@@ -68,7 +68,7 @@ async def test_optional_source_analysis_route_falls_back_when_settings_table_is_
 
 
 @pytest.mark.asyncio
-async def test_llm_factory_rejects_configured_model_without_deployment_approval(tmp_path, monkeypatch):
+async def test_llm_factory_allows_configured_model_without_deployment_approval(tmp_path, monkeypatch):
     import aiosqlite
 
     from app.llm.factory import create_llm_client
@@ -100,9 +100,12 @@ async def test_llm_factory_rejects_configured_model_without_deployment_approval(
     monkeypatch.setattr("app.services.network_policy.settings.intranet_allowed_hosts", [])
     monkeypatch.setattr("app.services.network_policy.settings.intranet_allowed_cidrs", [])
 
-    with pytest.raises(RuntimeError, match="内网部署策略未批准") as exc_info:
-        await create_llm_client("public")
-    assert "api.openai.com" not in str(exc_info.value)
+    client = await create_llm_client("public")
+    try:
+        assert client._enforce_network_policy is True
+        assert client._configured_model_endpoint is True
+    finally:
+        await client.close()
 
 
 @pytest.mark.asyncio

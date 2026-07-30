@@ -324,8 +324,9 @@ class CliProviderAdapter:
                 token = ProviderResumeToken(provider=self.provider, value=opaque_value)
                 session.metadata["resume_token"] = token
             if event_sink is not None:
+                event_type = str(update.get("event_type") or "session_created")
                 event_sink(
-                    "session_created",
+                    event_type,
                     {"provider": self.provider, **update},
                 )
 

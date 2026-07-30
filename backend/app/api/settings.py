@@ -28,53 +28,38 @@ router = APIRouter(prefix="/api/settings", tags=["设置管理"])
 
 
 def _network_policy_migration_preview() -> dict[str, object]:
-    """Describe legacy network-mode migration without modifying deployment settings."""
-    from app.config import settings
-
-    effective_mode = effective_network_mode()
-    legacy_source = settings.network_mode is None
+    """Keep the old response contract while reporting the target runtime model."""
     return {
         "contract_version": 1,
-        "source": "legacy_intranet_network_mode" if legacy_source else "network_mode",
-        "effective_mode": effective_mode,
+        "source": "codetalk_runtime",
+        "effective_mode": effective_network_mode(),
         "read_only": True,
         "automatic_write": False,
-        "admin_confirmation_required": legacy_source,
-        "admin_guidance": (
-            "当前有效网络模式仍来自旧版 intranet_network_mode 配置。"
-            "请由管理员确认并显式配置 network_mode；预览不会自动写入部署设置。"
-            if legacy_source
-            else None
-        ),
+        "admin_confirmation_required": False,
+        "admin_guidance": None,
     }
 
 
 def _deployment_network_policy_snapshot() -> dict[str, object]:
-    """Return a read-only, credential-free deployment policy summary."""
-    from app.config import settings
+    """Return a compatibility summary for CodeTalk's non-blocking runtime model."""
 
     cli_context = resolve_agent_network_context(requires_network=True)
-    approved_proxy_config_id = str(settings.approved_proxy_config_id or "").strip()
-    approved_proxy_configured = bool(
-        approved_proxy_config_id and str(settings.approved_proxy_url or "").strip()
-    )
-    deployment_egress_policy_id = str(settings.deployment_egress_policy_id or "").strip()
     return {
         "mode": effective_network_mode(),
-        "policy_id": str(settings.intranet_network_policy_id or ""),
-        "boundary": cli_context.boundary,
-        "approved_proxy_configured": approved_proxy_configured,
-        "approved_proxy_config_id": approved_proxy_config_id or None,
-        "approved_no_proxy": bool(str(settings.approved_no_proxy or "").strip()),
-        "approved_ca_configured": bool(str(settings.approved_ca_bundle_path or "").strip()),
-        "deployment_egress_policy_id": deployment_egress_policy_id or None,
-        "telemetry": "disabled",
-        "remote_tracing": "disabled",
-        "hosted_mcp": "forbidden",
-        "cli_network_ready": cli_context.allowed,
-        "cli_block_reason": None if cli_context.allowed else cli_context.reason,
-        "cli_remediation": None if cli_context.allowed else cli_context.remediation,
-        "source": "deployment",
+        "policy_id": "codetalk-passthrough",
+        "boundary": "none",
+        "approved_proxy_configured": False,
+        "approved_proxy_config_id": None,
+        "approved_no_proxy": False,
+        "approved_ca_configured": False,
+        "deployment_egress_policy_id": None,
+        "telemetry": "managed_by_environment",
+        "remote_tracing": "managed_by_environment",
+        "hosted_mcp": "managed_by_environment",
+        "cli_network_ready": True,
+        "cli_block_reason": None,
+        "cli_remediation": cli_context.remediation,
+        "source": "codetalk_runtime",
         "migration_preview": _network_policy_migration_preview(),
     }
 
@@ -103,32 +88,18 @@ def _format_llm_connection_failure(error: Exception | str) -> str:
     """Make probe errors actionable without echoing endpoint credentials."""
     code = _llm_connection_failure_code(error)
     if code in {
-        "host_not_allowlisted",
-        "direct_address_not_allowlisted",
-        "model_endpoint_path_forbidden",
-        "strict_compliance_network_disabled",
         "network_policy_blocked",
     }:
-        reason = {
-            "host_not_allowlisted": "模型地址未获管理员批准",
-            "direct_address_not_allowlisted": "模型地址未获管理员批准",
-            "model_endpoint_path_forbidden": "模型接口路径未获管理员批准",
-            "strict_compliance_network_disabled": "严格合规模式禁止此模型连接",
-            "network_policy_blocked": "模型地址未获管理员批准",
-        }[code]
-        return (
-            f"部署网络策略阻止模型连接：{reason}。"
-            "请联系管理员检查模型地址和部署出站边界。"
-        )
+        return "模型连接被运行环境拒绝。CodeTalk 不拦截模型地址，请检查模型配置、凭据或公司网络。"
     if code == "http_403":
-        return "模型服务拒绝访问。请检查部署批准的模型地址、代理和凭据。"
+        return "模型服务拒绝访问。请检查模型地址、代理和凭据。"
     if code == "tls_ca_verification_failed":
-        return "企业 CA 证书校验失败。请联系管理员配置部署 CA 证书。"
+        return "CA 证书校验失败。请检查当前运行环境的证书配置。"
     if code == "approved_proxy_connection_failed":
-        return "批准代理连接失败。请联系管理员检查部署代理配置。"
+        return "代理连接失败。请检查当前运行环境的代理配置。"
     if code == "unsupported_api_type":
         return "不支持的模型接口类型。请在模型设置中选择受支持的接口类型。"
-    return "模型连接失败。请检查模型配置或联系管理员。"
+    return "模型连接失败。请检查模型配置、凭据或当前网络。"
 
 
 # --- LLM Config schemas ---

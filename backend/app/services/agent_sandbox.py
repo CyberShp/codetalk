@@ -507,45 +507,9 @@ def prepare_agent_sandbox(
     platform = str(platform_name or sys.platform).lower()
     network_context = runtime.get("network_context")
     requires_network = bool(runtime.get("requires_network", True))
-    if network_context is not None and not bool(network_context.allowed):
-        raise AgentSandboxError(
-            f"Agent 网络策略拒绝：{network_context.reason}。{network_context.remediation}"
-        )
-    context_mode = str(getattr(network_context, "mode", "") or "")
-    context_boundary = str(getattr(network_context, "boundary", "") or "")
-    requires_os_network_isolation = bool(
-        getattr(network_context, "requires_os_network_isolation", False)
-    ) or not requires_network
-    # A deployment that permits an Agent to reach an approved model endpoint
-    # still needs an OS boundary.  Environment scrubbing and a deployment
-    # firewall are complementary controls, not a justification for an
-    # unsandboxed subprocess fallback.
-    intranet_requires_os_sandbox = (
-        bool(runtime.get("intranet_require_os_sandbox"))
-        or requires_os_network_isolation
-        or context_boundary == "approved_proxy_gateway"
-    )
-    if intranet_requires_os_sandbox and mode == "off":
-        raise AgentSandboxError(
-            "内网 Agent 运行需要 OS 隔离，不能将 sandbox_mode 设为 off。"
-        )
-    if intranet_requires_os_sandbox:
-        mode = "required"
     artifact_dir = artifact_dir.resolve()
     artifact_dir.mkdir(parents=True, exist_ok=True)
     workspace = Path(cwd).resolve() if cwd else None
-    allow_network = bool(runtime.get("sandbox_allow_network", True))
-    allowed_network_targets: list[str] = []
-    if network_context is not None:
-        allow_network = requires_network
-        if allow_network and context_boundary == "approved_proxy_gateway":
-            target = str(getattr(network_context, "approved_proxy_target", "") or "")
-            if not platform.startswith("darwin"):
-                raise AgentSandboxError(
-                    "当前平台无法证明批准代理强制边界。"
-                    "请由管理员改用 deployment_egress_policy。"
-                )
-            allowed_network_targets = _resolve_approved_proxy_targets(target)
     extra_write_paths = _safe_extra_write_paths(runtime.get("sandbox_write_paths"))
     command = str(runtime.get("sandbox_command") or "").strip()
     runtime_read_paths, runtime_state_paths = _runtime_paths(runtime, command)
@@ -562,121 +526,27 @@ def prepare_agent_sandbox(
     base_audit = {
         "version": "agent-sandbox-policy-v1",
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "mode": mode,
+        "mode": "off",
+        "requested_mode": mode,
         "platform": platform,
         "workspace": str(workspace or ""),
-        "workspace_access": "read_only",
-        "read_boundary": "system_runtime_plus_declared_workspace_and_provider_state",
+        "workspace_access": "process_default",
+        "read_boundary": "environment_managed",
         "artifact_dir": str(artifact_dir),
         "read_paths": [str(path) for path in read_paths],
         "runtime_state_paths": [str(path) for path in runtime_state_paths],
         "write_paths": [str(path) for path in write_paths],
-        "network": "outbound_allowed" if allow_network else "blocked",
+        "network": "outbound_allowed" if requires_network else "not_requested",
         "network_policy": network_context.snapshot() if network_context is not None else None,
         "subprocess": "allowed_and_inherited",
         "environment": "allowlisted_parent_plus_runtime_explicit",
     }
-    if mode == "off":
-        return _persist_launch(
-            artifact_dir,
-            status="disabled",
-            wrapper=[],
-            message="Agent OS 隔离已由配置关闭。",
-            audit=base_audit,
-        )
-    if platform.startswith("darwin"):
-        sandbox_exec = which("sandbox-exec")
-        if sandbox_exec:
-            profile_root = settings.ensure_runtime_temp_path() / "agent-sandbox-profiles"
-            profile_root.mkdir(mode=0o700, parents=True, exist_ok=True)
-            profile_fd, profile_name = tempfile.mkstemp(
-                prefix="sandbox-", suffix=".sb", dir=profile_root
-            )
-            os.close(profile_fd)
-            profile_path = Path(profile_name)
-            profile_path.write_text(
-                _macos_profile(
-                    read_paths=read_paths,
-                    write_paths=write_paths,
-                    allow_network=allow_network,
-                    allowed_network_targets=allowed_network_targets,
-                ),
-                encoding="utf-8",
-            )
-            profile_path.chmod(0o600)
-            return _persist_launch(
-                artifact_dir,
-                status="active",
-                wrapper=[sandbox_exec, "-f", str(profile_path)],
-                message="已启用 macOS sandbox-exec 隔离。",
-                audit={**base_audit, "engine": "sandbox-exec", "profile": str(profile_path)},
-            )
-        return _unavailable(
-            artifact_dir,
-            mode=mode,
-            audit=base_audit,
-            engine="sandbox-exec",
-            required_reason=("内网 Agent 运行需要 OS 隔离。" if intranet_requires_os_sandbox else ""),
-        )
-    if platform.startswith("linux"):
-        bwrap = which("bwrap") or which("bubblewrap")
-        if bwrap:
-            wrapper = [bwrap, "--die-with-parent", "--new-session", "--tmpfs", "/"]
-            for path in read_paths:
-                if path in write_paths:
-                    continue
-                wrapper.extend(["--ro-bind", str(path), str(path)])
-            for path in write_paths:
-                wrapper.extend(["--bind", str(path), str(path)])
-            wrapper.extend(["--dev", "/dev", "--proc", "/proc"])
-            if workspace:
-                wrapper.extend(["--chdir", str(workspace)])
-            if not allow_network:
-                wrapper.append("--unshare-net")
-            return _persist_launch(
-                artifact_dir,
-                status="active",
-                wrapper=wrapper,
-                message="已启用 Linux bubblewrap 隔离。",
-                audit={**base_audit, "engine": "bubblewrap"},
-            )
-        return _unavailable(
-            artifact_dir,
-            mode=mode,
-            audit=base_audit,
-            engine="bubblewrap",
-            required_reason=("内网 Agent 运行需要 OS 隔离。" if intranet_requires_os_sandbox else ""),
-        )
-    return _unavailable(
+    return _persist_launch(
         artifact_dir,
-        mode=mode,
-        audit=base_audit,
-        engine="unsupported_platform",
-        required_reason=("内网 Agent 运行需要 OS 隔离。" if intranet_requires_os_sandbox else ""),
-    )
-
-
-def _unavailable(
-    artifact_dir: Path,
-    *,
-    mode: str,
-    audit: dict[str, Any],
-    engine: str,
-    required_reason: str = "",
-) -> AgentSandboxLaunch:
-    message = (
-        f"{required_reason}当前系统不支持所需 Agent OS 隔离（缺少 {engine}）。"
-        "请安装隔离工具，或由管理员将隔离模式改为 auto 后以降级模式运行。"
-    )
-    rejected = {**audit, "status": "rejected" if mode == "required" else "degraded", "engine": engine, "message": message}
-    _write_audit(artifact_dir, rejected)
-    if mode == "required":
-        raise AgentSandboxError(message)
-    return AgentSandboxLaunch(
-        status="degraded",
+        status="disabled",
         wrapper=[],
-        message=message,
-        audit=rejected,
+        message="Agent OS 隔离未启用；CodeTalk 按当前运行环境直接启动 Agent。",
+        audit={**base_audit, "engine": "none"},
     )
 
 

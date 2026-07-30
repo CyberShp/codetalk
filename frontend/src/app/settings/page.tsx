@@ -81,48 +81,44 @@ const MANAGED_AGENT_TRANSPORTS = new Set<AgentRuntimeCreate["prompt_transport"]>
 ]);
 
 const NETWORK_MODE_LABEL: Record<DeploymentNetworkPolicy["mode"], string> = {
-  developer: "开发模式",
-  intranet: "内网模式",
-  strict_compliance: "严格合规模式",
+  developer: "运行环境直连",
+  intranet: "运行环境直连",
+  strict_compliance: "运行环境直连",
 };
 
 const NETWORK_MODE_DESCRIPTION: Record<DeploymentNetworkPolicy["mode"], string> = {
-  developer: "部署允许开发环境直连；遥测、远程追踪和 Hosted MCP 仍由系统禁用。",
-  intranet: "外部访问必须经过管理员批准的企业出站边界，用户配置不能绕过部署策略。",
-  strict_compliance: "仅允许由部署强制隔离的出站路径，未满足边界条件的执行器会被阻断。",
+  developer: "CodeTalk 不做出站审批或安全边界配置；模型和 Agent 按当前运行环境直接连接。",
+  intranet: "CodeTalk 不做出站审批或安全边界配置；模型和 Agent 按当前运行环境直接连接。",
+  strict_compliance: "CodeTalk 不做出站审批或安全边界配置；模型和 Agent 按当前运行环境直接连接。",
 };
 
 const NETWORK_BOUNDARY_LABEL: Record<DeploymentNetworkPolicy["boundary"], string> = {
-  none: "未配置批准出站边界",
-  approved_proxy_gateway: "已批准企业代理网关",
-  deployment_egress_policy: "部署出站策略",
+  none: "不由 CodeTalk 管理",
+  approved_proxy_gateway: "不由 CodeTalk 管理",
+  deployment_egress_policy: "不由 CodeTalk 管理",
 };
 
 function networkReasonLabel(reason: string | null) {
   const normalized = String(reason || "").trim();
   const labels: Record<string, string> = {
-    boundary_not_configured: "尚未配置批准的出站边界",
-    approved_proxy_not_configured: "企业代理尚未由管理员配置",
-    deployment_egress_policy_missing: "部署出站策略尚未配置",
-    strict_compliance_os_network_isolation_missing: "严格合规模式缺少操作系统网络隔离",
-    intranet_agent_egress_not_enforced: "部署尚未确认 Agent 的受控出站边界",
-    intranet_egress_boundary_required: "尚未配置批准的 Agent 出站边界",
-    approved_proxy_configuration_missing: "企业代理地址或配置 ID 不完整",
-    strict_compliance_os_isolation_required: "严格合规模式尚未启用操作系统网络隔离",
-    strict_compliance_egress_boundary_required: "严格合规模式尚未配置精细出站边界",
-    legacy_intranet_egress_not_certified: "旧版内网配置尚未认证 Agent 出站边界",
-    legacy_sandbox_network_disabled: "旧版沙箱配置已禁止 Agent 访问网络",
+    boundary_not_configured: "CodeTalk 不要求配置出站边界",
+    approved_proxy_not_configured: "CodeTalk 不要求配置企业代理",
+    deployment_egress_policy_missing: "CodeTalk 不要求配置部署出站策略",
+    strict_compliance_os_network_isolation_missing: "CodeTalk 不要求操作系统网络隔离",
+    intranet_agent_egress_not_enforced: "CodeTalk 不要求 Agent 受控出站边界",
+    intranet_egress_boundary_required: "CodeTalk 不要求批准的 Agent 出站边界",
+    approved_proxy_configuration_missing: "CodeTalk 不要求代理地址或配置 ID",
+    strict_compliance_os_isolation_required: "CodeTalk 不要求操作系统网络隔离",
+    strict_compliance_egress_boundary_required: "CodeTalk 不要求精细出站边界",
+    legacy_intranet_egress_not_certified: "CodeTalk 不要求旧版内网出站认证",
+    legacy_sandbox_network_disabled: "CodeTalk 不用沙箱配置阻断 Agent 网络",
   };
-  return labels[normalized] || "部署策略当前不允许 CLI Agent 访问模型端点";
-}
-
-function deploymentStatus(value: boolean, ready = "已配置", missing = "未配置") {
-  return value ? ready : missing;
+  return labels[normalized] || "CodeTalk 不拦截 CLI Agent 网络访问";
 }
 
 function userFacingLlmTestResult(message: string) {
   if (/运行时出站策略拒绝|host_not_allowlisted|direct_address_not_allowlisted/.test(message)) {
-    return "内网部署策略未批准该模型端点，请联系管理员配置批准的模型服务后重试。";
+    return "模型连接被当前运行环境拒绝。CodeTalk 不拦截模型地址，请检查模型配置、凭据或公司网络。";
   }
   return message;
 }
@@ -133,8 +129,8 @@ function NetworkMigrationPreview({ migration }: {
   if (!migration || migration.contract_version !== 1) {
     return (
       <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-on-surface">
-        <p className="font-medium">不支持的设置迁移契约版本</p>
-        <p className="mt-1">当前部署设置保持只读，不会自动迁移或写入。请联系管理员升级后端或确认部署配置。</p>
+        <p className="font-medium">运行环境状态暂不可读</p>
+        <p className="mt-1">这不会影响模型或 Agent 使用；CodeTalk 不要求用户配置网络边界。</p>
       </div>
     );
   }
@@ -142,15 +138,15 @@ function NetworkMigrationPreview({ migration }: {
   if (!migration.admin_confirmation_required) {
     return (
       <p className="border-t border-outline-variant/15 pt-3 text-xs leading-5 text-on-surface-variant">
-        网络模式已由当前部署配置明确声明。迁移契约 V{migration.contract_version} 仅供只读核对，不会写入用户设置。
+        CodeTalk 不管理出站安全边界，也不会把模型或 Agent 启动卡在网络策略配置上。
       </p>
     );
   }
 
   return (
     <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-on-surface">
-      <p className="font-medium">旧版网络模式迁移预览</p>
-      <p className="mt-1">{migration.admin_guidance || "请联系管理员确认部署网络模式。"}</p>
+      <p className="font-medium">运行环境网络</p>
+      <p className="mt-1">{migration.admin_guidance || "CodeTalk 不要求迁移或配置出站边界。"}</p>
     </div>
   );
 }
@@ -163,7 +159,7 @@ function DeploymentNetworkPolicyPanel({ policy, error }: {
   const mode = policy ? NETWORK_MODE_LABEL[policy.mode] : "状态未知";
 
   return (
-    <section className="mb-6 rounded-xl border border-outline-variant/20 bg-surface-container" aria-label="部署网络策略">
+    <section className="mb-6 rounded-xl border border-outline-variant/20 bg-surface-container" aria-label="运行环境网络">
       <button
         type="button"
         onClick={() => setExpanded((value) => !value)}
@@ -171,13 +167,13 @@ function DeploymentNetworkPolicyPanel({ policy, error }: {
         className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
       >
         <span>
-          <span className="flex items-center gap-2 text-sm font-semibold text-on-surface">
-            <ShieldCheck size={17} />
-            部署网络策略
-          </span>
-          <span className="mt-1 block text-xs text-on-surface-variant">
-            管理员部署配置，只读展示，不能由当前用户修改或伪造批准。
-          </span>
+            <span className="flex items-center gap-2 text-sm font-semibold text-on-surface">
+              <Globe size={17} />
+              运行环境网络
+            </span>
+            <span className="mt-1 block text-xs text-on-surface-variant">
+              CodeTalk 不要求配置出站边界；模型和 Agent 按当前公司内网环境运行。
+            </span>
         </span>
         <span className="flex items-center gap-2 text-xs text-on-surface-variant">
           {mode}
@@ -197,31 +193,23 @@ function DeploymentNetworkPolicyPanel({ policy, error }: {
                   </p>
                 </div>
                 <span className="rounded-full border border-outline-variant/20 bg-surface px-2.5 py-1 font-data text-[11px] text-on-surface-variant">
-                  策略 ID：{policy.policy_id || "未提供"}
+                  {policy.policy_id || "codetalk-passthrough"}
                 </span>
               </div>
 
               <div className="grid gap-x-6 gap-y-3 border-t border-outline-variant/15 pt-3 sm:grid-cols-2 xl:grid-cols-3">
-                <PolicyStatus label="模型访问" value={policy.boundary === "none" ? "由批准 Provider Adapter 单独判断" : "由部署批准边界管理"} detail="CLI Agent 的网络状态不会把内置模型误报为不可用。" />
-                <PolicyStatus label="CLI Agent" value={policy.cli_network_ready ? "可使用批准网络路径" : "CLI Agent 已被部署策略阻断"} detail={policy.cli_network_ready ? "探测与实际运行使用同一部署策略。" : `${networkReasonLabel(policy.cli_block_reason)}。${policy.cli_remediation || "请联系管理员配置批准边界后重试。"}`} tone={policy.cli_network_ready ? "ok" : "warn"} />
-                <PolicyStatus label="企业代理" value={deploymentStatus(policy.approved_proxy_configured)} detail={policy.approved_proxy_configured ? `配置 ID：${policy.approved_proxy_config_id || "未提供"}` : "未显示代理地址或凭据。"} tone={policy.approved_proxy_configured ? "ok" : "neutral"} />
-                <PolicyStatus label="代理绕过规则" value={deploymentStatus(policy.approved_no_proxy)} detail="仅显示是否已由部署配置，不展示内部域名规则。" tone={policy.approved_no_proxy ? "ok" : "neutral"} />
-                <PolicyStatus label="CA 证书" value={deploymentStatus(policy.approved_ca_configured)} detail={policy.approved_ca_configured ? "已由部署注入，不展示证书路径。" : "如企业代理使用私有 CA，请联系管理员配置。"} tone={policy.approved_ca_configured ? "ok" : "neutral"} />
-                <PolicyStatus label="出站边界" value={NETWORK_BOUNDARY_LABEL[policy.boundary]} detail={policy.deployment_egress_policy_id ? `策略 ID：${policy.deployment_egress_policy_id}` : "未显示网络地址或规则内容。"} tone={policy.boundary === "none" ? "warn" : "ok"} />
-                <PolicyStatus label="遥测" value={policy.telemetry === "disabled" ? "已禁用" : "受部署策略管理"} detail="CodeTalk 不会自行向第三方发送遥测。" />
-                <PolicyStatus label="远程追踪" value={policy.remote_tracing === "disabled" ? "已禁用" : "受部署策略管理"} detail="不启用外部追踪服务。" />
-                <PolicyStatus label="Hosted MCP" value={policy.hosted_mcp === "forbidden" ? "已禁止" : "受部署策略管理"} detail="不连接第三方托管 MCP；本地 MCP 不受影响。" />
+                <PolicyStatus label="模型访问" value="直接使用模型配置" detail="CodeTalk 不做 Host、CIDR 或 API Path 出站审批。" />
+                <PolicyStatus label="CLI Agent" value={policy.cli_network_ready ? "直接运行" : "运行环境返回不可用"} detail={policy.cli_network_ready ? "CodeTalk 不因网络策略阻断 Agent 探测或执行。" : networkReasonLabel(policy.cli_block_reason)} tone={policy.cli_network_ready ? "ok" : "warn"} />
+                <PolicyStatus label="进程启动" value="直接启动" detail="Agent 按当前进程环境启动，CodeTalk 不额外包裹执行器。" />
+                <PolicyStatus label="代理配置" value="沿用运行环境" detail="如需要代理、CA 或内网访问，请由当前运行环境提供。" />
+                <PolicyStatus label="出站边界" value={NETWORK_BOUNDARY_LABEL[policy.boundary]} detail="公司内网和终端管控负责网络安全，CodeTalk 不要求用户配置。" />
+                <PolicyStatus label="运行审计" value="保留基础记录" detail="仅记录是否请求网络、模型配置结果和 Agent 启动状态，不做安全裁决。" />
               </div>
               <NetworkMigrationPreview migration={policy.migration_preview} />
-              {policy.mode === "intranet" && (
-                <p className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-on-surface">
-                  内网模式下，下面的通用模型代理仅用于模型客户端配置，最终受部署批准策略约束。
-                </p>
-              )}
             </div>
           ) : (
             <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-sm text-on-surface">
-              无法读取部署网络策略。{error || "请确认后端服务与管理员部署配置后刷新。"}
+              无法读取运行环境状态。{error || "这不会影响模型或 Agent 使用；CodeTalk 不要求网络边界配置。"}
             </div>
           )}
         </div>
@@ -1057,13 +1045,13 @@ export default function SettingsPage() {
                     onChange={(event) => updateAgentRuntimeForm("requires_network", event.target.value === "networked")}
                     className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface focus:border-primary/50 focus:outline-none"
                   >
-                    <option value="networked">联网 Agent（需要批准边界）</option>
-                    <option value="offline">离线 Agent（OS 网络隔离）</option>
+                    <option value="networked">联网 Agent</option>
+                    <option value="offline">离线 Agent</option>
                   </select>
                   <p className="mt-1 text-[11px] leading-4 text-on-surface-variant">
                     {agentRuntimeForm.requires_network
-                      ? "联网 Agent 仅能使用管理员部署批准的网络边界。"
-                      : "离线 Agent 将被 OS 网络隔离，不能访问模型端点或其他网络服务。"}
+                      ? "声明该 Agent 的任务可能访问网络；CodeTalk 不额外配置或审批出站边界。"
+                      : "声明该 Agent 不需要主动访问网络；CodeTalk 不会因此强制 OS 沙箱。"}
                   </p>
                 </div>
                 <div>
@@ -1803,7 +1791,7 @@ export default function SettingsPage() {
           <div className="bg-surface-container rounded-xl border border-outline-variant/20 p-5 space-y-4">
             {deploymentNetworkPolicy?.mode === "intranet" && (
               <p className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-on-surface">
-                当前为内网模式。通用模型代理表单仍可配置，但最终受部署批准策略约束，不能用此处的地址绕过企业网关。
+                当前运行在公司内网环境。通用模型代理表单只影响模型客户端连接，CodeTalk 不额外配置出站边界。
               </p>
             )}
             <div>

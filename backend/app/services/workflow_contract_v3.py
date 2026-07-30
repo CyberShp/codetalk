@@ -546,7 +546,7 @@ def _declared_outputs(nodes: dict[str, dict[str, Any]], edges: list[dict[str, An
             "label": str(node.get("label") or config.get("label") or output_id),
             "artifact": artifact,
             "media_type": media_type,
-            "type": _legacy_output_type(media_type),
+            "type": str(config.get("type") or _legacy_output_type(media_type)),
             "required": bool(config.get("required", False)),
             "schema": config.get("schema"),
             **(

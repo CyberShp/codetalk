@@ -4570,7 +4570,7 @@ async def test_task_run_ui_summary_explains_agent_preflight_block_before_a_node_
                     {
                         "provider": "agent-runtime:default-codex",
                         "success": False,
-                        "message": "内网策略未批准 Agent 访问模型端点：请使用内置模型。",
+                        "message": "运行环境暂时无法连接模型端点：请检查模型配置或当前网络。",
                     }
                 ]
             },
@@ -4594,7 +4594,7 @@ async def test_task_run_ui_summary_explains_agent_preflight_block_before_a_node_
     assert summary["failure"]["failed_node_id"] == ""
     assert summary["failure"]["preflight_blocked"] is True
     assert summary["failure"]["reasons"] == [
-        "内网策略未批准 Agent 访问模型端点：请使用内置模型。",
+        "运行环境暂时无法连接模型端点：请检查模型配置或当前网络。",
     ]
     assert summary["failure"]["actions"] == ["检查执行器设置", "查看内部诊断"]
 
@@ -4618,7 +4618,7 @@ async def test_task_run_ui_summary_prioritizes_agent_preflight_over_quality_conf
                     {
                         "provider": "agent-runtime:default-codex",
                         "success": False,
-                        "message": "内网策略未批准 Agent 访问模型端点。",
+                        "message": "运行环境暂时无法连接模型端点。",
                     },
                     {
                         "provider": "independent-quality-audit",
@@ -4644,7 +4644,7 @@ async def test_task_run_ui_summary_prioritizes_agent_preflight_over_quality_conf
     summary = _build_task_run_ui_summary(task_run, task_root)
 
     assert summary["failure"]["preflight_kind"] == "agent_runtime"
-    assert summary["failure"]["reasons"][0] == "内网策略未批准 Agent 访问模型端点。"
+    assert summary["failure"]["reasons"][0] == "运行环境暂时无法连接模型端点。"
 
 
 async def test_task_run_preflight_blocks_missing_independent_quality_audit(

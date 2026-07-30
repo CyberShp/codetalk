@@ -10,7 +10,7 @@ def test_harness_event_normalizer_maps_provider_noise_to_product_events():
     assert artifact.kind == "artifact_created"
     assert artifact.visibility == "user"
     assert blocked.kind == "network_egress_blocked"
-    assert blocked.user_message == "受控出站策略已阻止未批准连接"
+    assert blocked.user_message == "运行环境返回连接不可用"
     assert blocked.visibility == "user"
 
 

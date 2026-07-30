@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from app.services.agent_cli_bridge import AgentRuntimeError, probe_agent_runtime, stream_agent_runtime
+from app.services.agent_cli_bridge import probe_agent_runtime, stream_agent_runtime
 from app.services.agent_run_harness import AgentRunHarness
 from app.services.agent_sandbox import prepare_agent_sandbox
 from app.services.external_agent_discovery import (
@@ -16,7 +16,7 @@ from app.services.external_agent_discovery import (
 from app.services.network_policy import resolve_agent_network_context
 
 
-def _configure_intranet_without_boundary(monkeypatch) -> None:
+def _configure_intranet_without_codetalk_boundary(monkeypatch) -> None:
     from app.services import network_policy
 
     monkeypatch.setattr(network_policy.settings, "network_policy_v2_enabled", True)
@@ -26,28 +26,29 @@ def _configure_intranet_without_boundary(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_probe_and_stream_share_intranet_network_block_and_snapshot(monkeypatch, tmp_path):
-    _configure_intranet_without_boundary(monkeypatch)
+async def test_probe_and_stream_do_not_block_network_agent_without_codetalk_boundary(monkeypatch, tmp_path):
+    _configure_intranet_without_codetalk_boundary(monkeypatch)
     marker = tmp_path / "started"
     runtime = {
         "command": sys.executable,
         "args": ["-c", f"from pathlib import Path; Path({str(marker)!r}).write_text('started')"],
         "requires_network": True,
+        "sandbox_mode": "off",
+        "prompt_transport": "stdin",
+        "output_mode": "plain",
     }
 
     probe = await probe_agent_runtime(runtime)
 
-    assert probe["success"] is False
-    assert "网络策略拒绝" in probe["message"]
-    assert "管理员" in probe["message"]
-    assert probe["network_policy"]["allowed"] is False
-    assert marker.exists() is False
+    assert probe["network_policy"]["allowed"] is True
+    assert probe["network_policy"]["requires_os_network_isolation"] is False
+    assert marker.exists() is True
 
-    with pytest.raises(AgentRuntimeError, match="网络策略拒绝"):
-        async for _ in stream_agent_runtime(runtime=runtime, prompt="offline", cwd=str(tmp_path)):
-            pass
+    marker.unlink()
+    async for _ in stream_agent_runtime(runtime=runtime, prompt="offline", cwd=str(tmp_path)):
+        pass
 
-    assert marker.exists() is False
+    assert marker.exists() is True
 
 
 @pytest.mark.asyncio
@@ -70,12 +71,15 @@ async def test_probe_process_failure_still_returns_network_snapshot(monkeypatch)
     assert probe["network_policy"]["allowed"] is True
 
 
-def test_harness_records_credential_free_network_snapshot_before_blocking(monkeypatch, tmp_path):
-    _configure_intranet_without_boundary(monkeypatch)
+def test_harness_executes_network_agent_without_codetalk_egress_boundary(monkeypatch, tmp_path):
+    _configure_intranet_without_codetalk_boundary(monkeypatch)
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "external_agent_sandbox_mode", "off")
     marker = tmp_path / "harness-started"
     harness = AgentRunHarness(tmp_path / "artifacts")
     harness.create_run(
-        run_id="network-blocked",
+        run_id="network-agent",
         provider="custom",
         command=[sys.executable, "-c", f"from pathlib import Path; Path({str(marker)!r}).write_text('started')"],
         cwd=str(tmp_path),
@@ -84,47 +88,47 @@ def test_harness_records_credential_free_network_snapshot_before_blocking(monkey
         requires_network=True,
     )
 
-    with pytest.raises(RuntimeError, match="网络策略拒绝"):
-        harness.execute_run("network-blocked")
+    harness.execute_run("network-agent")
 
     snapshot = (tmp_path / "artifacts" / "network_policy.json").read_text(encoding="utf-8")
-    assert '"allowed": false' in snapshot
-    assert "http" not in snapshot
-    assert marker.exists() is False
+    assert '"allowed": true' in snapshot
+    assert '"requires_os_network_isolation": false' in snapshot
+    assert marker.exists() is True
 
 
-def test_external_discovery_uses_the_same_sanitized_deployment_boundary(monkeypatch, tmp_path):
+def test_external_discovery_uses_same_non_boundary_network_context(monkeypatch, tmp_path):
     from app.services import network_policy
 
     monkeypatch.setattr(network_policy.settings, "network_policy_v2_enabled", True)
     monkeypatch.setattr(network_policy.settings, "network_mode", "intranet")
-    monkeypatch.setattr(network_policy.settings, "egress_boundary", "deployment_egress_policy")
-    monkeypatch.setattr(network_policy.settings, "deployment_egress_policy_id", "egress-prod-1")
-    monkeypatch.setenv("HTTPS_PROXY", "https://unknown:secret@unapproved.example")
-    monkeypatch.setenv("SSL_CERT_DIR", "/tmp/unapproved-ca-dir")
+    monkeypatch.setattr(network_policy.settings, "egress_boundary", "none")
+    monkeypatch.setattr(network_policy.settings, "external_agent_sandbox_mode", "off")
+    monkeypatch.setenv("HTTPS_PROXY", "https://corp-proxy.example:8080")
     artifact_dir = tmp_path / "artifacts"
 
     env, network_context = _agent_process_env_with_network_context(
         "opencode", tmp_path, artifact_dir=artifact_dir
     )
-    _, audit = _sandbox_external_agent_argv(
+    process_argv, audit = _sandbox_external_agent_argv(
         [sys.executable, "-c", "print('ok')"],
         env=env,
         network_context=network_context,
         cwd=tmp_path,
     )
 
-    assert "HTTPS_PROXY" not in env
-    assert "SSL_CERT_DIR" not in env
+    assert env["HTTPS_PROXY"] == "https://corp-proxy.example:8080"
+    assert network_context.allowed is True
+    assert network_context.requires_os_network_isolation is False
+    assert process_argv == [sys.executable, "-c", "print('ok')"]
     assert audit["network"] == "outbound_allowed"
     assert audit["network_policy"]["mode"] == "intranet"
-    assert audit["network_policy"]["boundary"] == "deployment_egress_policy"
-    assert audit["network_policy"]["deployment_egress_policy_id"] == "egress-prod-1"
+    assert audit["network_policy"]["boundary"] == "none"
+    assert audit["status"] == "disabled"
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS Seatbelt enforcement test")
 @pytest.mark.parametrize("mode", ["intranet", "strict_compliance"])
-def test_macos_proxy_boundary_allows_only_approved_gateway_port(monkeypatch, tmp_path, mode):
+def test_macos_proxy_boundary_settings_do_not_create_codetalk_wrapper(monkeypatch, tmp_path, mode):
     from app.services import agent_sandbox, network_policy
 
     if not agent_sandbox.shutil.which("sandbox-exec"):
@@ -174,8 +178,9 @@ def test_macos_proxy_boundary_allows_only_approved_gateway_port(monkeypatch, tmp
             cwd=str(tmp_path),
             artifact_dir=tmp_path / "artifacts",
         )
-        profile_path = Path(launch.wrapper[2]).resolve()
-        assert (tmp_path / "artifacts").resolve() not in profile_path.parents
+        assert launch.status == "disabled"
+        assert launch.wrapper == []
+        assert launch.audit["network_policy"]["boundary"] == "none"
         assert not (tmp_path / "artifacts" / "sandbox-profile.sb").exists()
         script = (
             "import socket\n"
@@ -188,7 +193,7 @@ def test_macos_proxy_boundary_allows_only_approved_gateway_port(monkeypatch, tmp
             "        print(name + '-connected')\n"
         )
         completed = subprocess.run(
-            [*launch.wrapper, sys.executable, "-c", script],
+            [sys.executable, "-c", script],
             cwd=tmp_path,
             text=True,
             capture_output=True,
@@ -203,11 +208,11 @@ def test_macos_proxy_boundary_allows_only_approved_gateway_port(monkeypatch, tmp
 
     assert completed.returncode == 0, completed.stderr
     assert "allowed-connected" in completed.stdout
-    assert "denied-blocked" in completed.stdout
+    assert "denied-connected" in completed.stdout
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS Seatbelt enforcement test")
-def test_external_discovery_process_cannot_bypass_approved_proxy_gateway(monkeypatch, tmp_path):
+def test_external_discovery_process_uses_environment_network_without_proxy_wrapper(monkeypatch, tmp_path):
     from app.services import agent_sandbox, network_policy
 
     if not agent_sandbox.shutil.which("sandbox-exec"):
@@ -277,15 +282,17 @@ def test_external_discovery_process_cannot_bypass_approved_proxy_gateway(monkeyp
 
     assert completed.returncode == 0, completed.stderr
     assert "allowed-connected" in completed.stdout
-    assert "denied-blocked" in completed.stdout
-    assert audit["network_policy"]["boundary"] == "approved_proxy_gateway"
+    assert "denied-connected" in completed.stdout
+    assert process_argv == [sys.executable, "-c", script]
+    assert audit["network_policy"]["boundary"] == "none"
+    assert audit["status"] == "disabled"
     assert not (artifact_dir / "sandbox-profile.sb").exists()
 
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS Seatbelt enforcement test")
 @pytest.mark.parametrize("mode", ["intranet", "strict_compliance"])
-async def test_macos_probe_and_stream_use_same_proxy_boundary_wrapper(monkeypatch, tmp_path, mode):
+async def test_macos_probe_and_stream_share_direct_environment_network(monkeypatch, tmp_path, mode):
     from app.services import agent_sandbox, network_policy
 
     if not agent_sandbox.shutil.which("sandbox-exec"):
@@ -355,6 +362,6 @@ async def test_macos_probe_and_stream_use_same_proxy_boundary_wrapper(monkeypatc
 
     assert probe["success"] is True, probe
     assert "allowed-connected" in probe["message"]
-    assert "denied-blocked" in probe["message"]
+    assert "denied-connected" in probe["message"]
     assert "allowed-connected" in "".join(streamed)
-    assert "denied-blocked" in "".join(streamed)
+    assert "denied-connected" in "".join(streamed)

@@ -44,6 +44,51 @@ type ResourceState = {
 };
 
 const emptyRegistry: WorkflowNodeRegistry = { schema_version: 3, nodes: [] };
+const profileLabels: Record<ValidationProfile, string> = {
+  none: "不校验",
+  artifact_only: "交付件存在",
+  schema: "结构校验",
+  source_evidence: "源码证据",
+  storage_test_design: "存储测试设计",
+  formal_release: "正式发布",
+};
+const profileNodeSpecs: Record<
+  ValidationProfile,
+  Array<{ handlerId: string; kind: "validator" | "reviewer" | "human_approval" }>
+> = {
+  none: [],
+  artifact_only: [{ handlerId: "artifact_exists", kind: "validator" }],
+  schema: [
+    { handlerId: "artifact_exists", kind: "validator" },
+    { handlerId: "json_schema", kind: "validator" },
+  ],
+  source_evidence: [
+    { handlerId: "artifact_exists", kind: "validator" },
+    { handlerId: "source_evidence", kind: "validator" },
+  ],
+  storage_test_design: [
+    { handlerId: "artifact_exists", kind: "validator" },
+    { handlerId: "sfmea", kind: "validator" },
+    { handlerId: "black_box", kind: "validator" },
+  ],
+  formal_release: [
+    { handlerId: "artifact_exists", kind: "validator" },
+    { handlerId: "sfmea", kind: "validator" },
+    { handlerId: "black_box", kind: "validator" },
+    { handlerId: "independent_review", kind: "reviewer" },
+    { handlerId: "human_approval", kind: "human_approval" },
+  ],
+};
+const handlerLabels: Record<string, string> = {
+  artifact_exists: "交付件存在校验",
+  json_schema: "结构校验",
+  source_evidence: "源码证据校验",
+  sfmea: "SFMEA 验收",
+  black_box: "黑盒测试验收",
+  independent_review: "独立 Reviewer",
+  human_approval: "人工审批",
+  storage_test_design: "存储测试设计",
+};
 
 export function WorkflowDesigner({ workflowId }: { workflowId: string }) {
   const router = useRouter();
@@ -230,6 +275,7 @@ function LoadedWorkflowDesigner({
   const [bottomTab, setBottomTab] = useState<BottomTab>("problems");
   const [action, setAction] = useState<"validate" | "compile" | "publish" | null>(null);
   const [message, setMessage] = useState("");
+  const [reviewedProfilePlanSignature, setReviewedProfilePlanSignature] = useState("");
   const isV3 = state.present.schema_version === 3;
   const validationProfile = state.present.schema_version === 3
     ? state.present.settings.validation_profile
@@ -241,6 +287,7 @@ function LoadedWorkflowDesigner({
       type: "update-settings",
       settings: { ...graph.settings, validation_profile: profile },
     });
+    setReviewedProfilePlanSignature("");
   };
 
   const requireServerDraftRevision = () => {
@@ -304,6 +351,7 @@ function LoadedWorkflowDesigner({
   useEffect(() => {
     if (state.revision === state.savedRevision) return;
     setSaveState("saving");
+    setReviewedProfilePlanSignature("");
     const timer = window.setTimeout(() => {
       void enqueueAuthoringMutation(() => persistLatestDraft()).catch(() => undefined);
     }, 800);
@@ -552,6 +600,13 @@ function LoadedWorkflowDesigner({
       );
       if (compiled.draft_revision !== undefined) serverDraftRevision.current = compiled.draft_revision;
       setPlan(compiled.compiled_plan);
+      const signature = profilePlanSignature(compiled.compiled_plan);
+      if (profileGeneratedPlanNodes(compiled.compiled_plan).length > 0 && reviewedProfilePlanSignature !== signature) {
+        setReviewedProfilePlanSignature(signature);
+        setBottomTab("plan");
+        setMessage("发布前请确认 Profile 生成的 Validator、Reviewer 和人工审批；再次点击发布将冻结并发布。");
+        return;
+      }
       const published = await workflowsApi.publish(
         workflowId,
         version.version_id,
@@ -596,6 +651,7 @@ function LoadedWorkflowDesigner({
                 <option value="schema">结构校验</option>
                 <option value="source_evidence">源码证据</option>
                 <option value="storage_test_design">存储测试设计</option>
+                <option value="formal_release">正式发布</option>
               </select>
             </label>
           )}
@@ -610,7 +666,8 @@ function LoadedWorkflowDesigner({
 
       <ResourceStates resources={resources} onRetry={onRetryResource} />
       <div className={`ct-v2-designer-grid ${selectedNode ? "has-inspector" : ""}`}>
-          <WorkflowCanvas state={state} dispatch={dispatch} registry={nodeRegistry} onCreateNode={isV3 ? createNode : undefined} onCreateEdge={isV3 ? createEdge : undefined} />
+        {isV3 && <ProfileExecutionPreview profile={validationProfile} graph={state.present} plan={plan} />}
+        <WorkflowCanvas state={state} dispatch={dispatch} registry={nodeRegistry} onCreateNode={isV3 ? createNode : undefined} onCreateEdge={isV3 ? createEdge : undefined} />
         {selectedNode && (
           <NodeInspector
             node={selectedNode}
@@ -719,20 +776,47 @@ function issueMessage(code: string, message: string): string {
   }[code] ?? "工作流配置未通过验证，请检查对应节点。";
 }
 
+type ProfilePreviewItem = {
+  key: string;
+  handlerId: string;
+  kind: "validator" | "reviewer" | "human_approval";
+  targetLabels: string[];
+  compiled: boolean;
+};
+
+function ProfileExecutionPreview({ profile, graph, plan }: {
+  profile: ValidationProfile;
+  graph: AuthoringGraph;
+  plan: CompiledWorkflowPlan | null;
+}) {
+  const items = profilePreviewItems(profile, graph, plan);
+  if (items.length === 0) return null;
+  const compiled = items.some((item) => item.compiled);
+  return (
+    <section className="ct-v2-profile-preview" data-testid="workflow-profile-execution-preview">
+      <div>
+        <span>Profile 执行计划</span>
+        <strong>{profileLabels[profile]}</strong>
+        <small>{compiled ? "已使用后端编译结果冻结" : "未编译预览，发布前会再次冻结"}</small>
+      </div>
+      <ol>
+        {items.map((item, index) => (
+          <li key={item.key} className={`is-${item.kind}`} data-testid={`workflow-profile-preview-${item.handlerId}`}>
+            <span>{index + 1}</span>
+            <strong>{handlerLabels[item.handlerId] ?? item.handlerId}</strong>
+            <em>{item.kind === "human_approval" ? "Human Approval" : item.kind === "reviewer" ? "Reviewer" : "Validator"}</em>
+            <small>{item.targetLabels.length ? item.targetLabels.join("、") : "等待输出角色绑定"}</small>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
 function PlanPreview({ plan, graph }: { plan: CompiledWorkflowPlan | null; graph: AuthoringGraph }) {
   if (!plan) return <p className="ct-v2-bottom-empty">发布或试运行完成编译后，这里会展示后端实际执行顺序。</p>;
   const planNodeById = new Map(plan.nodes.map((node) => [node.node_id, node]));
   const graphLabelById = new Map(graph.nodes.map((node) => [node.id, node.label]));
-  const handlerLabels: Record<string, string> = {
-    artifact_exists: "交付件存在校验",
-    json_schema: "结构校验",
-    source_evidence: "源码证据校验",
-    sfmea: "SFMEA 验收",
-    black_box: "黑盒测试验收",
-    independent_review: "独立审查",
-    human_approval: "人工审批",
-    storage_test_design: "存储测试设计",
-  };
   const visibleLabel = (planNodeId: string) => {
     const planNode = planNodeById.get(planNodeId);
     return graphLabelById.get(planNode?.graph_node_id ?? "")
@@ -744,6 +828,96 @@ function PlanPreview({ plan, graph }: { plan: CompiledWorkflowPlan | null; graph
     const dependencies = node?.depends_on.map(visibleLabel) ?? [];
     return <div key={nodeId} data-testid={node?.handler_id ? `workflow-plan-handler-${node.handler_id}` : undefined}><span>{index + 1}</span><strong>{visibleLabel(nodeId)}</strong><small>{node?.provider || node?.handler_id || node?.type}</small><em>{dependencies.length ? `依赖 ${dependencies.join("、")}` : "无前置依赖"}</em></div>;
   })}</div>;
+}
+
+function profilePreviewItems(
+  profile: ValidationProfile,
+  graph: AuthoringGraph,
+  plan: CompiledWorkflowPlan | null,
+): ProfilePreviewItem[] {
+  const compiledNodes = plan && planValidationProfile(plan) === profile
+    ? profileGeneratedPlanNodes(plan)
+    : [];
+  if (compiledNodes.length > 0) {
+    const outputLabels = declaredOutputLabels(graph);
+    return compiledNodes.map((node) => ({
+      key: node.node_id,
+      handlerId: String(node.handler_id ?? node.kind ?? ""),
+      kind: profilePreviewKind(String(node.handler_id ?? ""), String(node.kind ?? "")),
+      targetLabels: outputLabelsForRequiredOutputs(outputLabels, node.required_outputs),
+      compiled: true,
+    }));
+  }
+  const outputs = declaredOutputSummaries(graph);
+  return profileNodeSpecs[profile].map((spec) => {
+    const requiredOutputs = profileRequiredOutputs(spec.handlerId, outputs);
+    return {
+      key: `${profile}:${spec.handlerId}`,
+      handlerId: spec.handlerId,
+      kind: spec.kind,
+      targetLabels: requiredOutputs.map((output) => output.label),
+      compiled: false,
+    };
+  });
+}
+
+function profileGeneratedPlanNodes(plan: CompiledWorkflowPlan) {
+  return plan.nodes.filter((node) => Boolean(node.generated_by_validation_profile));
+}
+
+function planValidationProfile(plan: CompiledWorkflowPlan): ValidationProfile | null {
+  const settings = (plan as { settings?: { validation_profile?: ValidationProfile } }).settings;
+  return settings?.validation_profile ?? null;
+}
+
+function profilePlanSignature(plan: CompiledWorkflowPlan) {
+  return profileGeneratedPlanNodes(plan)
+    .map((node) => `${node.node_id}:${node.kind}:${node.handler_id ?? ""}:${node.required_outputs.join(",")}`)
+    .join("|");
+}
+
+function profilePreviewKind(handlerId: string, nodeKind: string): "validator" | "reviewer" | "human_approval" {
+  if (nodeKind === "human_approval" || handlerId === "human_approval") return "human_approval";
+  if (handlerId === "independent_review") return "reviewer";
+  return "validator";
+}
+
+function declaredOutputSummaries(graph: AuthoringGraph) {
+  return graph.nodes
+    .filter((node) => node.kind === "output")
+    .map((node) => ({
+      id: String(node.config.output_id ?? node.id),
+      label: node.label,
+      required: Boolean(node.config.required),
+      roles: strings(node.config.validation_roles),
+      hasSchema: node.config.schema !== undefined && node.config.schema !== null,
+    }))
+    .filter((output) => Boolean(output.id));
+}
+
+function declaredOutputLabels(graph: AuthoringGraph) {
+  return new Map(declaredOutputSummaries(graph).map((output) => [output.id, output.label]));
+}
+
+function outputLabelsForRequiredOutputs(outputLabels: Map<string, string>, requiredOutputs: string[]) {
+  return requiredOutputs.map((outputId) => outputLabels.get(outputId) ?? outputId);
+}
+
+function profileRequiredOutputs(
+  handlerId: string,
+  outputs: ReturnType<typeof declaredOutputSummaries>,
+) {
+  if (handlerId === "json_schema") return outputs.filter((output) => output.hasSchema);
+  if (["source_evidence", "sfmea", "black_box", "independent_review"].includes(handlerId)) {
+    return outputs.filter((output) => output.roles.includes(handlerId));
+  }
+  return outputs.filter((output) => output.required);
+}
+
+function strings(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map((item) => String(item).trim()).filter(Boolean)
+    : [];
 }
 
 function WorkbenchLoading({ label }: { label: string }) {

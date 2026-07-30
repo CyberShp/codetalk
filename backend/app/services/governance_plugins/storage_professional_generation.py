@@ -35,17 +35,24 @@ def generate_storage_professional_payloads(
         repo=repo,
         evidence=evidence,
     )
+    product_evidence = _product_source_evidence(evidence)
     payloads: dict[str, list[dict[str, Any]]] = {}
     if "sfmea" in roles:
+        if not product_evidence:
+            raise StorageProfessionalGenerationError(
+                code="storage_test_design_product_source_evidence_required",
+                message="SFMEA 生成需要至少一张产品源码证据卡，测试桩或用例代码不能单独支撑产品风险。",
+                artifact_id=artifact_id,
+            )
         payloads["sfmea"] = _sfmea_rows(
-            evidence=evidence,
+            evidence=product_evidence,
             target=target,
             repo=repo,
             test_roots=test_roots,
         )
     if "black_box_cases" in roles:
         payloads["black_box_cases"] = _black_box_cases(
-            evidence=evidence,
+            evidence=product_evidence if "sfmea" in roles else evidence,
             target=target,
             repo=repo,
             test_roots=test_roots,
@@ -100,6 +107,20 @@ def _validated_explicit_evidence(
             )
         validated.append(dict(card))
     return tuple(validated)
+
+
+def _product_source_evidence(
+    evidence: tuple[dict[str, Any], ...],
+) -> tuple[dict[str, Any], ...]:
+    return tuple(
+        card for card in evidence
+        if not _is_test_or_harness_path(str(card.get("file_path") or ""))
+    )
+
+
+def _is_test_or_harness_path(file_path: str) -> bool:
+    parts = PurePosixPath(file_path).parts
+    return bool(parts) and parts[0] in {"test", "tests"}
 
 
 def _sfmea_rows(
@@ -202,6 +223,7 @@ def _black_box_cases(
     for evidence_index, card in enumerate(evidence, start=1):
         file_path = str(card["file_path"])
         module = _module_for_path(file_path)
+        evidence_label = _evidence_case_label(evidence_index)
         mapping = _test_mapping(
             card=card,
             test_roots=test_roots,
@@ -213,7 +235,9 @@ def _black_box_cases(
                 "case_id": f"storage_black_box_{case_index:03d}",
                 "case_type": "black_box_ready",
                 "test_dimension": dimension,
-                "scenario_name": f"{module} {dimension} public workflow",
+                "scenario_name": (
+                    f"{module} {dimension} public workflow for {evidence_label}"
+                ),
                 "preconditions": [
                     f"A supported public harness for {target} is available",
                     "The test target is isolated and its initial public state is recorded",
@@ -279,6 +303,10 @@ def _oracle_basis(*, dimension: str, file_path: str) -> str:
         f"Use source evidence {file_path}, documented public configuration or specification, "
         "and a same-environment normal-path baseline for the exact limit and expected status."
     )
+
+
+def _evidence_case_label(index: int) -> str:
+    return f"evidence slice {index:03d}"
 
 
 def _accept_with_canonical_professional_rules(

@@ -131,7 +131,7 @@ def test_cli_adapters_reuse_bridge_and_preserve_prompt_verbatim(
     }
     assert session.metadata["resume_token"].value == f"{provider}:resume/opaque-01"
     assert [event_type for event_type, _ in events] == [
-        "session_created",
+        "session_init",
         "activity",
         "activity",
     ]

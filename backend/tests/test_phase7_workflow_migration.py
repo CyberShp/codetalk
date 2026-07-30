@@ -236,6 +236,17 @@ def test_formal_storage_template_expands_governance_and_declared_outputs() -> No
         "sfmea.json",
         "black-box-cases.json",
     }
+    output_types = {
+        node["config"]["artifact"]: node["config"].get("type")
+        for node in graph["nodes"]
+        if node["kind"] == "output"
+    }
+    assert output_types == {
+        "flow.md": None,
+        "source-evidence.json": "json",
+        "sfmea.json": "json",
+        "black-box-cases.json": "test_cases",
+    }
     agent = next(node for node in graph["nodes"] if node["kind"] == "agent")
     governance = next(node for node in graph["nodes"] if node["kind"] == "governance")
     evidence_output = next(

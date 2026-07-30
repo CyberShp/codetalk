@@ -375,6 +375,7 @@ def _build_formal_storage_graph(
             position={"x": 1010, "y": 220},
             config={
                 "artifact": "source-evidence.json",
+                "type": "json",
                 "media_type": "application/json",
                 "schema": {"type": "array"},
             },
@@ -385,6 +386,7 @@ def _build_formal_storage_graph(
             position={"x": 1010, "y": 380},
             config={
                 "artifact": "sfmea.json",
+                "type": "json",
                 "media_type": "application/json",
                 "schema": {"type": "array"},
             },
@@ -395,6 +397,7 @@ def _build_formal_storage_graph(
             position={"x": 1010, "y": 540},
             config={
                 "artifact": "black-box-cases.json",
+                "type": "test_cases",
                 "media_type": "application/json",
                 "schema": {"type": "array"},
             },
