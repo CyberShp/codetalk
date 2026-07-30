@@ -9,6 +9,13 @@ def _write_json(path: Path, payload) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def test_runner_import_installs_artifact_path_authority_without_cycle():
+    import app.services.workbench_workflow_runner  # noqa: F401
+    from app.services.workbench_task_run import WorkbenchTaskRunStore
+
+    assert WorkbenchTaskRunStore._artifact_path_authority_installed is True
+
+
 def test_store_load_reconciles_human_labels_to_authoritative_task_and_step_paths(
     tmp_path,
 ):
@@ -77,7 +84,9 @@ def test_store_load_reconciles_human_labels_to_authoritative_task_and_step_paths
     loaded = WorkbenchTaskRunStore(store_root).load(task_run_id)
 
     expected_agent_root = task_root / "agent_runs" / "analyze_source_flow"
+    assert loaded.task_run_id == task_run_id
     assert Path(loaded.artifact_dir) == task_root.resolve()
+    assert loaded.task_bundle["task_run_id"] == task_run_id
     assert loaded.agent_runs == [
         {
             "step_id": "analyze_source_flow",
@@ -89,7 +98,9 @@ def test_store_load_reconciles_human_labels_to_authoritative_task_and_step_paths
     assert (expected_agent_root / "legacy_input.txt").read_text(encoding="utf-8") == "preserve"
 
     corrected_task = json.loads((task_root / "task_run.json").read_text(encoding="utf-8"))
+    assert corrected_task["task_run_id"] == task_run_id
     assert corrected_task["artifact_dir"] == str(task_root.resolve())
+    assert corrected_task["task_bundle"]["task_run_id"] == task_run_id
     assert corrected_task["agent_runs"][0]["step_id"] == "analyze_source_flow"
     assert corrected_task["agent_runs"][0]["artifact_dir"] == str(
         expected_agent_root.resolve()
@@ -102,6 +113,7 @@ def test_store_load_reconciles_human_labels_to_authoritative_task_and_step_paths
     corrected_bundle = json.loads(
         (expected_agent_root / "task_bundle.json").read_text(encoding="utf-8")
     )
+    assert corrected_bundle["task_run_id"] == task_run_id
     assert corrected_bundle["step_id"] == "analyze_source_flow"
 
     reconciliation = json.loads(
@@ -119,8 +131,14 @@ def test_store_load_keeps_already_canonical_paths_stable(tmp_path):
     task_run_id = "task_run_fedcba9876543210fedcba9876543210"
     task_root = store_root / task_run_id
     agent_root = task_root / "agent_runs" / "analyze_source_flow"
-    _write_json(agent_root / "agent_run.json", {"run_id": "run", "artifact_dir": str(agent_root)})
-    _write_json(agent_root / "task_bundle.json", {"step_id": "analyze_source_flow"})
+    _write_json(
+        agent_root / "agent_run.json",
+        {"run_id": "run", "artifact_dir": str(agent_root)},
+    )
+    _write_json(
+        agent_root / "task_bundle.json",
+        {"task_run_id": task_run_id, "step_id": "analyze_source_flow"},
+    )
     _write_json(
         task_root / "task_run.json",
         {
@@ -134,7 +152,10 @@ def test_store_load_keeps_already_canonical_paths_stable(tmp_path):
                 "steps": [{"id": "analyze_source_flow", "type": "agent_task"}],
             },
             "input_snapshot": {},
-            "task_bundle": {"compiled_contract_version": 3},
+            "task_bundle": {
+                "compiled_contract_version": 3,
+                "task_run_id": task_run_id,
+            },
             "agent_runs": [
                 {
                     "step_id": "analyze_source_flow",
