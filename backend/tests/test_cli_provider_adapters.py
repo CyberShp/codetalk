@@ -119,8 +119,8 @@ def test_cli_adapters_reuse_bridge_and_preserve_prompt_verbatim(
     assert runtime["args"] == ["--configured-flag"]
     assert runtime["prompt_transport"] == transport
     assert runtime["output_mode"] == output_mode
-    assert runtime["activity_timeout_seconds"] == 17
     assert runtime["total_timeout_seconds"] == 91
+    assert runtime["activity_timeout_seconds"] == runtime["total_timeout_seconds"]
     assert runtime["env"]["CODETALK_AGENT_ARTIFACT_DIR"] == str(tmp_path.resolve())
     assert result.status == "completed"
     assert result.artifacts == []
@@ -190,6 +190,22 @@ def test_cli_adapter_executes_with_frozen_config_and_live_runtime_secrets(
     assert runtime_env["OPENCODE_DISABLE_AUTOUPDATE"] == "1"
     assert runtime_env["OPENAI_API_KEY"] == "live-runtime-secret"
     assert runtime_env["CODETALK_AGENT_ARTIFACT_DIR"] == str(tmp_path.resolve())
+
+
+def test_cli_adapter_process_exit_activity_timeout_uses_total_timeout(tmp_path):
+    _, _, OpenCodeAdapter = _adapter_types()
+    session = OpenCodeAdapter(tmp_path).prepare(
+        _request(
+            "agent-runtime:phase7-opencode",
+            "run until the process exits",
+            command=["/opt/homebrew/bin/opencode"],
+        )
+    )
+
+    runtime = session.metadata["runtime"]
+
+    assert runtime["completion_mode"] == "process_exit"
+    assert runtime["activity_timeout_seconds"] == runtime["total_timeout_seconds"]
 
 
 def test_cli_adapter_exposes_only_captured_task_materials_to_the_sandbox(

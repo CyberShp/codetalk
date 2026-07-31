@@ -399,8 +399,14 @@ def prepare_isolated_opencode_home(
     config: dict[str, Any] | None = None
     if allow_artifact_writes:
         raw_config = str(
-            (config_environment or {}).get("OPENCODE_CONFIG_CONTENT") or "{}"
+            (config_environment or {}).get("OPENCODE_CONFIG_CONTENT") or ""
         ).strip()
+        if not raw_config:
+            return None, {
+                "OPENCODE_AUTO_SHARE": "false",
+                "OPENCODE_DISABLE_AUTOUPDATE": "1",
+                "OPENCODE_DISABLE_TELEMETRY": "1",
+            }
         try:
             parsed_config = json.loads(raw_config)
         except json.JSONDecodeError as exc:

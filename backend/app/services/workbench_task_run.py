@@ -265,7 +265,7 @@ def _deep_module_evidence_hints(
                 "term": term,
                 "label": label,
                 "contract_required": True,
-                "allow_same_file": True,
+                "allow_same_file": False,
             })
     return hints
 
@@ -808,6 +808,7 @@ class WorkbenchTaskRunPreparer:
                 expected_semantic_outputs=semantic_import_outputs_by_step.get(step_id, []),
                 test_activity_contract=step_test_activity_contract,
                 task_context=task_context_payload,
+                execution_profile=execution_profile,
             )
             step_bundle = {
                 **task_bundle,
@@ -2925,6 +2926,34 @@ def build_agent_mcp_requests(
     return requests
 
 
+def _executor_handoff_source_analysis_limits(
+    *,
+    step: dict[str, Any],
+    execution_profile: dict[str, Any] | None,
+) -> dict[str, int]:
+    profile_budget = _source_context_budget_for_step(
+        step,
+        execution_profile=execution_profile or {},
+    )
+    limits: dict[str, int] = {
+        "max_files": profile_budget["limit"],
+        "min_source_files": profile_budget["min_source_files"],
+        "min_test_files": profile_budget["min_test_files"],
+    }
+    explicit_fields = (
+        ("max_files", "source_analysis_max_files"),
+        ("max_evidence_anchors", "source_analysis_max_evidence_anchors"),
+        ("min_source_files", "source_analysis_min_source_files"),
+        ("min_test_files", "source_analysis_min_test_files"),
+    )
+    for key, field in explicit_fields:
+        if step.get(field) is None:
+            continue
+        floor = 0 if key == "min_test_files" else 1
+        limits[key] = max(floor, int(step[field]))
+    return limits
+
+
 def build_executor_handoff_contract(
     *,
     workflow_snapshot: dict[str, Any],
@@ -2941,6 +2970,7 @@ def build_executor_handoff_contract(
     expected_semantic_outputs: list[dict[str, Any]],
     test_activity_contract: dict[str, Any] | None = None,
     task_context: dict[str, Any] | None = None,
+    execution_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the user-facing execution contract passed to an Agent or builtin LLM."""
     input_defs = {
@@ -2996,16 +3026,10 @@ def build_executor_handoff_contract(
         "source_coverage_policy": _source_coverage_policy(
             source_context=source_context,
         ),
-        "source_analysis_limits": {
-            key: max(0 if key == "min_test_files" else 1, int(step[field]))
-            for key, field in (
-                ("max_files", "source_analysis_max_files"),
-                ("max_evidence_anchors", "source_analysis_max_evidence_anchors"),
-                ("min_source_files", "source_analysis_min_source_files"),
-                ("min_test_files", "source_analysis_min_test_files"),
-            )
-            if step.get(field) is not None
-        },
+        "source_analysis_limits": _executor_handoff_source_analysis_limits(
+            step=step,
+            execution_profile=execution_profile,
+        ),
         "mcp": {
             "profile": str(step.get("mcp_profile") or ""),
             "availability": _mcp_execution_availability(
@@ -3420,14 +3444,26 @@ def _declared_outputs_for_step(
         if source_step != step_id and artifact not in required:
             continue
         declared = dict(output)
-        if "content_presets" not in declared:
-            content_presets = selected_output_content_presets(
-                declared.get("content_preset_ids")
-            )
-            if content_presets:
-                declared["content_presets"] = content_presets
+        content_presets = _content_presets_for_declared_output(declared)
+        if content_presets:
+            declared["content_presets"] = content_presets
+        else:
+            declared.pop("content_presets", None)
         outputs.append(declared)
     return outputs
+
+
+def _content_presets_for_declared_output(output: dict[str, Any]) -> list[Any]:
+    artifact = str(output.get("artifact") or "").strip()
+    output_id = str(output.get("id") or output.get("output_id") or "").strip()
+    output_type = str(output.get("type") or "").strip()
+    if artifact == "source-evidence.json" or (
+        output_type == "json" and output_id in {"source_evidence", "source-evidence"}
+    ):
+        return []
+    if isinstance(output.get("content_presets"), list):
+        return list(output.get("content_presets") or [])
+    return selected_output_content_presets(output.get("content_preset_ids"))
 
 
 def _workflow_contract_provider_payload(

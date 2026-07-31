@@ -166,6 +166,23 @@ def test_opencode_isolated_runtime_allows_only_the_current_artifact_directory(tm
     assert f"{tmp_path.resolve()}/**" not in configured["permission"]["external_directory"]
 
 
+def test_opencode_without_frozen_config_uses_host_runtime_state(tmp_path):
+    artifact_dir = tmp_path / "task-artifacts"
+
+    runtime_home, runtime_env = prepare_isolated_opencode_home(
+        provider="opencode",
+        command=["/opt/homebrew/bin/opencode", "run"],
+        artifact_dir=artifact_dir,
+        config_environment={},
+        allow_artifact_writes=True,
+    )
+
+    assert runtime_home is None
+    assert "HOME" not in runtime_env
+    assert "OPENCODE_CONFIG_DIR" not in runtime_env
+    assert runtime_env["OPENCODE_DISABLE_AUTOUPDATE"] == "1"
+
+
 def test_opencode_invalid_config_fails_without_leaving_runtime_state(tmp_path):
     artifact_dir = tmp_path / "task-artifacts"
 

@@ -214,13 +214,18 @@ _AGENT_PROMPT_MAX_SOURCE_EXCERPT_CHARACTERS = 1400
 _AGENT_PROMPT_MAX_WORKFLOW_STEPS = 8
 
 
-def _source_context_for_agent_prompt(source_context: Any) -> dict[str, Any]:
+def _source_context_for_agent_prompt(
+    source_context: Any,
+    *,
+    source_analysis_limits: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Project verified evidence into the small analysis context an Agent needs."""
     if not isinstance(source_context, dict):
         return {}
+    max_files = _agent_prompt_source_file_limit(source_analysis_limits)
     files: list[dict[str, Any]] = []
     for item in source_context.get("files") or []:
-        if not isinstance(item, dict) or len(files) >= _AGENT_PROMPT_MAX_SOURCE_FILES:
+        if not isinstance(item, dict) or len(files) >= max_files:
             continue
         excerpt = str(item.get("excerpt") or "")
         files.append({
@@ -238,11 +243,24 @@ def _source_context_for_agent_prompt(source_context: Any) -> dict[str, Any]:
     } | {
         "files": files,
         "projection": {
-            "max_files": _AGENT_PROMPT_MAX_SOURCE_FILES,
+            "max_files": max_files,
             "max_excerpt_characters": _AGENT_PROMPT_MAX_SOURCE_EXCERPT_CHARACTERS,
             "source_of_truth": "CodeTalk verified Source Evidence Pack",
         },
     }
+
+
+def _agent_prompt_source_file_limit(
+    source_analysis_limits: dict[str, Any] | None,
+) -> int:
+    if isinstance(source_analysis_limits, dict):
+        try:
+            value = int(source_analysis_limits.get("max_files") or 0)
+        except (TypeError, ValueError):
+            value = 0
+        if value > 0:
+            return value
+    return _AGENT_PROMPT_MAX_SOURCE_FILES
 
 
 def _output_summary_for_agent_prompt(value: Any) -> Any:
@@ -378,7 +396,12 @@ def _execution_contract_for_agent_prompt(
     }
     if "source_context" in execution_contract:
         result["source_context"] = _source_context_for_agent_prompt(
-            execution_contract["source_context"]
+            execution_contract["source_context"],
+            source_analysis_limits=(
+                execution_contract.get("source_analysis_limits")
+                if isinstance(execution_contract.get("source_analysis_limits"), dict)
+                else None
+            ),
         )
     if "outputs" in execution_contract:
         result["outputs"] = _output_summary_for_agent_prompt(

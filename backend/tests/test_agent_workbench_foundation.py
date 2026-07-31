@@ -1097,6 +1097,36 @@ def test_agent_prompt_uses_a_bounded_source_and_quality_contract_without_losing_
     assert len(payload) < 25_000
 
 
+def test_agent_prompt_uses_source_analysis_max_files_when_declared():
+    from app.services.agent_run_harness import _execution_contract_for_agent_prompt
+
+    source_context = {
+        "repo_revision": "abc123",
+        "files": [
+            {
+                "file_path": f"lib/bdev/file_{index}.c",
+                "start_line": 1,
+                "end_line": 2,
+                "excerpt": f"int symbol_{index}(void) {{ return {index}; }}\n",
+                "symbols": [f"symbol_{index}"],
+                "sha256": f"sha-{index}",
+            }
+            for index in range(30)
+        ],
+    }
+
+    compact = _execution_contract_for_agent_prompt({
+        "goal": "deep bdev analysis",
+        "repo_path": "/repo/spdk",
+        "source_analysis_limits": {"max_files": 24, "min_source_files": 12},
+        "source_context": source_context,
+    })
+
+    assert len(compact["source_context"]["files"]) == 24
+    assert compact["source_context"]["projection"]["max_files"] == 24
+    assert compact["source_context"]["files"][-1]["file_path"] == "lib/bdev/file_23.c"
+
+
 def test_agent_prompt_limits_unknown_extension_context_but_preserves_user_text(
     monkeypatch,
 ):

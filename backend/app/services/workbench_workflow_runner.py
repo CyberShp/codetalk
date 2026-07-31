@@ -45,7 +45,7 @@ from app.services.flow_evidence import (
     build_flow_outline,
     render_business_flow_markdown,
 )
-from app.services.provider_adapters.contracts import ProviderUnsupported
+from app.services.provider_adapters.contracts import ProviderResumeToken, ProviderUnsupported
 from app.services.legacy_workbench_harness_contract import (
     is_legacy_workbench_harness_contract,
 )
@@ -3292,7 +3292,20 @@ class WorkbenchWorkflowRunner:
             run_payload=run_payload if isinstance(run_payload, dict) else {},
         )
 
-        def execute_provider_turn():
+        required_artifacts = [
+            str(item)
+            for item in (
+                step.get("required_artifacts")
+                or agent_run.get("required_artifacts")
+                or []
+            )
+        ]
+
+        def execute_provider_turn(
+            *,
+            resume_token: ProviderResumeToken | None = None,
+            continuation_instruction: str = "",
+        ):
             facade, facade_session_id, missing_capabilities = (
                 self._prepare_provider_facade_for_step(
                     step=step,
@@ -3304,12 +3317,22 @@ class WorkbenchWorkflowRunner:
                     idle_timeout_sec=effective_idle_timeout,
                     tool_action_journal=ToolActionJournal(task_root),
                     tool_action_context=tool_action_context,
+                    continuation_instruction=continuation_instruction,
                 )
             )
             if missing_capabilities:
                 raise ValueError(
                     "missing_provider_capabilities: "
                     + ", ".join(missing_capabilities)
+                )
+            if resume_token is not None:
+                return facade.resume(
+                    facade_session_id,
+                    resume_token,
+                    timeout_sec=effective_timeout,
+                    idle_timeout_sec=effective_idle_timeout,
+                    is_cancelled=self._is_cancelled,
+                    event_sink=emit_agent_event,
                 )
             return facade.execute(
                 facade_session_id,
@@ -3428,24 +3451,66 @@ class WorkbenchWorkflowRunner:
                     builtin_stage_progress,
                 )
         _restore_protected_artifacts(artifact_dir, protected_artifact_snapshot)
-        required_artifacts = [
-            str(item)
-            for item in (
-                step.get("required_artifacts")
-                or agent_run.get("required_artifacts")
-                or []
+        markdown_recovery = None
+
+        def validate_latest_execution() -> ArtifactValidationResult:
+            nonlocal markdown_recovery
+            markdown_recovery = _recover_missing_markdown_artifact_from_provider_output(
+                artifact_dir=artifact_dir,
+                required_artifacts=required_artifacts,
+                execution=asdict(execution),
             )
-        ]
-        validation = _validate_step_artifacts(
-            artifact_dir,
-            required_artifacts,
-            candidate_artifacts=list(execution.artifacts),
-            task_bundle=(
-                quality_retry_bundle
-                if isinstance(quality_retry_bundle, dict)
-                else None
-            ),
-        )
+            candidate_artifacts = list(execution.artifacts)
+            if markdown_recovery is not None:
+                candidate_artifacts.extend(
+                    str(item)
+                    for item in markdown_recovery.get("artifacts") or []
+                    if str(item).strip()
+                )
+            return _validate_step_artifacts(
+                artifact_dir,
+                required_artifacts,
+                candidate_artifacts=candidate_artifacts,
+                task_bundle=(
+                    quality_retry_bundle
+                    if isinstance(quality_retry_bundle, dict)
+                    else None
+                ),
+            )
+
+        validation = validate_latest_execution()
+        max_agent_turns = 3 if provider != BUILTIN_LLM_PROVIDER_ID else 1
+        while validation.status != "ok" and len(executions) < max_agent_turns:
+            missing_artifacts = _missing_required_artifacts_from_validation(
+                validation=asdict(validation),
+                required_artifacts=required_artifacts,
+            )
+            if not missing_artifacts:
+                break
+            resume_token = _provider_resume_token_from_execution(
+                provider=provider,
+                execution=asdict(execution),
+            )
+            if resume_token is None or execution.status not in {"completed"}:
+                break
+            turn_id = f"turn_{len(executions) + 1}"
+            _set_agent_turn_id(artifact_dir=artifact_dir, turn_id=turn_id)
+            continuation_instruction = _missing_artifact_continuation_instruction(
+                missing_artifacts=missing_artifacts,
+                required_artifacts=required_artifacts,
+            )
+            execution = execute_provider_turn(
+                resume_token=resume_token,
+                continuation_instruction=continuation_instruction,
+            )
+            if isinstance(execution, ProviderUnsupported):
+                return unsupported_step_result(execution, continuing=True)
+            executions.append(asdict(execution))
+            if provider != BUILTIN_LLM_PROVIDER_ID:
+                turn_artifacts.append(
+                    _snapshot_agent_turn_artifacts(artifact_dir, turn_id=turn_id)
+                )
+            validation = validate_latest_execution()
         if validation.status == "ok":
             record_external_agent_artifact_consumption(
                 task_root / "input_consumption.json",
@@ -3503,6 +3568,8 @@ class WorkbenchWorkflowRunner:
         if artifact_recovery is not None:
             step_payload["artifact_recovery"] = artifact_recovery
             _write_json(artifact_dir / "artifact_recovery.json", artifact_recovery)
+        if markdown_recovery is not None:
+            step_payload["markdown_artifact_recovery"] = markdown_recovery
         failure_recovery = _failure_recovery_summary(
             artifact_dir=artifact_dir,
             execution=asdict(execution),
@@ -3571,6 +3638,7 @@ class WorkbenchWorkflowRunner:
         idle_timeout_sec: float | None,
         tool_action_journal: Any = None,
         tool_action_context: Any = None,
+        continuation_instruction: str = "",
     ) -> tuple[AgentHarnessFacade, str, list[str]]:
         """Rehydrate one frozen run at the provider-neutral execution boundary."""
 
@@ -3632,6 +3700,10 @@ class WorkbenchWorkflowRunner:
         )
         request_bundle = dict(task_bundle)
         request_bundle["required_artifacts"] = required_artifacts
+        if str(continuation_instruction or "").strip():
+            request_bundle["continuation_instruction"] = str(
+                continuation_instruction
+            ).strip()
         if provider == BUILTIN_LLM_PROVIDER_ID:
             request_bundle["harness_internal_artifacts"] = list(
                 _BUILTIN_HARNESS_INTERNAL_ARTIFACTS
@@ -6615,6 +6687,9 @@ def _builtin_llm_messages(
                 "才可以说明未获得源码片段。写风险、缺陷、泄漏、未释放、缺少校验、未处理错误等结论前，"
                 "必须检查同一 cited excerpt 是否已经给出反证；如果片段包含 free/put/close、错误返回、"
                 "边界检查或状态检查等保护行为，必须描述该保护行为或标记当前证据不足，禁止得出相反结论。"
+                "凡出现片段未显示、证据不足、未验证、需要进一步分析、可能、应当、建议等"
+                "不能由 cited excerpt 直接证明的内容，只能放入假设/未验证/未决项/分析限制，"
+                "不得写入正常流程、状态变化、资源释放、异常传播、SFMEA 或黑盒测试断言。"
                 "遵守 skills 和 MCP 边界，并输出可落盘的工作流产物。"
                 "若 required_artifacts 包含 source-evidence.json，content 必须是源码证据卡片数组，"
                 "每个元素必须包含 file_path、start_line、end_line、excerpt、symbols、sha256，"
@@ -7169,13 +7244,17 @@ def _parse_builtin_llm_artifact_payload(raw_output: str) -> dict[str, Any]:
         return payload if isinstance(payload, dict) else {}
     except json.JSONDecodeError:
         pass
-    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
+    fenced = re.search(
+        r"```(?:json)?\s*(.*?)\s*```",
+        text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
     if fenced:
         try:
             payload = json.loads(fenced.group(1))
             return payload if isinstance(payload, dict) else {}
         except json.JSONDecodeError:
-            return {}
+            pass
     start = text.find("{")
     end = text.rfind("}")
     if start >= 0 and end > start:
@@ -7312,6 +7391,12 @@ def _validate_step_artifacts(
         validation = validator.validate_required_artifacts(
             required_artifacts=required_artifacts
         )
+    validation = _apply_deep_source_evidence_breadth_policy(
+        artifact_dir=artifact_dir,
+        required_artifacts=required_artifacts,
+        validation=validation,
+        task_bundle=task_bundle,
+    )
     if candidate_artifacts is None:
         if prevalidation_recovery is not None:
             validation.warnings.append(prevalidation_recovery["reason"])
@@ -7340,6 +7425,12 @@ def _validate_step_artifacts(
             validation.warnings.append(prevalidation_recovery["reason"])
         if cwd_recovery is not None:
             validation.warnings.append(cwd_recovery["reason"])
+        validation = _apply_deep_source_evidence_breadth_policy(
+            artifact_dir=artifact_dir,
+            required_artifacts=required_artifacts,
+            validation=validation,
+            task_bundle=task_bundle,
+        )
         return validation
 
     missing_set = set(missing_candidates)
@@ -7386,6 +7477,222 @@ def _validate_step_artifacts(
             ),
         ],
     )
+
+
+def _apply_deep_source_evidence_breadth_policy(
+    *,
+    artifact_dir: Path,
+    required_artifacts: list[str],
+    validation: ArtifactValidationResult,
+    task_bundle: dict[str, Any] | None,
+) -> ArtifactValidationResult:
+    if validation.status != "ok":
+        return validation
+    required_names = {Path(str(item)).name for item in required_artifacts}
+    if "source-evidence.json" not in required_names:
+        return validation
+    minimum = _deep_min_source_evidence_paths(task_bundle)
+    if minimum <= 1:
+        return validation
+    artifact_path = artifact_dir / "source-evidence.json"
+    payload = _read_json(artifact_path)
+    if not isinstance(payload, list):
+        return validation
+    source_paths = {
+        str(item.get("file_path") or "").strip()
+        for item in payload
+        if isinstance(item, dict)
+        and str(item.get("file_path") or "").strip()
+        and not _is_test_source_path(str(item.get("file_path") or ""))
+    }
+    if len(source_paths) >= minimum:
+        return validation
+    issue = {
+        "artifact": "source-evidence.json",
+        "reason": "deep_source_evidence_breadth_incomplete",
+        "message": (
+            f"深度型源码证据广度不足：不同源码路径 {len(source_paths)}/{minimum}。"
+            "请继续读取更多相关实现文件后再交付。"
+        ),
+        "actual_distinct_source_paths": str(len(source_paths)),
+        "minimum_distinct_source_paths": str(minimum),
+    }
+    return ArtifactValidationResult(
+        status="invalid",
+        provenance_status="insufficient_source_breadth",
+        accepted_artifacts=[
+            artifact
+            for artifact in validation.accepted_artifacts
+            if Path(str(artifact)).name != "source-evidence.json"
+        ],
+        rejected_artifacts=[*validation.rejected_artifacts, issue],
+        accepted_artifact_details=[
+            item
+            for item in validation.accepted_artifact_details
+            if Path(str(item.get("artifact") or "")).name != "source-evidence.json"
+        ],
+        rejected_artifact_details=[
+            *validation.rejected_artifact_details,
+            {**issue, "path": str(artifact_path)},
+        ],
+        warnings=list(validation.warnings),
+    )
+
+
+def _deep_min_source_evidence_paths(task_bundle: dict[str, Any] | None) -> int:
+    if not isinstance(task_bundle, dict):
+        return 0
+    profile = task_bundle.get("execution_profile")
+    profile_id = (
+        str(profile.get("id") or "")
+        if isinstance(profile, dict)
+        else str(profile or "")
+    ).strip().lower()
+    if profile_id != "deep":
+        return 0
+    limits: dict[str, Any] = {}
+    execution_contract = task_bundle.get("execution_contract")
+    if isinstance(execution_contract, dict) and isinstance(
+        execution_contract.get("source_analysis_limits"), dict
+    ):
+        limits.update(execution_contract.get("source_analysis_limits") or {})
+    if isinstance(profile, dict) and isinstance(
+        profile.get("source_analysis_limits"),
+        dict,
+    ):
+        limits.update({
+            key: value
+            for key, value in (profile.get("source_analysis_limits") or {}).items()
+            if key not in limits
+        })
+    try:
+        requested = int(limits.get("min_source_files") or 12)
+    except (TypeError, ValueError):
+        requested = 12
+    requested = max(2, requested)
+    available = _available_source_file_count_for_task_bundle(
+        task_bundle,
+        cap=requested,
+    )
+    if available > 0:
+        return min(requested, available)
+    return requested
+
+
+def _available_source_file_count_for_task_bundle(
+    task_bundle: dict[str, Any],
+    *,
+    cap: int,
+) -> int:
+    repo_text = str(task_bundle.get("repo_path") or "").strip()
+    if not repo_text:
+        return 0
+    try:
+        root = Path(repo_text).resolve()
+    except (OSError, RuntimeError):
+        return 0
+    if not root.is_dir():
+        return 0
+    count = 0
+    ignored = {".git", "node_modules", "dist", "build", "target", "__pycache__"}
+    source_suffixes = {
+        ".c",
+        ".h",
+        ".cc",
+        ".cpp",
+        ".hpp",
+        ".py",
+        ".go",
+        ".rs",
+        ".java",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+        ".sh",
+        ".json",
+    }
+    try:
+        for path in root.rglob("*"):
+            if count >= cap:
+                return count
+            if any(part in ignored for part in path.relative_to(root).parts):
+                continue
+            if not path.is_file() or path.suffix.lower() not in source_suffixes:
+                continue
+            try:
+                rel = path.relative_to(root).as_posix()
+            except ValueError:
+                continue
+            if _is_test_source_path(rel):
+                continue
+            count += 1
+    except OSError:
+        return 0
+    return count
+
+
+def _recover_missing_markdown_artifact_from_provider_output(
+    *,
+    artifact_dir: Path,
+    required_artifacts: list[str],
+    execution: dict[str, Any],
+) -> dict[str, Any] | None:
+    missing_markdown = [
+        artifact
+        for artifact in required_artifacts
+        if _safe_required_artifact(artifact)
+        and Path(artifact).suffix.lower() in {".md", ".markdown"}
+        and not (artifact_dir / artifact).is_file()
+    ]
+    if len(missing_markdown) != 1:
+        return None
+    diagnostics = execution.get("provider_diagnostics")
+    output = ""
+    if isinstance(diagnostics, dict):
+        output = str(diagnostics.get("output") or "")
+    output = _clean_recoverable_markdown_output(output)
+    if not _looks_like_recoverable_markdown(output):
+        return None
+    artifact = missing_markdown[0]
+    target = artifact_dir / artifact
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(output.rstrip() + "\n", encoding="utf-8")
+    recovery = {
+        "status": "recovered",
+        "reason": "markdown_artifact_materialized_from_provider_final_output",
+        "message": (
+            "执行器返回了完整 Markdown 终端答案但没有写入声明的 Markdown 交付件；"
+            "CodeTalk 已将终端答案物化为缺失的 Markdown artifact，并继续执行文件契约校验。"
+        ),
+        "artifacts": [artifact],
+        "artifact": artifact,
+        "source": "provider_diagnostics.output",
+        "size_bytes": target.stat().st_size,
+    }
+    _write_json(artifact_dir / "markdown_artifact_recovery.json", recovery)
+    return recovery
+
+
+def _clean_recoverable_markdown_output(value: str) -> str:
+    text = str(value or "").strip()
+    if text.startswith("FINAL_ANSWER:"):
+        text = text.removeprefix("FINAL_ANSWER:").lstrip()
+    return text
+
+
+def _looks_like_recoverable_markdown(value: str) -> bool:
+    text = str(value or "").strip()
+    if len(text) < 200:
+        return False
+    if text.lower().startswith(("error:", "traceback", "执行器")):
+        return False
+    lines = [line for line in text.splitlines() if line.strip()]
+    if len(lines) < 6:
+        return False
+    heading_count = sum(1 for line in lines if line.lstrip().startswith("#"))
+    bullet_count = sum(1 for line in lines if line.lstrip().startswith(("-", "*", "1.")))
+    return heading_count >= 1 and (heading_count + bullet_count) >= 4
 
 
 def _recover_declared_artifacts_from_agent_cwd(
@@ -7482,7 +7789,10 @@ def _recover_source_evidence_artifact_from_task_bundle(
     if not isinstance(task_bundle, dict):
         return None
     artifact_path = artifact_dir / "source-evidence.json"
-    if _source_evidence_artifact_is_card_array(artifact_path):
+    if _source_evidence_artifact_is_valid_for_task_bundle(
+        artifact_path,
+        task_bundle=task_bundle,
+    ):
         return None
     cards = _source_evidence_cards_from_task_bundle(task_bundle)
     if not cards:
@@ -7495,7 +7805,7 @@ def _recover_source_evidence_artifact_from_task_bundle(
         "status": "recovered",
         "reason": "source_evidence_contract_materialized_from_execution_source_context",
         "message": (
-            "Agent 输出的 source-evidence.json 不是源码证据卡片数组；"
+            "Agent 输出的 source-evidence.json 不是可回查源码证据卡片数组；"
             "已从 task_bundle 中的已验证源码上下文物化正式证据文件，并继续进入源码校验。"
         ),
         "artifact": "source-evidence.json",
@@ -7526,13 +7836,64 @@ def _source_evidence_artifact_is_card_array(path: Path) -> bool:
     )
 
 
+def _source_evidence_artifact_is_valid_for_task_bundle(
+    path: Path,
+    *,
+    task_bundle: dict[str, Any],
+) -> bool:
+    if not _source_evidence_artifact_is_card_array(path):
+        return False
+    repo_text = str(task_bundle.get("repo_path") or "").strip()
+    if not repo_text:
+        return True
+    try:
+        source_root = Path(repo_text).resolve()
+    except (OSError, RuntimeError):
+        return True
+    if not source_root.is_dir():
+        return True
+    payload = _read_json(path)
+    if not isinstance(payload, list):
+        return False
+    try:
+        from app.services.validators.source_evidence import _validate_card
+    except Exception:
+        return True
+    for index, card in enumerate(payload):
+        if not isinstance(card, dict):
+            return False
+        issue = _validate_card(
+            card,
+            index=index,
+            output_id="source-evidence.json",
+            source_root=source_root,
+            node_id="",
+        )
+        if issue is not None:
+            return False
+    return True
+
+
 def _source_evidence_cards_from_task_bundle(
     task_bundle: dict[str, Any],
 ) -> list[dict[str, Any]]:
+    source_root: Path | None = None
+    repo_text = str(task_bundle.get("repo_path") or "").strip()
+    if repo_text:
+        try:
+            candidate_root = Path(repo_text).resolve()
+            if candidate_root.is_dir():
+                source_root = candidate_root
+        except (OSError, RuntimeError):
+            source_root = None
     seen: set[tuple[str, int, int]] = set()
     cards: list[dict[str, Any]] = []
     for item in _source_context_file_candidates_from_task_bundle(task_bundle):
-        card = _source_context_file_to_source_evidence_card(item, index=len(cards) + 1)
+        card = _source_context_file_to_source_evidence_card(
+            item,
+            index=len(cards) + 1,
+            source_root=source_root,
+        )
         if card is None:
             continue
         key = (
@@ -7573,6 +7934,7 @@ def _source_context_file_to_source_evidence_card(
     item: dict[str, Any],
     *,
     index: int,
+    source_root: Path | None = None,
 ) -> dict[str, Any] | None:
     file_path = str(item.get("file_path") or "").strip().replace("\\", "/")
     excerpt = str(item.get("excerpt") or "")
@@ -7591,7 +7953,19 @@ def _source_context_file_to_source_evidence_card(
         end_line = 0
     if end_line < start_line:
         end_line = start_line + max(1, len(excerpt.splitlines())) - 1
+    if source_root is not None:
+        real_excerpt = _exact_source_excerpt_for_evidence_card(
+            source_root=source_root,
+            file_path=file_path,
+            start_line=start_line,
+            requested_end_line=end_line,
+            fallback_excerpt=excerpt,
+        )
+        if real_excerpt is None:
+            return None
+        excerpt, end_line = real_excerpt
     symbols = [str(value).strip() for value in item.get("symbols") or [] if str(value).strip()]
+    symbols = [symbol for symbol in symbols if symbol in excerpt]
     if not symbols:
         symbols = _extract_local_symbols(excerpt, limit=8)
     if not symbols:
@@ -7615,6 +7989,39 @@ def _source_context_file_to_source_evidence_card(
         "sha256": sha256,
         "validation_status": "materialized_from_execution_source_context",
     }
+
+
+def _exact_source_excerpt_for_evidence_card(
+    *,
+    source_root: Path,
+    file_path: str,
+    start_line: int,
+    requested_end_line: int,
+    fallback_excerpt: str,
+) -> tuple[str, int] | None:
+    try:
+        source_file = (source_root / file_path).resolve()
+        source_file.relative_to(source_root)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    try:
+        lines = source_file.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return None
+    if start_line < 1 or start_line > len(lines):
+        return None
+    end_line = min(max(start_line, requested_end_line), len(lines))
+    selected_lines = lines[start_line - 1 : end_line]
+    fallback_line_count = len(str(fallback_excerpt or "").splitlines())
+    if fallback_line_count > 0:
+        selected_lines = selected_lines[:fallback_line_count]
+        end_line = start_line + len(selected_lines) - 1
+    while len(selected_lines) > 1 and len("\n".join(selected_lines)) > 6000:
+        selected_lines = selected_lines[:-1]
+        end_line -= 1
+    if not selected_lines:
+        return None
+    return "\n".join(selected_lines), end_line
 
 
 def _artifact_recovery_after_terminal_rejection(
@@ -10652,6 +11059,87 @@ def _agent_run_lifecycle_summary(
         payload["failure_kind"] = str(failure_recovery.get("failure_kind") or "")
         payload["failure_recovery_artifact"] = "failure_recovery.json"
     return payload
+
+
+def _missing_required_artifacts_from_validation(
+    *,
+    validation: dict[str, Any],
+    required_artifacts: list[str],
+) -> list[str]:
+    missing: list[str] = []
+    for item in validation.get("rejected_artifacts") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("reason") or "") != "missing_required_artifact":
+            continue
+        artifact = str(item.get("artifact") or "").strip()
+        if artifact and artifact not in missing:
+            missing.append(artifact)
+    if missing:
+        return missing
+    accepted = {str(item) for item in validation.get("accepted_artifacts") or []}
+    return [
+        artifact
+        for artifact in required_artifacts
+        if artifact and artifact not in accepted and not Path(artifact).is_absolute()
+    ]
+
+
+def _provider_resume_token_from_execution(
+    *,
+    provider: str,
+    execution: dict[str, Any],
+) -> ProviderResumeToken | None:
+    diagnostics = execution.get("provider_diagnostics")
+    if not isinstance(diagnostics, dict):
+        return None
+    token_payload = diagnostics.get("resume_token")
+    if isinstance(token_payload, dict):
+        token_provider = str(token_payload.get("provider") or "").strip()
+        token_value = str(token_payload.get("value") or "").strip()
+        if token_provider and token_value:
+            return ProviderResumeToken(provider=token_provider, value=token_value)
+    session_payload = diagnostics.get("provider_session")
+    if isinstance(session_payload, dict):
+        token_value = str(
+            session_payload.get("resume_session_id")
+            or session_payload.get("session_id")
+            or ""
+        ).strip()
+        if token_value:
+            token_provider = _provider_adapter_token_name(provider)
+            if token_provider:
+                return ProviderResumeToken(provider=token_provider, value=token_value)
+    return None
+
+
+def _provider_adapter_token_name(provider: str) -> str:
+    lowered = str(provider or "").lower()
+    if "opencode" in lowered:
+        return "opencode"
+    if "claude" in lowered:
+        return "claude"
+    if "codex" in lowered:
+        return "codex"
+    return str(provider or "").strip()
+
+
+def _missing_artifact_continuation_instruction(
+    *,
+    missing_artifacts: list[str],
+    required_artifacts: list[str],
+) -> str:
+    missing = ", ".join(missing_artifacts)
+    required = ", ".join(required_artifacts)
+    return (
+        "继续当前 CodeTalk 工作流节点。上一轮已经启动并读取了上下文，但仍缺少必交付件："
+        f"{missing}。\n"
+        f"必须把缺失文件直接写入环境变量 CODETALK_AGENT_ARTIFACT_DIR 指向的目录；"
+        f"本节点全部必交付件为：{required}。\n"
+        "不要只解释计划，不要停在“可以继续”的中间态。"
+        "如果缺失的是 Markdown 文件，请立即生成完整正文并保存为对应文件名；"
+        "如果缺失的是 JSON 文件，请生成可解析 JSON。完成后简短说明已写入哪些文件。"
+    )
 
 
 def _workflow_execution_audit_summary(

@@ -1077,6 +1077,8 @@ def _opencode_run_args(
     session_id = str(resume_session_id or "").strip()
     if session_id and "--session" not in args:
         args.extend(["--session", session_id])
+    if "--auto" not in args:
+        args.append("--auto")
     if "--format" not in args:
         args.extend(["--format", "json"])
     args.append(prompt)
@@ -1348,6 +1350,16 @@ async def _read_stdout(
     if output_mode in {"ndjson", "stream_json", "auto"}:
         buffer = ""
         stream_state: dict[int, str] = {}
+
+        def forward_session_update(update: dict[str, Any]) -> None:
+            if activity_queue is not None:
+                try:
+                    activity_queue.put_nowait(None)
+                except asyncio.QueueFull:
+                    pass
+            if session_update is not None:
+                session_update(update)
+
         while True:
             raw = await read_with_idle(lambda: _read_agent_stream_record(proc.stdout))
             if raw is None:
@@ -1357,7 +1369,7 @@ async def _read_stdout(
                     parsed = _parse_event_text(
                         buffer,
                         output_mode,
-                        session_update=session_update,
+                        session_update=forward_session_update,
                         stream_state=stream_state,
                     )
                     if parsed:
@@ -1376,7 +1388,7 @@ async def _read_stdout(
             parsed = _parse_event_text(
                 text,
                 output_mode,
-                session_update=session_update,
+                session_update=forward_session_update,
                 stream_state=stream_state,
             )
             if parsed is None and output_mode == "auto":
