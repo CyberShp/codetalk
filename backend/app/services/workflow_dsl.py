@@ -58,6 +58,7 @@ ALLOWED_JSON_SCHEMA_TYPES = frozenset({
     "boolean",
     "null",
 })
+SAFE_RUNTIME_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 class WorkflowValidationError(ValueError):
@@ -184,6 +185,7 @@ def validate_workflow_definition(payload: dict[str, Any]) -> WorkflowDefinition:
     if not isinstance(payload, dict):
         raise WorkflowValidationError("workflow definition must be an object")
     workflow_id = _required_str(payload, "id")
+    _validate_runtime_id(workflow_id, "workflow id")
     name = _required_str(payload, "name")
     version = payload.get("version", 1)
     if not isinstance(version, int) or version < 1:
@@ -210,8 +212,15 @@ def validate_workflow_definition(payload: dict[str, Any]) -> WorkflowDefinition:
         if output.id in seen_outputs:
             raise WorkflowValidationError(f"duplicate workflow output id: {output.id}")
         seen_outputs.add(output.id)
-        if output.source and _is_plain_step_reference(output.source) and output.source not in seen_steps:
-            raise WorkflowValidationError(f"unknown workflow output source step: {output.source}")
+        if output.source:
+            if _is_plain_step_reference(output.source):
+                _validate_runtime_id(output.source, "workflow output source step")
+                if output.source not in seen_steps:
+                    raise WorkflowValidationError(f"unknown workflow output source step: {output.source}")
+            elif not _is_templated_reference(output.source):
+                raise WorkflowValidationError(
+                    "workflow output source step must use a safe runtime id or a templated reference"
+                )
 
     _validate_canvas_execution_contract(
         payload,
@@ -418,6 +427,7 @@ def _parse_input(item: Any) -> WorkflowInput:
     if not isinstance(item, dict):
         raise WorkflowValidationError("workflow input must be an object")
     input_id = _required_str(item, "id")
+    _validate_runtime_id(input_id, "workflow input id")
     input_type = _required_str(item, "type")
     if input_type not in ALLOWED_INPUT_TYPES:
         raise WorkflowValidationError(f"unsupported workflow input type: {input_type}")
@@ -441,10 +451,13 @@ def _parse_step(item: Any) -> WorkflowStep:
     if not isinstance(item, dict):
         raise WorkflowValidationError("workflow step must be an object")
     step_id = _required_str(item, "id")
+    _validate_runtime_id(step_id, "workflow step id")
     step_type = _required_str(item, "type")
     if step_type not in ALLOWED_STEP_TYPES:
         raise WorkflowValidationError(f"unsupported workflow step type: {step_type}")
     required_artifacts = [str(value) for value in item.get("required_artifacts") or []]
+    for dependency in item.get("depends_on") or []:
+        _validate_runtime_id(str(dependency), "workflow step depends_on id")
     for artifact in required_artifacts:
         if not _is_safe_artifact_path(artifact):
             raise WorkflowValidationError(f"unsafe required artifact path: {artifact}")
@@ -478,7 +491,7 @@ def _parse_output(item: Any) -> WorkflowOutput:
     if "evidence_memory" in item:
         _validate_evidence_memory_definition(item.get("evidence_memory"))
     return WorkflowOutput(
-        id=_required_str(item, "id"),
+        id=_validated_runtime_id(_required_str(item, "id"), "workflow output id"),
         type=output_type,
         source=str(item.get("from") or item.get("source") or ""),
         raw=dict(item),
@@ -494,6 +507,25 @@ def _is_plain_step_reference(value: str) -> bool:
     if "/" in text or "\\" in text:
         return False
     return True
+
+
+def _is_templated_reference(value: str) -> bool:
+    text = str(value or "").strip()
+    return text.startswith("{{") and text.endswith("}}")
+
+
+def _validated_runtime_id(value: str, label: str) -> str:
+    _validate_runtime_id(value, label)
+    return value
+
+
+def _validate_runtime_id(value: str, label: str) -> None:
+    text = str(value or "").strip()
+    if not SAFE_RUNTIME_ID_RE.fullmatch(text):
+        raise WorkflowValidationError(
+            f"{label} must use a safe runtime id containing only English letters, "
+            "numbers, underscores, or hyphens; put Chinese display text in label/name/goal"
+        )
 
 
 def _required_str(payload: dict[str, Any], key: str) -> str:

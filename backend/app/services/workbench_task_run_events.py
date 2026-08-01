@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import hashlib
 from contextlib import contextmanager
@@ -17,6 +18,7 @@ from app.services.workflow_run_status import validate_status_axes
 
 
 _LOCK = threading.RLock()
+SAFE_RUNTIME_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def _now() -> str:
@@ -493,7 +495,7 @@ def _file_lock(lock_path: Path):
 
 def _safe_segment(value: str) -> str:
     text = str(value or "").strip()
-    if not text or "/" in text or "\\" in text or ".." in text:
+    if not text or text in {".", ".."} or ".." in text or not SAFE_RUNTIME_ID_RE.fullmatch(text):
         raise KeyError(value)
     return text
 

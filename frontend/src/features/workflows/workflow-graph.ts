@@ -296,15 +296,15 @@ export function validateInputPortId(
   value: string,
   ports: WorkflowPortDefinition[],
   currentIndex: number,
-  portLabel = "端口",
+  portLabel = "端口运行时 ID",
 ): string {
   const portId = value.trim();
-  if (!portId) return `${portLabel}名称不能为空`;
+  if (!portId) return `${portLabel}不能为空`;
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(portId)) {
-    return `${portLabel}名称只能包含字母、数字、点、横线和下划线`;
+    return `${portLabel}只能包含字母、数字、点、横线和下划线`;
   }
   if (ports.some((port, index) => index !== currentIndex && port.id === portId)) {
-    return `${portLabel}名称已存在`;
+    return `${portLabel}已存在`;
   }
   return "";
 }

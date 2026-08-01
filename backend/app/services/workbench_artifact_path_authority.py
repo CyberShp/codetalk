@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import tempfile
 from dataclasses import replace
@@ -17,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 _INSTALLED = False
+SAFE_RUNTIME_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def install_workbench_artifact_path_authority() -> None:
@@ -328,7 +330,7 @@ def _safe_segment(value: str) -> str:
 
 
 def _is_safe_segment(value: str) -> bool:
-    return bool(value) and "/" not in value and "\\" not in value and ".." not in value
+    return bool(value) and value not in {".", ".."} and ".." not in value and bool(SAFE_RUNTIME_ID_RE.fullmatch(value))
 
 
 def _same_path(left: Path, right: Path) -> bool:

@@ -24,7 +24,7 @@ function workspaceCreateErrorMessage(error: unknown): string {
   if (/代码路径不存在|代码路径不是目录|repo_path|路径/.test(message)) {
     return [
       message,
-      "修复建议：请确认路径拼写、挂载点和权限；macOS 外置盘通常是 /Volumes/...，不是 /Volums/...",
+      "修复建议：请确认路径拼写、挂载点和权限；也可以点击浏览选择当前系统可访问的文件夹。",
     ].join("\n");
   }
   return message;
@@ -172,7 +172,7 @@ export default function NewWorkspacePage() {
               type="text"
               value={repoPath}
               onChange={(event) => setRepoPath(event.currentTarget.value)}
-              placeholder="本地文件夹路径，可留空，如 /home/user/project"
+              placeholder="本地文件夹路径，可留空"
               className="w-full pl-10 pr-24 py-2.5 bg-surface-container border border-outline-variant/30 rounded-lg text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20 transition-colors font-data"
             />
             <button
@@ -249,7 +249,7 @@ export default function NewWorkspacePage() {
                       if (event.key === "Enter") void loadFolders(folderPathDraft);
                     }}
                     className="w-full rounded-lg border border-outline-variant/30 bg-surface-container py-2 pl-9 pr-3 font-data text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/20"
-                    placeholder="/Volumes/Media/project"
+                    placeholder={folderData?.path_example ?? "输入本地路径"}
                   />
                 </div>
                 <button
@@ -272,15 +272,18 @@ export default function NewWorkspacePage() {
                   <Home size={13} />
                   Home
                 </button>
-                <button
-                  type="button"
-                  onClick={() => void loadFolders("/")}
-                  disabled={folderLoading}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-outline-variant/30 px-2.5 py-1.5 text-xs text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <HardDrive size={13} />
-                  根目录
-                </button>
+                {folderData?.roots.map((root) => (
+                  <button
+                    key={root.path}
+                    type="button"
+                    onClick={() => void loadFolders(root.path)}
+                    disabled={folderLoading}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-outline-variant/30 px-2.5 py-1.5 text-xs text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <HardDrive size={13} />
+                    {root.name}
+                  </button>
+                ))}
                 {folderData?.parent_path && (
                   <button
                     type="button"

@@ -1380,10 +1380,18 @@ export interface WorkspaceFolderEntry {
   hidden: boolean;
 }
 
+export interface WorkspaceFolderRoot {
+  name: string;
+  path: string;
+}
+
 export interface WorkspaceFolderBrowseResponse {
   path: string;
   parent_path: string | null;
   home_path: string;
+  path_separator: string;
+  path_example: string;
+  roots: WorkspaceFolderRoot[];
   entries: WorkspaceFolderEntry[];
 }
 

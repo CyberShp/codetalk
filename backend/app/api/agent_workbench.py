@@ -126,6 +126,7 @@ from app.services.workflow_execution_lease import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/workbench", tags=["agent-workbench"])
+SAFE_RUNTIME_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def _require_v3_writes() -> None:
@@ -2298,7 +2299,7 @@ def _task_agent_run_dir(task_run_id: str, step_id: str) -> Path:
 
 def _safe_segment(value: str, label: str) -> str:
     value = value.strip()
-    if not value or "/" in value or "\\" in value or ".." in value:
+    if not value or value in {".", ".."} or ".." in value or not SAFE_RUNTIME_ID_RE.fullmatch(value):
         raise HTTPException(status_code=400, detail=f"invalid {label}")
     return value
 

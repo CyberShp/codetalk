@@ -112,6 +112,29 @@ def _duplicate_workspace_error(existing: aiosqlite.Row) -> HTTPException:
     )
 
 
+def _folder_browse_roots() -> list["WorkspaceFolderRoot"]:
+    if os.name == "nt":
+        roots: list[WorkspaceFolderRoot] = []
+        for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+            drive = Path(f"{letter}:\\")
+            if drive.exists():
+                roots.append(WorkspaceFolderRoot(name=f"{letter}:", path=str(drive)))
+        if roots:
+            return roots
+        fallback = Path.home().anchor or "C:\\"
+        return [WorkspaceFolderRoot(name="系统盘", path=fallback)]
+    return [WorkspaceFolderRoot(name="根目录", path=str(Path("/").resolve()))]
+
+
+def _folder_path_example() -> str:
+    if os.name == "nt":
+        return r"C:\path\project"
+    home = Path.home()
+    if str(home) and home != Path("."):
+        return str(home / "project")
+    return "/path/project"
+
+
 # --- Schemas ---
 
 class WorkspaceCreate(BaseModel):
@@ -143,10 +166,18 @@ class WorkspaceFolderEntry(BaseModel):
     hidden: bool = False
 
 
+class WorkspaceFolderRoot(BaseModel):
+    name: str
+    path: str
+
+
 class WorkspaceFolderBrowseResponse(BaseModel):
     path: str
     parent_path: str | None
     home_path: str
+    path_separator: str
+    path_example: str
+    roots: list[WorkspaceFolderRoot]
     entries: list[WorkspaceFolderEntry]
 
 
@@ -595,6 +626,9 @@ async def browse_workspace_folders(
         path=str(folder),
         parent_path=str(parent) if parent else None,
         home_path=str(Path.home().resolve()),
+        path_separator=os.sep,
+        path_example=_folder_path_example(),
+        roots=_folder_browse_roots(),
         entries=entries,
     )
 

@@ -215,6 +215,12 @@ class TestWorkspaceCRUD:
         assert data["path"] == str(folder_root.resolve())
         assert data["parent_path"] == str(tmp_path.resolve())
         assert data["home_path"]
+        assert data["path_separator"]
+        assert data["path_example"]
+        assert "/Volumes/Media/project" not in data["path_example"]
+        assert "/home/user/project" not in data["path_example"]
+        assert data["roots"]
+        assert all(entry["name"] and entry["path"] for entry in data["roots"])
         assert [entry["name"] for entry in data["entries"]] == [
             "Alpha",
             "zeta",

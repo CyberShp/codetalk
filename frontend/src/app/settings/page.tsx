@@ -1276,7 +1276,7 @@ export default function SettingsPage() {
               aria-label="CCR config path"
               value={agentProviders.claude_code_config_path}
               onChange={(event) => updateAgentProviders("claude_code_config_path", event.target.value)}
-              placeholder="C:/innernet/ccr/config-router.json"
+              placeholder="config-router.json 路径，可留空"
               className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 font-data text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:border-primary/50 focus:outline-none"
             />
           </div>

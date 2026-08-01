@@ -47,6 +47,39 @@ def _prepare_phase0_ordinary_report_run(tmp_path):
     )
 
 
+def test_prepare_workbench_task_run_rejects_unsafe_generated_task_run_id(tmp_path, monkeypatch):
+    from app.services import workbench_task_run as task_run_module
+    from app.services.workflow_dsl import WorkflowStore
+
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "safe_workflow",
+        "name": "Safe workflow",
+        "version": 1,
+        "inputs": [{"id": "target", "type": "free_text"}],
+        "steps": [{"id": "discover", "type": "agent_task"}],
+        "outputs": [{"id": "report", "type": "markdown", "from": "discover"}],
+    })
+    monkeypatch.setattr(
+        task_run_module,
+        "_new_id",
+        lambda _prefix: "工作流节点/工作流节点/源码驱动测试分析",
+    )
+
+    with pytest.raises(KeyError):
+        task_run_module.WorkbenchTaskRunPreparer(
+            artifact_root=tmp_path / "task_runs",
+            workflow_store=workflow_store,
+        ).prepare(
+            workflow_id="safe_workflow",
+            workspace_id="ws1",
+            repo_path=str(tmp_path),
+            inputs={"target": "module"},
+        )
+
+    assert not (tmp_path / "task_runs" / "工作流节点").exists()
+
+
 def _prepare_phase1_v3_ordinary_report_run(tmp_path):
     from app.services.workflow_contract_v3 import compile_workflow_contract_v3
     from app.services.workflow_dsl import WorkflowStore

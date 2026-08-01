@@ -105,9 +105,9 @@ test("agent input port ids reject empty unsafe and duplicate names", () => {
     { id: "repo_path", type: "directory" },
     { id: "design_doc", type: "file" },
   ];
-  assert.equal(validateInputPortId("", ports, 1), "端口名称不能为空");
-  assert.equal(validateInputPortId("bad port", ports, 1), "端口名称只能包含字母、数字、点、横线和下划线");
-  assert.equal(validateInputPortId("repo_path", ports, 1), "端口名称已存在");
+  assert.equal(validateInputPortId("", ports, 1), "端口运行时 ID不能为空");
+  assert.equal(validateInputPortId("bad port", ports, 1), "端口运行时 ID只能包含字母、数字、点、横线和下划线");
+  assert.equal(validateInputPortId("repo_path", ports, 1), "端口运行时 ID已存在");
   assert.equal(validateInputPortId("new_doc", ports, 1), "");
 });
 

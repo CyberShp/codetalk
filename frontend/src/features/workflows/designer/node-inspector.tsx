@@ -114,8 +114,9 @@ export function NodeInspector({ node, schemaVersion = 2, capabilities, providers
           <Field label="节点名称">
             <input value={node.label} onChange={(event) => updateLabel(event.target.value)} />
           </Field>
-          {!isV3 && <Field label="节点 ID">
+          {!isV3 && <Field label="节点运行时 ID">
             <input value={node.id} readOnly aria-readonly="true" />
+            <small className="ct-v2-inspector-note">仅使用英文、数字、点、下划线或连字符；中文名称请放在节点名称。</small>
           </Field>}
         </InspectorSection>
 
@@ -182,7 +183,7 @@ export function NodeInspector({ node, schemaVersion = 2, capabilities, providers
 
         {isV3 && node.kind === "agent" && (
           <InspectorSection title="端口">
-            <p className="ct-v2-inspector-note">端口名称用于画布和运行表单，内部 ID 由系统维护。</p>
+            <p className="ct-v2-inspector-note">端口名称用于画布和运行表单，内部运行时 ID 由系统维护。</p>
             <PortListEditor
               direction="input"
               ports={node.ports?.inputs ?? []}
@@ -225,12 +226,12 @@ function directionPorts(node: WorkflowGraphNode, direction: "input" | "output", 
 
 function TechnicalIdentifiers({ node }: { node: WorkflowGraphNode }) {
   const fields = [
-    ["节点 ID", node.id],
-    ...inputPortDefinitionsForDiagnostics(node).map((port) => ["输入端口 ID", port.id]),
-    ...outputPortDefinitionsForDiagnostics(node).map((port) => ["输出端口 ID", port.id]),
+    ["节点运行时 ID", node.id],
+    ...inputPortDefinitionsForDiagnostics(node).map((port) => ["输入端口运行时 ID", port.id]),
+    ...outputPortDefinitionsForDiagnostics(node).map((port) => ["输出端口运行时 ID", port.id]),
     ...["contract_id", "output_id", "step_id"].flatMap((key) => node.config[key] ? [[key, String(node.config[key])]] : []),
   ];
-  return <div className="ct-v2-technical-identifiers" data-testid="workflow-technical-identifiers">{fields.map(([label, value], index) => <div className="ct-v2-field" key={`${label}-${index}`}><span>{label}</span><code>{value}</code><input type="hidden" value={value} readOnly aria-readonly="true" /></div>)}</div>;
+  return <div className="ct-v2-technical-identifiers" data-testid="workflow-technical-identifiers"><p className="ct-v2-inspector-note">运行时 ID 仅使用英文、数字、点、下划线或连字符；中文名称请放在节点名称或端口名称。</p>{fields.map(([label, value], index) => <div className="ct-v2-field" key={`${label}-${index}`}><span>{label}</span><code>{value}</code><input type="hidden" value={value} readOnly aria-readonly="true" /></div>)}</div>;
 }
 
 function inputPortDefinitionsForDiagnostics(node: WorkflowGraphNode) { return node.ports?.inputs ?? portList(node.config.input_ports); }
@@ -500,7 +501,7 @@ function PortListEditor({
     const current = ports[index];
     if (!current) return;
     const candidate = (draftIds[index] ?? current.id).trim();
-    const error = validateInputPortId(candidate, ports, index, direction === "input" ? "输入" : "输出");
+    const error = validateInputPortId(candidate, ports, index, `${direction === "input" ? "输入" : "输出"}端口运行时 ID`);
     setIdErrors((items) => ({ ...items, [index]: error }));
     if (error || candidate === current.id) return;
     update(index, { id: candidate }, { direction, kind: "rename", oldId: current.id, newId: candidate });
@@ -531,11 +532,11 @@ function PortListEditor({
         return (
         <div className="ct-v2-port-editor-row" key={index}>
           <label>
-            <span>端口名称</span>
+            <span>{technicalIdentityLocked ? "端口名称" : "端口运行时 ID"}</span>
             <input
               value={technicalIdentityLocked ? (draftIds[index] ?? port.label ?? port.id) : (draftIds[index] ?? port.id)}
               readOnly={readOnly}
-              aria-label={`${direction === "input" ? "输入" : "输出"}端口 ${index + 1} 名称`}
+              aria-label={`${direction === "input" ? "输入" : "输出"}端口 ${index + 1} ${technicalIdentityLocked ? "名称" : "运行时 ID"}`}
               onChange={(event) => {
                 if (readOnly) return;
                 const value = event.target.value;
@@ -546,7 +547,7 @@ function PortListEditor({
                 setDraftIds((items) => ({ ...items, [index]: value }));
                 setIdErrors((items) => ({
                   ...items,
-                  [index]: validateInputPortId(value, ports, index, direction === "input" ? "输入" : "输出"),
+                  [index]: validateInputPortId(value, ports, index, `${direction === "input" ? "输入" : "输出"}端口运行时 ID`),
                 }));
               }}
               onBlur={() => {
@@ -569,6 +570,7 @@ function PortListEditor({
               }}
               aria-invalid={technicalIdentityLocked ? undefined : Boolean(idErrors[index])}
             />
+            {!technicalIdentityLocked && <small className="ct-v2-inspector-note">仅使用英文、数字、点、下划线或连字符；中文名称请放在展示名称。</small>}
             {!technicalIdentityLocked && idErrors[index] && <small className="ct-v2-port-id-error" role="alert">{idErrors[index]}</small>}
           </label>
           <label>

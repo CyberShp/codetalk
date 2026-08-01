@@ -129,6 +129,49 @@ def test_workflow_dsl_rejects_duplicate_ids_and_missing_output_step():
     with pytest.raises(WorkflowValidationError, match="duplicate workflow input id: module"):
         validate_workflow_definition(duplicate_input)
 
+    unsafe_step_id = {
+        "id": "bad_step_id",
+        "name": "Bad step id",
+        "version": 1,
+        "inputs": [{"id": "target", "type": "free_text", "label": "分析对象"}],
+        "steps": [{"id": "工作流节点/源码驱动测试分析", "type": "agent_task"}],
+        "outputs": [{"id": "scope", "type": "json", "from": "工作流节点/源码驱动测试分析"}],
+    }
+    with pytest.raises(WorkflowValidationError, match="workflow step id must use a safe runtime id"):
+        validate_workflow_definition(unsafe_step_id)
+
+    unsafe_input_id = {
+        "id": "bad_input_id",
+        "name": "Bad input id",
+        "version": 1,
+        "inputs": [{"id": "需求/目标", "type": "free_text", "label": "需求目标"}],
+        "steps": [{"id": "discover", "type": "agent_task"}],
+        "outputs": [{"id": "scope", "type": "json", "from": "discover"}],
+    }
+    with pytest.raises(WorkflowValidationError, match="workflow input id must use a safe runtime id"):
+        validate_workflow_definition(unsafe_input_id)
+
+    unsafe_output_id = {
+        "id": "bad_output_id",
+        "name": "Bad output id",
+        "version": 1,
+        "inputs": [{"id": "target", "type": "free_text", "label": "分析对象"}],
+        "steps": [{"id": "discover", "type": "agent_task"}],
+        "outputs": [{"id": "分析/结果", "type": "json", "from": "discover", "label": "分析结果"}],
+    }
+    with pytest.raises(WorkflowValidationError, match="workflow output id must use a safe runtime id"):
+        validate_workflow_definition(unsafe_output_id)
+
+    safe_chinese_labels = validate_workflow_definition({
+        "id": "safe_chinese_labels",
+        "name": "中文展示名称",
+        "version": 1,
+        "inputs": [{"id": "analysis_target", "type": "free_text", "label": "需求/目标"}],
+        "steps": [{"id": "source_driven_test_analysis", "type": "agent_task", "goal": "源码驱动测试分析"}],
+        "outputs": [{"id": "analysis_result", "type": "json", "from": "source_driven_test_analysis", "label": "分析/结果"}],
+    })
+    assert safe_chinese_labels.steps[0].id == "source_driven_test_analysis"
+
     duplicate_output = {
         "id": "bad_outputs",
         "name": "Bad outputs",

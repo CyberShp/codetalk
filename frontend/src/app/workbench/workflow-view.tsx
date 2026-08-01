@@ -536,7 +536,7 @@ export function WorkflowDesignerView({ scope }: { scope: WorkbenchController }) 
                     <div className="grid gap-2">
                       <label className="block">
                         <span className="mb-1 block text-[10px] text-on-surface-variant">
-                          契约 ID
+                          运行时 ID
                         </span>
                         <input
                           aria-label="Workflow node contract id"
@@ -553,9 +553,12 @@ export function WorkflowDesignerView({ scope }: { scope: WorkbenchController }) 
                                 ? "output_id"
                                 : "input_id"
                           }
-                          className="w-full rounded-md border border-outline-variant/30 bg-surface px-2 py-1 font-data text-[10px] text-on-surface outline-none focus:border-primary"
-                        />
-                      </label>
+	                          className="w-full rounded-md border border-outline-variant/30 bg-surface px-2 py-1 font-data text-[10px] text-on-surface outline-none focus:border-primary"
+	                        />
+	                        <span className="mt-1 block text-[10px] leading-4 text-on-surface-variant/70">
+	                          仅使用英文、数字、下划线或连字符；中文名称请放在展示名称。
+	                        </span>
+	                      </label>
                       {activeWorkflowNode.kind !== "agent" && (
                         <label className="block">
                           <span className="mb-1 block text-[10px] text-on-surface-variant">

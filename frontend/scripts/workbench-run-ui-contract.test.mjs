@@ -175,3 +175,22 @@ test("task authoring and summaries do not coerce unsupported contract versions i
   assert.match(taskWizardSource, /definition\.compiled_contract_version === 3/);
   assert.match(taskDetailSource, /compiled_contract_version === 3/);
 });
+
+test("workflow contract ids are presented as runtime-safe ids separate from Chinese labels", () => {
+  const workflowViewSource = readFileSync(
+    new URL("../src/app/workbench/workflow-view.tsx", import.meta.url),
+    "utf8",
+  );
+  const workflowDesignerInspectorSource = readFileSync(
+    new URL("../src/features/workflows/designer/node-inspector.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(workflowViewSource, /运行时 ID/);
+  assert.match(workflowViewSource, /英文、数字、下划线或连字符/);
+  assert.match(workflowViewSource, /中文名称请放在展示名称/);
+  assert.match(workflowDesignerInspectorSource, /节点运行时 ID/);
+  assert.match(workflowDesignerInspectorSource, /端口运行时 ID/);
+  assert.match(workflowDesignerInspectorSource, /中文名称请放在节点名称或端口名称/);
+  assert.doesNotMatch(workflowDesignerInspectorSource, /节点 ID/);
+});

@@ -67,6 +67,7 @@ SOURCE_SCAN_IGNORED_DIRS = frozenset({
 })
 _GIT_SOURCE_FILE_CACHE: dict[tuple[str, str, int, tuple[str, ...]], tuple[str, ...]] = {}
 _GIT_SOURCE_FILE_CACHE_LOCK = threading.Lock()
+SAFE_RUNTIME_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _COMPATIBILITY_EXECUTION_PROFILES = (
     {
         "id": "rapid",
@@ -379,7 +380,7 @@ class WorkbenchTaskRunPreparer:
                 "the selected workflow only contains built-in steps"
             )
         task_run_id = _new_id("task_run")
-        artifact_dir = self.artifact_root / task_run_id
+        artifact_dir = self.artifact_root / _safe_segment(task_run_id)
         self.preflight_inputs(
             workflow_snapshot=workflow_snapshot,
             inputs=inputs,
@@ -5404,7 +5405,7 @@ def _prepared_task_run_from_payload(payload: dict[str, Any]) -> PreparedWorkbenc
 
 def _safe_segment(value: str) -> str:
     text = str(value or "").strip()
-    if not text or "/" in text or "\\" in text or ".." in text:
+    if not text or text in {".", ".."} or ".." in text or not SAFE_RUNTIME_ID_RE.fullmatch(text):
         raise KeyError(value)
     return text
 

@@ -79,6 +79,7 @@ from app.services.workflow_handler_dispatcher import (
     WorkflowHandlerResult,
 )
 
+SAFE_RUNTIME_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 _BUILTIN_HARNESS_INTERNAL_ARTIFACTS = [
     "builtin_llm_execution_input.json",
@@ -14009,7 +14010,7 @@ def _promote_builtin_session_status(
 
 def _safe_segment(value: str) -> str:
     text = str(value or "").strip()
-    if not text or "/" in text or "\\" in text or ".." in text:
+    if not text or text in {".", ".."} or ".." in text or not SAFE_RUNTIME_ID_RE.fullmatch(text):
         raise KeyError(value)
     return text
 

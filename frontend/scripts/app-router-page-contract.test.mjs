@@ -65,3 +65,34 @@ test("workspace creation keeps the optional local folder browser wired", () => {
   assert.match(apiSource, /browseFolders/);
   assert.match(apiSource, /\/api\/workspaces\/folders/);
 });
+
+test("workspace folder picker uses backend-provided roots instead of hardcoded platform roots", () => {
+  const pageSource = readFileSync(
+    new URL("../src/app/workspaces/new/page.tsx", import.meta.url),
+    "utf8",
+  );
+  const typesSource = readFileSync(
+    new URL("../src/lib/types.ts", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(typesSource, /roots:\s*WorkspaceFolderRoot\[\]/);
+  assert.match(pageSource, /folderData\?\.roots/);
+  assert.doesNotMatch(pageSource, /loadFolders\(["']\/["']\)/);
+  assert.doesNotMatch(pageSource, /\/Volumes\/Media\/project/);
+  assert.doesNotMatch(pageSource, /\/home\/user\/project/);
+});
+
+test("settings and workspace path hints avoid OS-specific absolute path literals", () => {
+  const workspacePageSource = readFileSync(
+    new URL("../src/app/workspaces/new/page.tsx", import.meta.url),
+    "utf8",
+  );
+  const settingsPageSource = readFileSync(
+    new URL("../src/app/settings/page.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.doesNotMatch(workspacePageSource, /\/Volumes\/|\/Volums\/|\/home\/user/);
+  assert.doesNotMatch(settingsPageSource, /C:\/innernet|C:\\\\innernet|\/Volumes\/|\/home\/user/);
+});

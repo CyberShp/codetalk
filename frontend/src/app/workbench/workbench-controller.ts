@@ -1492,7 +1492,7 @@ export function useWorkbenchController({
         ? newWorkflowInputResolver
         : "";
     if (!id) {
-      setMessage("请输入输入契约 ID");
+      setMessage("请输入输入运行时 ID");
       return;
     }
     const spec = workflowSpecToText({ id, type, resolver });
@@ -1530,7 +1530,7 @@ export function useWorkbenchController({
       newWorkflowOutputArtifact.trim() ||
       outputArtifactForSpec(id, type, parseCommaSeparated(builderArtifacts));
     if (!id) {
-      setMessage("请输入输出契约 ID");
+      setMessage("请输入输出运行时 ID");
       return;
     }
     const spec = workflowSpecToText({ id, type, artifact });
