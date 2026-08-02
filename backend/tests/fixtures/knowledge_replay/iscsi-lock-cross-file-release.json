@@ -1,0 +1,22 @@
+{
+  "case_id": "iscsi-lock-cross-file-release",
+  "title": "Local iscsi_lock evidence can be refuted by a cross-file unlock caller",
+  "query": "iscsi lock unlock cross file lifecycle",
+  "source": {
+    "kind": "review_counterexample",
+    "identity": "fixture://knowledge-replay/iscsi-lock-cross-file-release",
+    "revision": "fixture-v1",
+    "locator": {
+      "kind": "fixture",
+      "path": "iscsi-lock-cross-file-release.json",
+      "line_start": 1,
+      "line_end": 14,
+      "excerpt": "iscsi_lock local acquisition and iscsi_unlock in a different caller"
+    }
+  },
+  "summary": "A local function containing iscsi_lock without a visible unlock is an investigation lead only. The unlock may be in a helper or a caller in another file after the protected operation.",
+  "content": "Counterexample history: a review saw iscsi_lock in one function and no matching unlock in that function. Cross-file call tracing showed the operation returned to a caller that invoked iscsi_unlock after the protected work. The local-only pattern was therefore insufficient evidence for a resource leak conclusion.",
+  "terms": ["iscsi", "lock", "unlock", "cross", "file", "lifecycle"],
+  "applicability": ["lock lifecycle review", "cross-file caller tracing"],
+  "exclusions": ["a local lock without a visible unlock is not a confirmed leak"]
+}

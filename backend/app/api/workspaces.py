@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 
 import uuid
 from datetime import datetime, timezone
@@ -169,7 +170,6 @@ class WorkspaceFolderEntry(BaseModel):
 class WorkspaceFolderRoot(BaseModel):
     name: str
     path: str
-
 
 class WorkspaceFolderBrowseResponse(BaseModel):
     path: str

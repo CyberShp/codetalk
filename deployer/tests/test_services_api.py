@@ -64,9 +64,11 @@ async def test_frontend_service_restart_without_deployer_returns_400(client):
     assert resp.status_code == 400
 
 
-async def test_gitnexus_service_restart_without_deployer_returns_400(client):
+async def test_gitnexus_service_restart_is_removed(client):
     resp = await client.post("/api/services/gitnexus/restart")
-    assert resp.status_code == 400
+    assert resp.status_code == 404
+    detail = resp.json()["detail"]
+    assert detail["available_services"] == ["backend", "frontend"]
 
 
 async def test_services_status_processes_empty_initially(client):
@@ -95,7 +97,7 @@ async def test_removed_deepwiki_service_actions_are_rejected_before_deployer(cli
         assert "未知服务" in detail["message"]
         assert "可操作服务" in detail["hint"]
         assert "deepwiki-api" not in detail["available_services"]
-        assert detail["available_services"] == ["backend", "frontend", "gitnexus", "cgc"]
+        assert detail["available_services"] == ["backend", "frontend"]
 
 
 async def test_services_status_filters_removed_deepwiki_stale_processes(client):

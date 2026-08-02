@@ -460,7 +460,7 @@ def _agent_output_contract_payload(
         )
 
     declared_outputs = _declared_outputs_for_generic_invocation(task_bundle)
-    return {
+    payload = {
         "contract_version": 2,
         "run_id": run.run_id,
         "turn_id": run.turn_id,
@@ -473,6 +473,57 @@ def _agent_output_contract_payload(
             if item.get("required") is not False and str(item.get("artifact") or "")
         ],
     }
+    artifact_profile = task_bundle.get("artifact_profile")
+    if isinstance(artifact_profile, dict):
+        payload["deliverable_profile"] = {
+            "profile_id": str(artifact_profile.get("profile_id") or ""),
+            "profile_version": int(artifact_profile.get("profile_version") or 0),
+            "sha256": str(artifact_profile.get("sha256") or ""),
+            "artifacts": [
+                dict(item)
+                for item in artifact_profile.get("artifacts") or []
+                if isinstance(item, dict)
+            ],
+            "rule": (
+                "The frozen deliverable profile defines artifact shape. "
+                "It cannot disable evidence, path, manifest, or output validation."
+            ),
+        }
+    knowledge_retrieval = task_bundle.get("knowledge_retrieval")
+    if isinstance(knowledge_retrieval, dict):
+        policy = (
+            knowledge_retrieval.get("policy")
+            if isinstance(knowledge_retrieval.get("policy"), dict)
+            else {}
+        )
+        payload["knowledge_followup_protocol"] = {
+            "enabled": bool(policy.get("allow_followup", False)),
+            "initial_retrieval": "frozen_in_task_bundle",
+            "additional_retrieval": "request_through_codetalk",
+            "direct_store_access": False,
+            "request_artifact": "knowledge_followup_requests.json",
+            "request_schema": {
+                "queries": [
+                    {
+                        "query": "specific historical scenario or test-asset query",
+                        "reason": "why additional historical context is needed",
+                    }
+                ]
+            },
+            "response_in_task_bundle": "requested_knowledge",
+            "max_queries_per_run": 3,
+            "authority": "experience_lead_until_current_source_evidence_confirms_it",
+        }
+        payload["knowledge_usage_report"] = {
+            "artifact": "knowledge_usage.json",
+            "required": True,
+            "schema": {"used_record_ids": ["record-id"]},
+            "rule": (
+                "Report only record ids actually used in the final answer; "
+                "use an empty list when none were used."
+            ),
+        }
+    return payload
 
 
 def _declared_outputs_for_generic_invocation(

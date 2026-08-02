@@ -39,14 +39,9 @@
   var statusTimer = null;
   var reconnectTimer = null;
   var reconnectDelay = 1000;
-  var forceTakeover = false;
 
   // Services we track — must match data-svc attrs in HTML
-  var SERVICES = ['backend', 'frontend', 'gitnexus', 'cgc'];
-  var optionalServiceEnabled = {
-    gitnexus: true,
-    cgc: true,
-  };
+  var SERVICES = ['backend', 'frontend'];
 
   var STATUS_LABELS = {
     running:  '运行中',
@@ -75,21 +70,12 @@
   function applyConfigToUI(cfg) {
     var backendPort  = cfg.portBackend     || 3004;
     var frontendPort = cfg.portFrontend    || 3003;
-    var gitnexusPort = cfg.portGitnexus    || 7100;
-    var cgcPort      = cfg.portCgc         || 7072;
-
-    applyOptionalServiceVisibility(cfg);
-
     // Update port labels on service cards
     var portBackend  = document.getElementById('port-backend');
     var portFrontend = document.getElementById('port-frontend');
-    var portGitnexus = document.getElementById('port-gitnexus');
-    var portCgc      = document.getElementById('port-cgc');
 
     if (portBackend)  portBackend.textContent  = ':' + backendPort;
     if (portFrontend) portFrontend.textContent = ':' + frontendPort;
-    if (portGitnexus) portGitnexus.textContent = ':' + gitnexusPort;
-    if (portCgc)      portCgc.textContent      = ':' + cgcPort;
 
     // Update "Open CodeTalk" links
     var frontendUrl = 'http://localhost:' + frontendPort;
@@ -102,45 +88,13 @@
     var bar = $('#config-info-bar');
     if (bar) bar.classList.add('visible');
 
-    setInfoLink('cfg-workspace', null, cfg.workspacePath || './workspace');
     setInfoLink('cfg-frontend-url', 'http://localhost:' + frontendPort);
     setInfoLink('cfg-backend-url', 'http://localhost:' + backendPort);
-    setInfoLink(
-      'cfg-gitnexus-url',
-      optionalServiceEnabled.gitnexus ? 'http://localhost:' + gitnexusPort : null,
-      optionalServiceEnabled.gitnexus ? null : '未启用'
-    );
-    setInfoLink(
-      'cfg-cgc-url',
-      optionalServiceEnabled.cgc ? 'http://localhost:' + cgcPort : null,
-      optionalServiceEnabled.cgc ? null : '未启用'
-    );
 
-  }
-
-  function applyOptionalServiceVisibility(cfg) {
-    optionalServiceEnabled.gitnexus = cfg.installGitnexus === false ? false : true;
-    optionalServiceEnabled.cgc = cfg.installCgc === false ? false : true;
-
-    SERVICES.forEach(function (svc) {
-      var card = $('[data-svc="' + svc + '"]');
-      if (!card) return;
-      var visible = svc === 'gitnexus'
-        ? optionalServiceEnabled.gitnexus
-        : svc === 'cgc'
-          ? optionalServiceEnabled.cgc
-          : true;
-      card.hidden = !visible;
-      card.setAttribute('aria-hidden', visible ? 'false' : 'true');
-    });
   }
 
   function activeServices() {
-    return SERVICES.filter(function (svc) {
-      if (svc === 'gitnexus') return optionalServiceEnabled.gitnexus;
-      if (svc === 'cgc') return optionalServiceEnabled.cgc;
-      return true;
-    });
+    return SERVICES.slice();
   }
 
   function setInfoLink(id, url, text) {
@@ -288,6 +242,7 @@
       isStarting = false;
       closeEventStream();
       appendLog('success', '所有服务已成功启动');
+      fetchConfig();
       showSuccessBanner();
       fetchStatus();
       setButtonsEnabled(true);
@@ -345,32 +300,21 @@
       }
     });
 
-    var ft = forceTakeover;
-    setForceTakeoverMode(false);
-
     fetch('/api/quickstart', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ force_takeover: ft }),
+      body: JSON.stringify({}),
     })
       .then(function (res) {
         if (!res.ok) {
           return res.json().then(function (err) {
             var detail = err.detail;
-            if (detail && typeof detail === 'object' && detail.conflicts) {
-              setForceTakeoverMode(true);
-              var lines = detail.conflicts.map(function (c) {
-                return '端口 ' + c.port + ' 被 ' + c.process_name + '(PID ' + c.pid + ')' + (c.is_own ? '（本实例）' : '') + ' 占用';
-              });
-              throw new Error('端口冲突：' + lines.join('；') + '。请确认这些进程可被关闭，然后点击「强制接管并启动」。');
-            }
             throw new Error(typeof detail === 'string' ? detail : (detail && detail.message) || 'HTTP ' + res.status);
           }).catch(function (e) {
             if (e.message) throw e;
             throw new Error('HTTP ' + res.status);
           });
         }
-        setForceTakeoverMode(false);
         // Connect to SSE for live logs
         openEventStream();
       })
@@ -385,7 +329,6 @@
   function stopAll() {
     closeEventStream();
     isStarting = false;
-    setForceTakeoverMode(false);
     appendLog('info', '正在停止全部服务...');
     hideSuccessBanner();
 
@@ -447,23 +390,6 @@
     var btnStop = $('#btn-stop-all');
     if (btnStart) btnStart.disabled = !enabled;
     if (btnStop) btnStop.disabled = !enabled;
-  }
-
-  function setForceTakeoverMode(enabled) {
-    forceTakeover = !!enabled;
-    var btnStart = $('#btn-start-all');
-    var label = $('#btn-start-label');
-    if (btnStart) {
-      btnStart.classList.toggle('force-takeover', forceTakeover);
-      btnStart.setAttribute(
-        'aria-label',
-        forceTakeover ? '强制接管并启动全部服务' : '一键启动全部服务'
-      );
-      btnStart.title = forceTakeover
-        ? '将关闭占用端口的进程后重新启动 CodeTalk'
-        : '';
-    }
-    if (label) label.textContent = forceTakeover ? '强制接管并启动' : '一键启动全部';
   }
 
   function showSuccessBanner() {

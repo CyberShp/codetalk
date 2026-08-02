@@ -62,7 +62,8 @@
 
     .launcher-cards {
       display: grid;
-      grid-template-columns: repeat(2, 1fr);
+      grid-template-columns: minmax(260px, 420px);
+      justify-content: center;
       gap: 32px;
       max-width: 800px;
       width: 100%;
@@ -207,26 +208,16 @@
         <span class="logo-text">CodeTalk <span class="logo-sub">控制中心</span></span>
       </div>
       <h1 class="launcher-title">CodeTalk 控制中心</h1>
-      <p class="launcher-subtitle">部署、配置与管理您的 CodeTalk 实例</p>
+      <p class="launcher-subtitle">一键安装依赖并管理 CodeTalk 前端和后端服务</p>
     </div>
 
     <div class="launcher-cards">
-      <a href="/deploy.html" class="launcher-card">
-        <div class="card-icon-wrap card-icon-deploy">
-          <span aria-hidden="true">&#x1F680;</span>
-        </div>
-        <h2 class="launcher-card-title">部署 CodeTalk</h2>
-        <p class="launcher-card-desc">首次部署或重新配置<br />环境检查、参数设置、一键安装</p>
-        <svg class="card-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M5 12h14M12 5l7 7-7 7"/>
-        </svg>
-      </a>
       <a href="/start.html" class="launcher-card">
         <div class="card-icon-wrap card-icon-start">
           <span aria-hidden="true">&#x25B6;&#xFE0F;</span>
         </div>
         <h2 class="launcher-card-title">启动 CodeTalk</h2>
-        <p class="launcher-card-desc">启动已部署的服务<br />服务监控、日志查看、一键启停</p>
+        <p class="launcher-card-desc">自动安装依赖、处理端口占用<br />服务监控、日志查看、一键启停</p>
         <svg class="card-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M5 12h14M12 5l7 7-7 7"/>
         </svg>

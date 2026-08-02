@@ -52,14 +52,16 @@ async def test_deploy_stream_returns_event_stream(client):
 
 async def test_deploy_missing_mode_uses_native(client):
     # When mode is missing, server.py defaults to "native" and attempts deploy.
-    # This will either succeed with a job_id (200) or fail with port conflict (409).
     resp = await client.post("/api/deploy", json={})
-    # Should not be 400 (mode rejection) -- native is the default
     assert resp.status_code != 400
 
 
-async def test_supplement_gitnexus_returns_job_id(client):
+async def test_supplement_gitnexus_is_removed(client):
+    import server
+
     resp = await client.post("/api/deploy/supplement/gitnexus")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert "job_id" in body
+    assert resp.status_code == 405
+    assert all(
+        getattr(route, "path", "") != "/api/deploy/supplement/gitnexus"
+        for route in server.app.routes
+    )

@@ -5,6 +5,8 @@ import pytest
 
 from app.services.workbench_artifact_manifest import artifact_preview_with_redaction_status
 from app.services.workbench_artifact_manifest import build_task_artifact_manifest
+from app.services.workbench_artifact_manifest import workbench_artifact_audience
+from app.services.workbench_artifact_manifest import workbench_artifact_kind
 
 
 def test_artifact_preview_redacts_before_truncating_secret_boundary(tmp_path):
@@ -257,3 +259,16 @@ def test_artifact_manifest_does_not_hide_declaration_permission_errors(
 
     with pytest.raises(PermissionError):
         build_task_artifact_manifest(task_dir)
+
+
+def test_artifact_manifest_classifies_standard_deliverable_envelope():
+    expected = {
+        "deliverables/summary.md": "deliverable_summary",
+        "deliverables/manifest.json": "deliverable_manifest",
+        "deliverables/artifact_validation.json": "artifact_validation",
+        "deliverables.zip": "deliverable_bundle",
+    }
+
+    for relative_path, kind in expected.items():
+        assert workbench_artifact_kind(relative_path) == kind
+        assert workbench_artifact_audience(relative_path, kind=kind) == "deliverable"

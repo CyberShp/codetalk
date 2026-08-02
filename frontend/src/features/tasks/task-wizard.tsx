@@ -14,6 +14,7 @@ import { workflowStepMcpProfiles } from "./task-wizard-contract.mjs";
 
 const labels = ["选择工作流", "任务信息", "填写输入", "执行配置", "确认输出", "检查运行"];
 type Definition = { compiled_contract_version?: number; inputs?: Array<Record<string, unknown>>; steps?: Array<Record<string, unknown>>; outputs?: Array<Record<string, unknown>>; execution_profiles?: WorkflowExecutionProfile[]; default_execution_profile?: WorkflowExecutionProfile["id"] };
+const CORE_WORKFLOW_IDS = new Set(["module_analysis", "resource_leak_hunt", "mr_blackbox_test", "patch_impact_review", "source_flow_sfmea_blackbox", "testing_activity_orchestration", "coverage_gap", "defect_retest", "module_risk_report"]);
 const compatibilityExecutionProfiles: WorkflowExecutionProfile[] = [
   { id: "rapid", label: "速度型", delivery_class: "bounded_analysis", expected_duration_minutes: [8, 20], max_subagents: 1 },
   { id: "deep", label: "深度型", delivery_class: "full_test_delivery", expected_duration_minutes: [40, 90], max_subagents: 4 },
@@ -23,18 +24,21 @@ export function TaskWizard() {
   const router = useRouter();
   const params = useSearchParams();
   const taskParam = params.get("task") || "";
+  const requestedWorkflowId = params.get("workflow_id") || "";
+  const requestedWorkspaceId = params.get("workspace_id") || "";
+  const requestedTarget = params.get("target") || "";
   const [step, setStep] = useState(Math.min(6, Math.max(1, Number(params.get("step") || 1))));
   const [workflows, setWorkflows] = useState<WorkflowListItem[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [providers, setProviders] = useState<WorkflowProviderCapability[]>([]);
   const [skills, setSkills] = useState<WorkflowSkillCapability[]>([]);
-  const [workflowId, setWorkflowId] = useState("");
+  const [workflowId, setWorkflowId] = useState(requestedWorkflowId);
   const [versionId, setVersionId] = useState("");
   const [version, setVersion] = useState<WorkflowVersion | null>(null);
   const [task, setTask] = useState<WorkbenchTask | null>(null);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [workspaceId, setWorkspaceId] = useState("");
+  const [workspaceId, setWorkspaceId] = useState(requestedWorkspaceId);
   const [tags, setTags] = useState("");
   const [inputs, setInputs] = useState<Record<string, unknown>>({});
   const [executionOverrides, setExecutionOverrides] = useState<Record<string, unknown>>({});
@@ -53,7 +57,28 @@ export function TaskWizard() {
       || "rapid")
     : "";
 
-  useEffect(() => { void Promise.all([workflowsApi.list(), api.workspaces.list(), workflowsApi.providers(), workflowsApi.capabilities()]).then(([workflowItems, workspaceItems, providerItems, capabilities]) => { setWorkflows(workflowItems.filter((item) => Boolean(item.v2?.published_version_id))); setWorkspaces(workspaceItems); setProviders(providerItems.providers); setSkills(capabilities.skill_catalog || []); }).catch((cause) => setError(cause instanceof Error ? cause.message : "向导数据加载失败")); }, []);
+  useEffect(() => {
+    void Promise.all([
+      workflowsApi.list(),
+      api.workspaces.list(),
+      workflowsApi.providers(),
+      workflowsApi.capabilities(),
+    ]).then(([workflowItems, workspaceItems, providerItems, capabilities]) => {
+      const published = workflowItems.filter((item) => Boolean(item.v2?.published_version_id));
+      setWorkflows(published);
+      setWorkspaces(workspaceItems);
+      setProviders(providerItems.providers);
+      setSkills(capabilities.skill_catalog || []);
+      if (!taskParam && requestedWorkflowId) {
+        const requested = published.find((item) => item.id === requestedWorkflowId);
+        if (requested?.v2?.published_version_id) {
+          setWorkflowId(requested.id);
+          setVersionId(requested.v2.published_version_id);
+          setName(`${requested.name} · ${new Date().toLocaleDateString("zh-CN")}`);
+        }
+      }
+    }).catch((cause) => setError(cause instanceof Error ? cause.message : "向导数据加载失败"));
+  }, [requestedWorkflowId, taskParam]);
   useEffect(() => {
     if (!taskParam) {
       hydrationRequestId.current += 1;
@@ -81,12 +106,32 @@ export function TaskWizard() {
     if (!workflowId || !versionId) return;
     let active = true;
     void workflowsApi.version(workflowId, versionId).then((item) => {
-      if (active) setVersion(item);
+      if (!active) return;
+      setVersion(item);
+      if (!taskParam && requestedTarget) {
+        const definition = (item.compiled_definition || {}) as Definition;
+        const inputIds = new Set(
+          (definition.inputs || []).map((input) => String(input.id || "")),
+        );
+        const targetInputId = [
+          "test_goal",
+          "analysis_object",
+          "analysis_target",
+          "module_scope",
+          "target_scope",
+        ].find((inputId) => inputIds.has(inputId));
+        if (targetInputId) {
+          setInputs((current) => ({
+            ...current,
+            [targetInputId]: current[targetInputId] || requestedTarget,
+          }));
+        }
+      }
     }).catch((cause) => {
       if (active) setError(cause instanceof Error ? cause.message : "工作流版本加载失败");
     });
     return () => { active = false; };
-  }, [versionId, workflowId]);
+  }, [requestedTarget, taskParam, versionId, workflowId]);
   useEffect(() => {
     // A persisted task snapshot is authoritative.  Re-fetching its immutable
     // WorkflowVersion while moving between wizard steps used to reset a user
@@ -120,7 +165,7 @@ export function TaskWizard() {
   </section>{error && <div className="ct-v2-notice is-error" role="alert">{error}</div>}<footer><button type="button" disabled={step === 1 || busy || pendingUploads > 0} onClick={() => void go(step - 1)}><ArrowLeft size={14} />上一步</button><span>第 {step} / 6 步</span>{step < 6 ? <button className="ct-v2-primary-button" type="button" disabled={busy || pendingUploads > 0} onClick={() => void go(step + 1)}>{(busy || pendingUploads > 0) && <Loader2 className="animate-spin" size={14} />}{pendingUploads > 0 ? "文件上传中" : "保存并继续"}<ArrowRight size={14} /></button> : <span />}</footer></main>;
 }
 
-function WorkflowChoice({ items, value, onChange, locked }: { items: WorkflowListItem[]; value: string; onChange: (id: string) => void; locked: boolean }) { return <div className="ct-v2-task-step"><h2>选择已发布工作流</h2><p>{locked ? "任务草稿已固定发布版本；如需其他工作流，请新建任务。" : "任务会固定引用当前发布版本，后续发布不会改变本任务。"}</p><div className="ct-v2-workflow-choice">{items.filter((item) => !locked || item.id === value).map((item) => <label className={value === item.id ? "is-selected" : ""} key={item.id}><input type="radio" disabled={locked} checked={value === item.id} onChange={() => onChange(item.id)} /><strong>{item.presentation?.label ?? item.name}</strong><span>{item.description || "无描述"}</span><small>已发布版本 V{item.version || 1}{item.presentation?.lifecycle === "legacy" ? " · Legacy" : ""}</small></label>)}</div></div>; }
+function WorkflowChoice({ items, value, onChange, locked }: { items: WorkflowListItem[]; value: string; onChange: (id: string) => void; locked: boolean }) { const [showAll, setShowAll] = useState(false); const visible = items.filter((item) => locked ? item.id === value : showAll || CORE_WORKFLOW_IDS.has(item.id) || item.id === value); return <div className="ct-v2-task-step"><div className="ct-v2-workflow-choice-heading"><div><h2>选择已发布工作流</h2><p>{locked ? "任务草稿已固定发布版本；如需其他工作流，请新建任务。" : "任务会固定引用当前发布版本，后续发布不会改变本任务。"}</p></div>{!locked && <div className="ct-v2-workflow-filter" role="group" aria-label="工作流范围"><button type="button" className={!showAll ? "is-active" : ""} onClick={() => setShowAll(false)}>常用工作流</button><button type="button" className={showAll ? "is-active" : ""} onClick={() => setShowAll(true)}>全部场景</button></div>}</div><div className="ct-v2-workflow-choice">{visible.map((item) => <label className={value === item.id ? "is-selected" : ""} key={item.id}><input type="radio" disabled={locked} checked={value === item.id} onChange={() => onChange(item.id)} /><strong>{item.presentation?.label ?? item.name}</strong><span>{item.description || "无描述"}</span><small>已发布版本 V{item.version || 1}{item.presentation?.lifecycle === "legacy" ? " · Legacy" : ""}</small></label>)}</div></div>; }
 function TaskInfo({ name, description, workspaceId, tags, workspaces, onName, onDescription, onWorkspace, onTags, workspaceLocked }: { name: string; description: string; workspaceId: string; tags: string; workspaces: Workspace[]; onName:(v:string)=>void; onDescription:(v:string)=>void; onWorkspace:(v:string)=>void; onTags:(v:string)=>void; workspaceLocked:boolean }) { return <div className="ct-v2-task-step"><h2>任务信息与工作空间</h2><div className="ct-v2-task-form-grid"><label><span>任务名称 *</span><input value={name} onChange={(e)=>onName(e.target.value)} /></label><label><span>工作空间 *</span><select disabled={workspaceLocked} value={workspaceId} onChange={(e)=>onWorkspace(e.target.value)}><option value="">选择已创建的工作空间</option>{workspaces.map((item)=><option value={item.id} key={item.id}>{item.name}</option>)}</select>{workspaceLocked && <small>任务创建后工作空间保持固定</small>}</label><label className="is-wide"><span>描述</span><textarea rows={3} value={description} onChange={(e)=>onDescription(e.target.value)} /></label><label className="is-wide"><span>标签</span><input value={tags} onChange={(e)=>onTags(e.target.value)} placeholder="存储, SPDK, 回归" /></label></div></div>; }
 function DynamicInputs({ definitions, values, onChange, onUploadBusyChange, onUploadError }: { definitions: Array<Record<string, unknown>>; values: Record<string, unknown>; onChange:Dispatch<SetStateAction<Record<string, unknown>>>; onUploadBusyChange:(delta:number)=>void; onUploadError:(message:string)=>void }) {
   const visible = definitions.filter((item) => !isWorkspaceInputDefinition(item));
@@ -139,7 +184,7 @@ function DynamicInputs({ definitions, values, onChange, onUploadBusyChange, onUp
   return <div className="ct-v2-task-step"><h2>填写本次输入</h2><p>字段名称和要求来自工作流版本；工作空间路径由系统自动注入。</p><div className="ct-v2-dynamic-inputs">{visible.map((item) => {
     const id = String(item.id); const type = String(item.type || "text"); const isFileSet = type === "file_set";
     const currentFiles = isFileSet ? (values[id] as Array<Record<string, unknown>> || []) : values[id] ? [values[id] as Record<string, unknown>] : [];
-    return <label key={id}><span>{String(item.label || id)}{item.required ? " *" : ""}</span><small>{String(item.role || type)} · {inputResolverLabel(item.resolver)}</small>{["file", "file_set", "coverage_report", "patch", "diff"].includes(type) ? <><input type="file" multiple={isFileSet} onChange={(event) => { const files = Array.from(event.target.files || []); if (files.length) void upload(files, id, isFileSet); }} />{currentFiles.length > 0 && <small className="ct-v2-uploaded-files">已选择 {currentFiles.length} 个文件</small>}</> : type === "boolean" ? <input type="checkbox" checked={Boolean(values[id])} onChange={(event) => onChange((currentValues) => ({ ...currentValues, [id]: event.target.checked }))} /> : ["text", "long_text"].includes(type) ? <textarea rows={type === "long_text" ? 5 : 3} value={String(values[id] || "")} onChange={(event) => onChange((currentValues) => ({ ...currentValues, [id]: event.target.value }))} /> : <input value={String(values[id] || "")} onChange={(event) => onChange((currentValues) => ({ ...currentValues, [id]: event.target.value }))} />}</label>;
+    return <label key={id}><span>{String(item.label || id)}{item.required ? " *" : ""}</span><small>{String(item.role || type)} · {inputResolverLabel(item.resolver)}</small>{Boolean(item.example) && <small>示例：{String(item.example)}</small>}{["file", "file_set", "coverage_report", "patch", "diff"].includes(type) ? <><input type="file" multiple={isFileSet} onChange={(event) => { const files = Array.from(event.target.files || []); if (files.length) void upload(files, id, isFileSet); }} />{currentFiles.length > 0 && <small className="ct-v2-uploaded-files">已选择 {currentFiles.length} 个文件</small>}</> : type === "boolean" ? <input type="checkbox" checked={Boolean(values[id])} onChange={(event) => onChange((currentValues) => ({ ...currentValues, [id]: event.target.checked }))} /> : ["text", "long_text"].includes(type) ? <textarea rows={type === "long_text" ? 5 : 3} value={String(values[id] || "")} onChange={(event) => onChange((currentValues) => ({ ...currentValues, [id]: event.target.value }))} /> : <input value={String(values[id] || "")} onChange={(event) => onChange((currentValues) => ({ ...currentValues, [id]: event.target.value }))} />}{Boolean(item.required) && isMissing(values[id]) && Boolean(item.missing_guidance) && <small className="ct-v2-input-guidance">{String(item.missing_guidance)}</small>}</label>;
   })}{!visible.length && <p>该工作流只需要所选工作空间，无需额外输入。</p>}</div></div>;
 }
 

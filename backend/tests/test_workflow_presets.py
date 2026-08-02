@@ -10,6 +10,9 @@ def test_release_workflow_presets_expose_full_and_two_basic_workflows():
         "source_flow_sfmea_blackbox",
         "basic_source_report_codex",
         "basic_source_design_report_builtin",
+        "coverage_gap",
+        "defect_retest",
+        "module_risk_report",
     ]
     assert "module_analysis" in reserved_builtin_workflow_ids()
     assert "source_flow_sfmea_blackbox" in reserved_builtin_workflow_ids()
@@ -28,6 +31,9 @@ def test_source_flow_v2_keeps_release_presets_and_declares_optional_mindmap():
         "source_flow_sfmea_blackbox",
         "basic_source_report_codex",
         "basic_source_design_report_builtin",
+        "coverage_gap",
+        "defect_retest",
+        "module_risk_report",
     ]
     source_flow = next(item for item in presets if item["id"] == "source_flow_sfmea_blackbox")["definition"]
     assert source_flow["name"] == "代码分析 -> 流程 -> SFMEA -> 黑盒用例"
@@ -132,6 +138,8 @@ def test_basic_report_workflow_presets_have_named_analysis_target_and_one_report
             "required": True,
             "resolver": "workspace",
             "role": "SPDK 源码工作空间",
+            "example": "D:/src/project",
+            "missing_guidance": "请提供源码工作空间后再启动工作流。",
         },
         {
             "id": "analysis_target",
@@ -140,6 +148,8 @@ def test_basic_report_workflow_presets_have_named_analysis_target_and_one_report
             "required": True,
             "resolver": "manual",
             "role": "用户逐字要求，定义分析范围、流程、异常、资源、并发与恢复重点",
+            "example": "说明目标、边界、预期行为和重点风险",
+            "missing_guidance": "请提供分析目标后再启动工作流。",
         },
     ]
     source_step = source_only["steps"][0]
@@ -218,6 +228,8 @@ def test_basic_report_workflow_presets_have_named_analysis_target_and_one_report
         "required": True,
         "resolver": "local",
         "role": "iSCSI login 设计约束与外部行为",
+        "example": "requirements.docx 或 report.md",
+        "missing_guidance": "请提供开发设计文档后再启动工作流。",
     }
     builtin_step = with_design["steps"][0]
     assert builtin_step["provider"] == "builtin-llm"
@@ -338,6 +350,9 @@ def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
         "testing_activity_orchestration",
         "basic_source_report_codex",
         "basic_source_design_report_builtin",
+        "coverage_gap",
+        "defect_retest",
+        "module_risk_report",
     )
     assert preset_ids[: len(ORIGINAL_CORE_WORKFLOW_PRESET_IDS)] == list(
         ORIGINAL_CORE_WORKFLOW_PRESET_IDS
@@ -591,6 +606,35 @@ def test_workflow_definition_rejects_unsafe_artifact_paths():
             "outputs": [],
         })
 
+    with pytest.raises(WorkflowValidationError, match="unsafe required artifact path"):
+        validate_workflow_definition({
+            "id": "empty_required_artifact",
+            "name": "Empty required artifact",
+            "steps": [
+                {
+                    "id": "agent",
+                    "type": "agent_task",
+                    "required_artifacts": [""],
+                }
+            ],
+            "outputs": [],
+        })
+
+    with pytest.raises(WorkflowValidationError, match="unsafe output artifact path"):
+        validate_workflow_definition({
+            "id": "unsafe_output_artifact",
+            "name": "Unsafe output artifact",
+            "steps": [{"id": "agent", "type": "agent_task"}],
+            "outputs": [
+                {
+                    "id": "report",
+                    "type": "markdown",
+                    "from": "agent",
+                    "artifact": "C:/outside/report.md",
+                }
+            ],
+        })
+
 
 def test_workflow_definition_validates_input_schema_definition():
     import pytest
@@ -622,19 +666,6 @@ def test_workflow_definition_validates_input_schema_definition():
             "outputs": [],
         })
 
-    with pytest.raises(WorkflowValidationError, match="unsafe required artifact path"):
-        validate_workflow_definition({
-            "id": "empty_required_artifact",
-            "name": "Empty required artifact",
-            "steps": [
-                {
-                    "id": "agent",
-                    "type": "agent_task",
-                    "required_artifacts": [""],
-                }
-            ],
-            "outputs": [],
-        })
 
     with pytest.raises(WorkflowValidationError, match="unsafe output artifact path"):
         validate_workflow_definition({
@@ -650,3 +681,38 @@ def test_workflow_definition_validates_input_schema_definition():
                 }
             ],
         })
+
+
+def test_workflow_definition_validates_bounded_knowledge_policy():
+    import pytest
+
+    from app.services.workflow_dsl import WorkflowValidationError, validate_workflow_definition
+
+    workflow = validate_workflow_definition({
+        "id": "knowledge_guided_test",
+        "name": "Knowledge guided test",
+        "inputs": [{"id": "analysis_object", "type": "free_text"}],
+        "steps": [{"id": "agent", "type": "agent_task"}],
+        "outputs": [{"id": "report", "type": "markdown", "from": "agent"}],
+        "knowledge_policy": {
+            "sources": ["experience_patterns", "semantic_cases", "evidence_memory"],
+            "scopes": ["project", "personal_global"],
+            "mode": "preflight",
+            "max_results": 8,
+            "allow_followup": True,
+        },
+    })
+
+    assert workflow.raw["knowledge_policy"]["max_results"] == 8
+
+    for patch, message in [
+        ({"sources": ["codehub_search"]}, "unsupported knowledge source"),
+        ({"scopes": ["team"]}, "unsupported knowledge scope"),
+        ({"mode": "autonomous_exploration"}, "unsupported knowledge mode"),
+        ({"max_results": 101}, "knowledge max_results"),
+        ({"allow_followup": "yes"}, "knowledge allow_followup"),
+    ]:
+        payload = dict(workflow.raw)
+        payload["knowledge_policy"] = {**workflow.raw["knowledge_policy"], **patch}
+        with pytest.raises(WorkflowValidationError, match=message):
+            validate_workflow_definition(payload)

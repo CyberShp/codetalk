@@ -339,8 +339,6 @@ async def run_checks(mode: str) -> list[dict]:
             int(saved.get("frontend_port", 3003)),
             int(saved.get("backend_port", 3004)),
         ]
-        if saved.get("install_gitnexus", True):
-            native_ports.append(int(saved.get("gitnexus_port", 7100)))
         own_ports = _detect_own_running_ports(set(native_ports))
         results.extend(_check_ports(ports=native_ports, mode="native", own_ports=own_ports))
     elif mode == "k8s":

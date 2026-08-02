@@ -36,7 +36,6 @@ import type {
   WorkspaceSourceSearchMatch,
 } from "@/lib/types";
 import MarkdownRenderer from "@/components/ui/MarkdownRenderer";
-import AnalysisTaskModal from "@/components/workspaces/AnalysisTaskModal";
 
 type Tab = "reports" | "materials" | "chat" | "source" | "logs";
 
@@ -520,7 +519,6 @@ export default function WorkspaceDetailPage() {
   const [materialUploading, setMaterialUploading] = useState(false);
   const [deletingMaterialIds, setDeletingMaterialIds] = useState<string[]>([]);
   const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingStatus | null>(null);
-  const [showAnalysisModal, setShowAnalysisModal] = useState(false);
   const [versions, setVersions] = useState<WorkspaceVersion[]>([]);
   const [selectedVersionTaskId, setSelectedVersionTaskId] = useState<string | null>(null);
   const [logSteps, setLogSteps] = useState<TaskStep[]>([]);
@@ -788,20 +786,24 @@ export default function WorkspaceDetailPage() {
 
   const handleAnalyze = () => {
     if (!workspace) return;
-    setShowAnalysisModal(true);
+    const query = new URLSearchParams({
+      workflow_id: "source_flow_sfmea_blackbox",
+      workspace_id: wsId,
+      repo_path: workspace.repo_path,
+      target: `${workspace.name} 的测试活动与报告生成`,
+    });
+    router.push(`/tasks/new?${query.toString()}`);
   };
 
-  const handleAnalysisStarted = () => {
-    setShowAnalysisModal(false);
-    setAnalyzing(true);
-    setAnalyzeStatus("running");
-    setAnalyzeProgress(0);
-    setCurrentAnalysisTaskId(null);
-    lastAnalysisTaskIdRef.current = null;
-    setLogSteps([]);
-    setSelectedVersionTaskId(null);
-    startAnalyzePoll();
-    void loadVersions();
+  const handleCoverageGap = () => {
+    if (!workspace) return;
+    const query = new URLSearchParams({
+      workflow_id: "coverage_gap",
+      workspace_id: wsId,
+      repo_path: workspace.repo_path,
+      target: `${workspace.name} 的覆盖率缺口分析`,
+    });
+    router.push(`/tasks/new?${query.toString()}`);
   };
 
   const handleReindex = async () => {
@@ -979,6 +981,14 @@ export default function WorkspaceDetailPage() {
                 <BarChart2 size={14} />
               )}
               生成报告
+            </button>
+            <button
+              onClick={handleCoverageGap}
+              disabled={!canAnalyze}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border border-outline-variant/40 text-on-surface-variant hover:bg-surface-container disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
+            >
+              <BarChart2 size={14} />
+              覆盖率缺口
             </button>
           </div>
           {(() => {
@@ -1310,12 +1320,6 @@ export default function WorkspaceDetailPage() {
         />
       )}
 
-      <AnalysisTaskModal
-        wsId={wsId}
-        open={showAnalysisModal}
-        onClose={() => setShowAnalysisModal(false)}
-        onStarted={handleAnalysisStarted}
-      />
     </div>
   );
 }

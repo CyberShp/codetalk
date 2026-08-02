@@ -257,6 +257,13 @@ DELIVERABLE_ARTIFACT_NAMES = {
     "test_recommendations.json",
 }
 
+DELIVERABLE_ENVELOPE_KINDS = {
+    "artifact_validation",
+    "deliverable_bundle",
+    "deliverable_manifest",
+    "deliverable_summary",
+}
+
 DIAGNOSTIC_ARTIFACT_KINDS = {
     "agent_execution_input",
     "agent_failure_recovery",
@@ -329,6 +336,10 @@ def workbench_artifact_audience(
         if normalized_kind in DIAGNOSTIC_ARTIFACT_KINDS:
             return "diagnostic"
         return "support"
+    if name in DELIVERABLE_ARTIFACT_NAMES:
+        return "deliverable"
+    if normalized_kind in DELIVERABLE_ENVELOPE_KINDS:
+        return "deliverable"
     if normalized_kind in DIAGNOSTIC_ARTIFACT_KINDS:
         return "diagnostic"
     if name in DELIVERABLE_ARTIFACT_NAMES:
@@ -339,6 +350,14 @@ def workbench_artifact_audience(
 def workbench_artifact_kind(relative_path: str) -> str:
     name = relative_path.rsplit("/", 1)[-1]
     parts = relative_path.split("/")
+    if relative_path == "deliverables.zip":
+        return "deliverable_bundle"
+    if relative_path == "deliverables/summary.md":
+        return "deliverable_summary"
+    if relative_path == "deliverables/manifest.json":
+        return "deliverable_manifest"
+    if relative_path == "deliverables/artifact_validation.json":
+        return "artifact_validation"
     if "/turns/" in relative_path:
         if name == "execution_input.json":
             return "agent_turn_execution_input"

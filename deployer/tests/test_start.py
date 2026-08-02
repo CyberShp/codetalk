@@ -216,7 +216,7 @@ def test_deployer_port_preflight_falls_back_when_default_port_is_occupied(monkey
 
     assert selected == 9060
     assert start.PORT == 9060
-    assert start.URL == "http://localhost:9060"
+    assert start.URL == "http://localhost:9060/start.html"
     out = capsys.readouterr().out
     assert f"{occupied_port} 不可用" in out
     assert "已自动切换到 9060" in out
@@ -276,7 +276,7 @@ def test_deployer_url_uses_configured_host_port(monkeypatch):
     reloaded = importlib.reload(start)
     assert reloaded.HOST == "127.0.0.1"
     assert reloaded.PORT == 9041
-    assert reloaded.URL == "http://127.0.0.1:9041"
+    assert reloaded.URL == "http://127.0.0.1:9041/start.html"
 
 
 def test_unix_start_script_prefers_python_310_plus():

@@ -47,6 +47,22 @@ _REMOVED_LEGACY_TOOL_KEYS = {
     "deepwiki_api_port",
     "deepwikiUiPort",
     "deepwiki_ui_port",
+    "installGitnexus",
+    "install_gitnexus",
+    "portGitnexus",
+    "gitnexus_port",
+    "installCgc",
+    "install_cgc",
+    "portCgc",
+    "cgc_port",
+    "cgcVenvPath",
+    "cgc_venv_path",
+    "workspacePath",
+    "workspace_path",
+    "reposPath",
+    "repos_path",
+    "forceTakeover",
+    "force_takeover",
 }
 
 _FRONTEND_ONLY_KEYS = {
@@ -70,7 +86,9 @@ def _drop_removed_legacy_tool_keys(cfg: dict) -> dict:
     return {
         k: v
         for k, v in cfg.items()
-        if k not in _REMOVED_LEGACY_TOOL_KEYS and "deepwiki" not in k.lower()
+        if not str(k).startswith("_")
+        and k not in _REMOVED_LEGACY_TOOL_KEYS
+        and "deepwiki" not in k.lower()
     }
 
 
@@ -158,7 +176,7 @@ def _summarize_api_key_for_frontend(cfg: dict) -> dict:
     return cfg
 
 
-_PORT_KEYS = {"backend_port", "frontend_port", "gitnexus_port", "postgres_port", "cgc_port"}
+_PORT_KEYS = {"backend_port", "frontend_port", "postgres_port"}
 
 
 def _env_int(name: str, default: int) -> int:
@@ -223,22 +241,14 @@ def get_default_config(mode: str) -> dict:
     """Return a default config dict for the given deployment mode."""
     frontend_port = _env_int("CODETALK_DEPLOYER_FRONTEND_PORT", 3003)
     backend_port = _env_int("CODETALK_DEPLOYER_BACKEND_PORT", 3004)
-    gitnexus_port = _env_int("CODETALK_DEPLOYER_GITNEXUS_PORT", 7100)
-    cgc_port = _env_int("CODETALK_DEPLOYER_CGC_PORT", 7072)
     base = {
         "mode": mode,
-        "workspace_path": "./workspace",
         "temp_path": "./workspace/tmp",
         "llm_provider": "openai",
         "openai_api_key": "",
         "anthropic_api_key": "",
         "google_api_key": "",
-        "repos_path": "./workspace/repos",
         "frontend_port": frontend_port,
-        "gitnexus_port": gitnexus_port,
-        "cgc_port": cgc_port,
-        "install_gitnexus": _env_bool("CODETALK_DEPLOYER_INSTALL_GITNEXUS", True),
-        "install_cgc": _env_bool("CODETALK_DEPLOYER_INSTALL_CGC", True),
         "cors_origins": f"http://localhost:{frontend_port},http://127.0.0.1:{frontend_port}",
     }
     if mode == "native":

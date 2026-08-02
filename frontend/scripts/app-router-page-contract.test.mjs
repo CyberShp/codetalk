@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 const allowedNamedExports = new Set([
   "config",
@@ -33,7 +33,7 @@ test("workbench page module only exports App Router page-safe fields", () => {
   assert.deepEqual(illegalExports, []);
 });
 
-test("workbench sibling routes use the release gate without importing a page module", () => {
+test("workbench sibling routes redirect to the Phase2 surfaces without importing a page module", () => {
   const designerSource = readFileSync(
     new URL("../src/app/workbench/designer/page.tsx", import.meta.url),
     "utf8",
@@ -45,9 +45,8 @@ test("workbench sibling routes use the release gate without importing a page mod
 
   assert.doesNotMatch(designerSource, /from\s+["']\.\.\/page["']/);
   assert.doesNotMatch(semanticSource, /from\s+["']\.\.\/page["']/);
-  assert.match(designerSource, /WorkbenchEntryGate/);
+  assert.match(designerSource, /redirect\(`?\/workflows/);
   assert.match(semanticSource, /WorkbenchEntryGate/);
-  assert.match(designerSource, /destination="\/workflows"/);
   assert.match(semanticSource, /destination="\/semantic-library"/);
 });
 
@@ -66,7 +65,18 @@ test("workspace creation keeps the optional local folder browser wired", () => {
   assert.match(apiSource, /\/api\/workspaces\/folders/);
 });
 
-test("workspace folder picker uses backend-provided roots instead of hardcoded platform roots", () => {
+test("workspace creation treats the local folder as optional", () => {
+  const pageSource = readFileSync(
+    new URL("../src/app/workspaces/new/page.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(pageSource, /本地文件夹路径[\s\S]{0,80}可选/);
+  assert.doesNotMatch(pageSource, /请输入代码仓库路径/);
+  assert.match(pageSource, /repo_path:\s*submittedRepoPath/);
+});
+
+test("workspace folder picker uses backend-provided roots instead of a hardcoded POSIX root", () => {
   const pageSource = readFileSync(
     new URL("../src/app/workspaces/new/page.tsx", import.meta.url),
     "utf8",
@@ -95,4 +105,15 @@ test("settings and workspace path hints avoid OS-specific absolute path literals
 
   assert.doesNotMatch(workspacePageSource, /\/Volumes\/|\/Volums\/|\/home\/user/);
   assert.doesNotMatch(settingsPageSource, /C:\/innernet|C:\\\\innernet|\/Volumes\/|\/home\/user/);
+});
+test("coverage analysis is not exposed as a standalone app route", () => {
+  const coveragePage = new URL("../src/app/coverage/page.tsx", import.meta.url);
+  const sidebarSource = readFileSync(
+    new URL("../src/components/layout/Sidebar.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.equal(existsSync(coveragePage), false);
+  assert.doesNotMatch(sidebarSource, /href:\s*["']\/coverage["']/);
+  assert.doesNotMatch(sidebarSource, /覆盖率分析/);
 });

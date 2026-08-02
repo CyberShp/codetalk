@@ -137,7 +137,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from app.api import agent_runtimes, agent_workbench, ai_conversations, tasks, settings as settings_router, tools, export, prompts, coverage, ws, workbench_v2_assets, workbench_v2_release, workbench_v2_tasks, workbench_v2_workflows  # noqa: E402
+from app.api import agent_runtimes, agent_workbench, ai_conversations, artifact_profiles, knowledge_center, tasks, settings as settings_router, tools, export, prompts, coverage, workbench_deliverables, workbench_v2_assets, workbench_v2_release, workbench_v2_tasks, workbench_v2_workflows, ws  # noqa: E402
 from app.api.repo_analysis import router as repo_analysis_router  # noqa: E402
 from app.api.workspaces import router as workspaces_router  # noqa: E402
 
@@ -147,6 +147,9 @@ app.include_router(workbench_v2_workflows.router)
 app.include_router(workbench_v2_tasks.router)
 app.include_router(workbench_v2_assets.router)
 app.include_router(workbench_v2_release.router)
+app.include_router(artifact_profiles.router)
+app.include_router(workbench_deliverables.router)
+app.include_router(knowledge_center.router)
 app.include_router(ai_conversations.router)
 app.include_router(agent_runtimes.router)
 app.include_router(settings_router.router)

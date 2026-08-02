@@ -7,7 +7,6 @@ import {
   ChevronDown,
   LayoutDashboard,
   Settings,
-  Shield,
   FolderOpen,
   MessageSquareText,
   PanelLeftClose,
@@ -31,7 +30,6 @@ const navItems: NavItem[] = [
   { label: "工作台", href: "/", icon: <LayoutDashboard size={18} /> },
   { label: "工作空间", href: "/workspaces", icon: <FolderOpen size={18} /> },
   { label: "AI 线程", href: "/ai", icon: <MessageSquareText size={18} /> },
-  { label: "覆盖率分析", href: "/coverage", icon: <Shield size={18} /> },
   { label: "设置", href: "/settings", icon: <Settings size={18} /> },
 ];
 
@@ -41,10 +39,12 @@ const orchestrationChildren: OrchestrationChild[] = [
   { label: "工作流", href: "/workflows" },
   { label: "语义库", href: "/semantic-library" },
   { label: "证据库", href: "/evidence-library" },
+  { label: "经验知识库", href: "/knowledge-center" },
+  { label: "交付件档案", href: "/artifact-profiles" },
 ];
 
 function isOrchestrationPath(pathname: string): boolean {
-  return pathname.startsWith("/workbench") || pathname.startsWith("/workflows") || pathname.startsWith("/tasks") || pathname.startsWith("/semantic-library") || pathname.startsWith("/evidence-library");
+  return pathname.startsWith("/workbench") || pathname.startsWith("/workflows") || pathname.startsWith("/tasks") || pathname.startsWith("/semantic-library") || pathname.startsWith("/evidence-library") || pathname.startsWith("/knowledge-center") || pathname.startsWith("/artifact-profiles");
 }
 
 function isActive(pathname: string, href: string): boolean {

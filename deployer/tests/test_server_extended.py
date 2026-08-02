@@ -21,12 +21,16 @@ async def test_deploy_409_when_already_running(client):
     assert "停止当前任务" in detail
 
 
-async def test_supplement_gitnexus_409_when_running(client):
-    """POST /api/deploy/supplement/gitnexus returns 409 during active deployment."""
+async def test_supplement_gitnexus_is_gone(client):
+    """Removed tool deployment endpoints are not part of the server surface."""
     import server
     server._state.running = True
     resp = await client.post("/api/deploy/supplement/gitnexus")
-    assert resp.status_code == 409
+    assert resp.status_code == 405
+    assert all(
+        getattr(route, "path", "") != "/api/deploy/supplement/gitnexus"
+        for route in server.app.routes
+    )
 
 
 # ------------------------------------------------------------------
@@ -99,12 +103,10 @@ async def test_quickstart_409_when_running(client):
     assert resp.status_code == 409
 
 
-async def test_quickstart_port_preflight_excludes_optional_cgc(client, monkeypatch):
-    """CGC is optional, so its port conflict must not block core quickstart."""
+async def test_quickstart_skips_port_preflight(client, monkeypatch):
+    """Quickstart lets NativeDeployer reclaim or move ports during startup."""
     import config_store
     import server
-
-    scanned_ports: list[int] = []
 
     class FakeNativeDeployer:
         def __init__(self, cfg, event_queue):
@@ -113,8 +115,7 @@ async def test_quickstart_port_preflight_excludes_optional_cgc(client, monkeypat
             self._start_args = {}
 
         async def _scan_port_conflicts(self, ports):
-            scanned_ports.extend(ports)
-            return []
+            raise AssertionError("server should not reject ports before startup")
 
         async def _step_install_backend(self):
             return None
@@ -141,10 +142,6 @@ async def test_quickstart_port_preflight_excludes_optional_cgc(client, monkeypat
             "mode": "native",
             "backend_port": 3004,
             "frontend_port": 3003,
-            "gitnexus_port": 7100,
-            "cgc_port": 7072,
-            "install_gitnexus": True,
-            "install_cgc": True,
         },
     )
     monkeypatch.setattr(server, "NativeDeployer", FakeNativeDeployer)
@@ -152,14 +149,11 @@ async def test_quickstart_port_preflight_excludes_optional_cgc(client, monkeypat
     resp = await client.post("/api/quickstart", json={})
 
     assert resp.status_code == 200
-    assert scanned_ports == [3004, 3003, 7100]
 
 
-async def test_deploy_port_preflight_excludes_optional_cgc(client, monkeypatch):
-    """Native deployment should not fail early on optional CGC port conflicts."""
+async def test_deploy_skips_port_preflight(client, monkeypatch):
+    """Native deployment lets NativeDeployer reclaim or move ports during startup."""
     import server
-
-    scanned_ports: list[int] = []
 
     class FakeNativeDeployer:
         def __init__(self, cfg, event_queue):
@@ -168,8 +162,7 @@ async def test_deploy_port_preflight_excludes_optional_cgc(client, monkeypatch):
             self._start_args = {}
 
         async def _scan_port_conflicts(self, ports):
-            scanned_ports.extend(ports)
-            return []
+            raise AssertionError("server should not reject ports before startup")
 
         async def deploy(self):
             return None
@@ -182,12 +175,7 @@ async def test_deploy_port_preflight_excludes_optional_cgc(client, monkeypatch):
             "mode": "native",
             "backend_port": 3004,
             "frontend_port": 3003,
-            "gitnexus_port": 7100,
-            "cgc_port": 7072,
-            "install_gitnexus": True,
-            "install_cgc": True,
         },
     )
 
     assert resp.status_code == 200
-    assert scanned_ports == [3004, 3003, 7100]

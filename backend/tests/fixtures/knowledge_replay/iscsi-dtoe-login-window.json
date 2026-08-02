@@ -1,0 +1,22 @@
+{
+  "case_id": "iscsi-dtoe-login-window",
+  "title": "iSCSI DTOE login transition can block a shared receive queue",
+  "query": "iscsi dtoe window login shared queue",
+  "source": {
+    "kind": "incident_report",
+    "identity": "fixture://knowledge-replay/iscsi-dtoe-login-window",
+    "revision": "fixture-v1",
+    "locator": {
+      "kind": "fixture",
+      "path": "iscsi-dtoe-login-window.json",
+      "line_start": 1,
+      "line_end": 15,
+      "excerpt": "DTOE degraded network window update and login data shared queue"
+    }
+  },
+  "summary": "With iSCSI DTOE enabled, a degraded network can delay advertised window updates. Data arriving before login completion can be rejected into a shared queue and prevent other connections from obtaining receive resources.",
+  "content": "Observed history: DTOE offloads protocol work to the card. Under a network- unhealthy condition, the advertised win window update was delayed and the available window shrank. During the transition after the three-way handshake but before login completion, host data was sent to the protocol driver, rejected because login completion was false, and retained in a shared queue. Existing and new connections then could not obtain receive resources.",
+  "terms": ["iscsi", "dtoe", "window", "login", "shared", "queue"],
+  "applicability": ["DTOE enabled", "network degraded", "login transition", "shared receive resources"],
+  "exclusions": ["a state transition and shared queue are not defects without lifecycle evidence"]
+}
