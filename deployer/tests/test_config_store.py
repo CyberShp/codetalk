@@ -103,10 +103,11 @@ def test_load_config_uses_deployer_environment_defaults(monkeypatch, isolated_co
 
     assert cfg["frontend_port"] == 3503
     assert cfg["backend_port"] == 3504
-    assert cfg["gitnexus_port"] == 7500
-    assert cfg["cgc_port"] == 7572
-    assert cfg["install_gitnexus"] is False
-    assert cfg["install_cgc"] is False
+    assert "gitnexus_port" not in cfg
+    assert "cgc_port" not in cfg
+    assert "install_gitnexus" not in cfg
+    assert "install_cgc" not in cfg
+    assert "workspace_path" not in cfg
     assert cfg["cors_origins"] == "http://localhost:3503,http://127.0.0.1:3503"
 
 

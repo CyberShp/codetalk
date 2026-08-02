@@ -11,7 +11,6 @@ DEPLOYER_DIR = Path(__file__).parent.parent
 if str(DEPLOYER_DIR) not in sys.path:
     sys.path.insert(0, str(DEPLOYER_DIR))
 
-import deployers.native as native_module  # noqa: E402
 from deployers.native import NativeDeployer, _frontend_source_fingerprint  # noqa: E402
 
 
@@ -32,33 +31,19 @@ class NativeFrontendStartTests(unittest.TestCase):
         self.assertNotIn("backend", deployer._processes)
 
     def test_frontend_default_start_uses_next_start_script(self) -> None:
-        deployer = NativeDeployer(
-            {
-                "backend_port": 3504,
-                "frontend_port": 3503,
-                "temp_path": "/Volumes/Media/codetalk-runtime/tmp",
-            },
-            asyncio.Queue(),
-        )
+        deployer = NativeDeployer({"backend_port": 3504, "frontend_port": 3503}, asyncio.Queue())
 
         args = deployer._default_start_args("frontend")
 
         self.assertIsNotNone(args)
         assert args is not None
         self.assertEqual(args["cmd"], ["npm", "run", "start"])
-        self.assertEqual(
-            args["env_extra"],
-            {
-                "PORT": "3503",
-                "CODETALK_FRONTEND_PORT": "3503",
-                "CODETALK_BACKEND_PORT": "3504",
-                "NEXT_PUBLIC_API_URL": "http://localhost:3504",
-                "CODETALK_TEMP_DIR": "/Volumes/Media/codetalk-runtime/tmp",
-                "TEMP": "/Volumes/Media/codetalk-runtime/tmp",
-                "TMP": "/Volumes/Media/codetalk-runtime/tmp",
-                "TMPDIR": "/Volumes/Media/codetalk-runtime/tmp",
-            },
-        )
+        self.assertEqual(args["env_extra"]["PORT"], "3503")
+        self.assertEqual(args["env_extra"]["CODETALK_FRONTEND_PORT"], "3503")
+        self.assertEqual(args["env_extra"]["CODETALK_BACKEND_PORT"], "3504")
+        self.assertEqual(args["env_extra"]["NEXT_PUBLIC_API_URL"], "http://localhost:3504")
+        for key in ("TEMP", "TMP", "TMPDIR"):
+            self.assertEqual(args["env_extra"][key], args["env_extra"]["CODETALK_TEMP_DIR"])
         self.assertNotIn("standalone", " ".join(args["cmd"]))
 
     def test_step_start_services_passes_selected_frontend_and_backend_ports(self) -> None:
@@ -93,21 +78,50 @@ class NativeFrontendStartTests(unittest.TestCase):
 
         deployer = asyncio.run(run())
         started = dict(deployer.started)
-        backend_env = started["backend"] or {}
-        frontend_env = started["frontend"] or {}
-        self.assertEqual(backend_env["CODETALK_BACKEND_PORT"], "3504")
+        self.assertEqual(started["backend"]["CODETALK_BACKEND_PORT"], "3504")
         self.assertEqual(
-            backend_env["CORS_ORIGINS"],
+            started["backend"]["CORS_ORIGINS"],
             "http://localhost:3503,http://127.0.0.1:3503",
         )
-        self.assertEqual(frontend_env["PORT"], "3503")
-        self.assertEqual(frontend_env["CODETALK_FRONTEND_PORT"], "3503")
-        self.assertEqual(frontend_env["CODETALK_BACKEND_PORT"], "3504")
-        self.assertEqual(frontend_env["NEXT_PUBLIC_API_URL"], "http://localhost:3504")
-        self.assertEqual(backend_env["CODETALK_TEMP_DIR"], frontend_env["CODETALK_TEMP_DIR"])
-        for key in ("TEMP", "TMP", "TMPDIR"):
-            self.assertEqual(backend_env[key], backend_env["CODETALK_TEMP_DIR"])
-            self.assertEqual(frontend_env[key], frontend_env["CODETALK_TEMP_DIR"])
+        self.assertEqual(started["frontend"]["PORT"], "3503")
+        self.assertEqual(started["frontend"]["CODETALK_FRONTEND_PORT"], "3503")
+        self.assertEqual(started["frontend"]["CODETALK_BACKEND_PORT"], "3504")
+        self.assertEqual(started["frontend"]["NEXT_PUBLIC_API_URL"], "http://localhost:3504")
+        for values in (started["backend"], started["frontend"]):
+            for key in ("TEMP", "TMP", "TMPDIR"):
+                self.assertEqual(values[key], values["CODETALK_TEMP_DIR"])
+
+    def test_step_start_services_rebuilds_frontend_after_api_port_fallback(self) -> None:
+        class RecordingDeployer(NativeDeployer):
+            def __init__(self) -> None:
+                super().__init__({"backend_port": 3004, "frontend_port": 3003}, asyncio.Queue())
+                self.events: list[str] = []
+
+            async def _ensure_core_ports(self, step: int) -> bool:
+                self._config["backend_port"] = 3005
+                return True
+
+            async def _step_install_frontend(self) -> None:
+                self.events.append("rebuild_frontend:3005")
+
+            async def _start_process(self, name, *args, **kwargs):
+                self.events.append(f"start:{name}")
+
+        async def run() -> RecordingDeployer:
+            with TemporaryDirectory() as tmpdir:
+                project_root = Path(tmpdir)
+                (project_root / "backend").mkdir()
+                (project_root / "frontend" / ".next").mkdir(parents=True)
+                deployer = RecordingDeployer()
+                with patch("deployers.native.PROJECT_ROOT", project_root):
+                    await deployer._step_start_services()
+                return deployer
+
+        deployer = asyncio.run(run())
+        self.assertEqual(
+            deployer.events,
+            ["rebuild_frontend:3005", "start:backend", "start:frontend"],
+        )
 
     def test_start_service_spawns_frontend_once(self) -> None:
         class RecordingDeployer(NativeDeployer):
@@ -187,10 +201,6 @@ class NativeFrontendStartTests(unittest.TestCase):
                 {
                     "backend_port": 3004,
                     "frontend_port": 3003,
-                    "gitnexus_port": 7100,
-                    "cgc_port": 7072,
-                    "workspace_path": str(project_root / "workspace"),
-                    "temp_path": str(project_root / "runtime-tmp"),
                 },
                 asyncio.Queue(),
             )
@@ -201,13 +211,38 @@ class NativeFrontendStartTests(unittest.TestCase):
             generated = env_path.read_text(encoding="utf-8")
             self.assertIn("KEEP_ME=1", generated)
             self.assertIn("CODETALK_BACKEND_PORT=3004", generated)
-            self.assertIn("GITNEXUS_BASE_URL=http://localhost:7100", generated)
-            self.assertIn(
-                f"CODETALK_TEMP_DIR={(project_root / 'runtime-tmp').resolve()}",
-                generated,
-            )
+            self.assertIn("REPOS_BASE_PATH=", generated)
+            self.assertNotIn("GITNEXUS_BASE_URL", generated)
+            self.assertNotIn("CGC_BASE_URL", generated)
             self.assertNotIn("DEEPWIKI", generated)
             self.assertNotIn("deepwiki", generated.lower())
+
+    def test_ensure_core_ports_moves_port_when_takeover_fails(self) -> None:
+        class RecordingDeployer(NativeDeployer):
+            def __init__(self) -> None:
+                super().__init__({"backend_port": 3004, "frontend_port": 3003}, asyncio.Queue())
+                self.released: list[tuple[list[int], bool]] = []
+                self.wrote_config = False
+
+            async def _release_ports(self, ports, step, force_takeover=False):
+                self.released.append((list(ports), force_takeover))
+
+            async def _port_has_conflict(self, port: int) -> bool:
+                return port == 3004
+
+            async def _write_runtime_config_files(self, step_name: str, step: int) -> None:
+                self.wrote_config = True
+
+        async def run() -> RecordingDeployer:
+            deployer = RecordingDeployer()
+            await deployer._ensure_core_ports(step=5)
+            return deployer
+
+        deployer = asyncio.run(run())
+        self.assertEqual(deployer.released, [([3004, 3003], True)])
+        self.assertEqual(deployer._config["backend_port"], 3005)
+        self.assertEqual(deployer._config["frontend_port"], 3003)
+        self.assertTrue(deployer.wrote_config)
 
     def test_frontend_build_key_changes_without_git_when_source_changes(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -300,28 +335,6 @@ class NativeFrontendStartTests(unittest.TestCase):
         self.assertNotIn(secret, message)
         self.assertNotIn("deployerBearerSecret123", message)
         self.assertNotIn("Authorization: Bearer deployerBearerSecret123", message)
-
-    def test_optional_cgc_install_failure_does_not_emit_error_status(self) -> None:
-        if native_module._cgc is None:
-            raise unittest.SkipTest("CGC launcher module is unavailable")
-
-        queue: asyncio.Queue = asyncio.Queue()
-        deployer = NativeDeployer({}, queue)
-
-        with patch.object(
-            native_module._cgc,
-            "ensure_cgc_installed",
-            side_effect=native_module._cgc.CGCInstallError("pip failed"),
-        ):
-            with self.assertRaises(RuntimeError):
-                asyncio.run(deployer._ensure_cgc(step=6))
-
-        events = []
-        while not queue.empty():
-            events.append(queue.get_nowait())
-
-        self.assertTrue(any("CGC 安装失败" in event["message"] for event in events))
-        self.assertNotIn("error", [event["status"] for event in events])
 
     def test_run_stream_redacts_subprocess_output_before_queueing(self) -> None:
         queue: asyncio.Queue = asyncio.Queue()

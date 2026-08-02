@@ -398,6 +398,9 @@ CORE_WORKFLOW_PRESET_IDS = (
     "testing_activity_orchestration",
     "basic_source_report_codex",
     "basic_source_design_report_builtin",
+    "coverage_gap",
+    "defect_retest",
+    "module_risk_report",
 )
 
 COMMON_TEST_SCENARIO_PRESET_IDS = (
@@ -466,10 +469,16 @@ ACTIVE_BUILTIN_WORKFLOW_PRESET_IDS = (
     "source_flow_sfmea_blackbox",
     "basic_source_report_codex",
     "basic_source_design_report_builtin",
+    "coverage_gap",
+    "defect_retest",
+    "module_risk_report",
 )
 
 BOOTSTRAPPED_BUILTIN_WORKFLOW_PRESET_IDS = (
     "source_flow_sfmea_blackbox",
+    "coverage_gap",
+    "defect_retest",
+    "module_risk_report",
 )
 
 BUILTIN_WORKFLOW_PRESET_ALIASES = {
@@ -731,6 +740,51 @@ def _basic_report_preset(*, include_design: bool, provider: str) -> dict[str, An
             ],
         },
     }
+_INPUT_LABELS = {
+    "analysis_object": "分析对象",
+    "coverage_report": "覆盖率文件",
+    "defect_report": "缺陷或失败记录",
+    "design_doc": "设计材料",
+    "environment_notes": "环境与约束",
+    "expected_behavior": "期望行为",
+    "mr_link": "MR 链接",
+    "module_scope": "模块或特性范围",
+    "patch_diff": "补丁差异",
+    "repo_path": "源码目录",
+    "requirements_doc": "需求材料",
+    "risk_pattern": "风险模式",
+    "semantic_library_ref": "测试语义库",
+    "target_scope": "分析范围",
+    "test_goal": "测试目标",
+    "test_scope": "测试范围补充",
+}
+
+_INPUT_EXAMPLES_BY_TYPE = {
+    "coverage_report": "coverage.lcov、cobertura.xml 或函数命中表",
+    "directory": "D:/src/project",
+    "file": "requirements.docx 或 report.md",
+    "file_set": "选择一个或多个材料文件",
+    "free_text": "iSCSI 登录、资源限制与异常恢复",
+    "long_text": "说明目标、边界、预期行为和重点风险",
+    "mr_link": "https://codehub.example/project/-/merge_requests/123",
+    "patch": "上传 patch 文件或粘贴统一 diff",
+}
+
+
+def _productize_workflow_inputs(definition: dict[str, Any]) -> None:
+    for raw in definition.get("inputs") or []:
+        if not isinstance(raw, dict):
+            continue
+        input_id = str(raw.get("id") or "")
+        input_type = str(raw.get("type") or "")
+        label = str(raw.get("label") or _INPUT_LABELS.get(input_id) or input_id.replace("_", " ")).strip()
+        raw["label"] = label
+        if raw.get("required"):
+            raw.setdefault(
+                "example",
+                _INPUT_EXAMPLES_BY_TYPE.get(input_type, f"填写{label}"),
+            )
+            raw.setdefault("missing_guidance", f"请提供{label}后再启动工作流。")
 
 
 def _source_flow_outputs(tag: str) -> list[dict[str, Any]]:
@@ -1385,6 +1439,224 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
         },
         _basic_report_preset(include_design=False, provider="codex"),
         _basic_report_preset(include_design=True, provider="builtin-llm"),
+        {
+            "id": "coverage_gap",
+            "name": "Coverage Gap Analysis",
+            "description": "Parse uploaded coverage evidence and turn uncovered areas into source-backed test gaps.",
+            "group": "core",
+            "definition": {
+                "id": "coverage_gap",
+                "name": "Coverage Gap Analysis",
+                "version": 1,
+                "inputs": [
+                    {
+                        "id": "test_goal",
+                        "type": "free_text",
+                        "required": True,
+                        "label": "测试目标",
+                        "example": "验证 iSCSI 登录与异常恢复路径",
+                        "missing_guidance": "请说明本次覆盖率缺口分析要服务的测试目标。",
+                    },
+                    {
+                        "id": "repo_path",
+                        "type": "directory",
+                        "required": True,
+                        "resolver": "local",
+                        "label": "源码目录",
+                        "example": "D:/src/project",
+                        "missing_guidance": "请选择已索引的源码目录。",
+                    },
+                    {
+                        "id": "coverage_report",
+                        "type": "coverage_report",
+                        "required": True,
+                        "label": "覆盖率文件",
+                        "example": "coverage.lcov、cobertura.xml、jacoco.xml、coverage.html 或函数命中表",
+                        "missing_guidance": "请上传本次测试生成的覆盖率文件或函数命中表。",
+                    },
+                    {
+                        "id": "test_scope",
+                        "type": "long_text",
+                        "required": False,
+                        "label": "测试范围补充",
+                        "example": "只关注连接建立、资源耗尽和恢复路径",
+                        "missing_guidance": "可选：补充模块、协议或风险范围。",
+                    },
+                ],
+                "steps": [
+                    {"id": "parse_coverage", "type": "coverage_parse"},
+                    {
+                        "id": "analyze_coverage_gaps",
+                        "type": "agent_task",
+                        "provider": "builtin-llm",
+                        "goal": "基于覆盖率解析结果、源码证据和现有测试目录，输出可执行的覆盖率缺口与补充测试建议。",
+                        "required_artifacts": ["coverage_gap_report.json"],
+                    },
+                    {"id": "render_report", "type": "report_render"},
+                ],
+                "outputs": [
+                    {
+                        "id": "coverage_gap_report",
+                        "type": "json",
+                        "from": "analyze_coverage_gaps",
+                        "artifact": "coverage_gap_report.json",
+                        "schema": {"type": "object", "additionalProperties": True},
+                    },
+                    {
+                        "id": "report",
+                        "type": "markdown",
+                        "from": "render_report",
+                        "artifact": "coverage_gap_report.md",
+                    },
+                ],
+            },
+        },
+        {
+            "id": "defect_retest",
+            "name": "Defect Retest Planning",
+            "description": "Translate a known defect and its expected behavior into a source-backed retest plan.",
+            "group": "core",
+            "definition": {
+                "id": "defect_retest",
+                "name": "Defect Retest Planning",
+                "version": 1,
+                "inputs": [
+                    {
+                        "id": "defect_report",
+                        "type": "file",
+                        "required": True,
+                        "label": "缺陷单或失败记录",
+                        "example": "defect-123.md、问题单导出或失败日志",
+                        "missing_guidance": "请提供待回归缺陷的描述、复现记录或问题单导出。",
+                    },
+                    {
+                        "id": "expected_behavior",
+                        "type": "long_text",
+                        "required": True,
+                        "label": "期望行为",
+                        "example": "资源降回限制以下后，IO 应恢复且可用 cmdsn 继续增长",
+                        "missing_guidance": "请明确修复后用户可观察到的正确行为。",
+                    },
+                    {
+                        "id": "repo_path",
+                        "type": "directory",
+                        "required": True,
+                        "resolver": "local",
+                        "label": "源码目录",
+                        "example": "D:/src/project",
+                        "missing_guidance": "请选择已索引的源码目录。",
+                    },
+                    {
+                        "id": "test_goal",
+                        "type": "free_text",
+                        "required": True,
+                        "label": "回归目标",
+                        "example": "验证资源耗尽后的恢复与并发连接隔离",
+                        "missing_guidance": "请说明本次回归要确认的风险边界。",
+                    },
+                ],
+                "steps": [
+                    {
+                        "id": "plan_defect_retest",
+                        "type": "agent_task",
+                        "provider": "builtin-llm",
+                        "goal": "追踪缺陷生命周期、实现变更与调用链，输出可复现、可观测、可判定的缺陷回归计划。",
+                        "required_artifacts": ["defect_retest_plan.json"],
+                    },
+                    {"id": "render_report", "type": "report_render"},
+                ],
+                "outputs": [
+                    {
+                        "id": "defect_retest_plan",
+                        "type": "json",
+                        "from": "plan_defect_retest",
+                        "artifact": "defect_retest_plan.json",
+                        "schema": {"type": "object", "additionalProperties": True},
+                    },
+                    {
+                        "id": "report",
+                        "type": "markdown",
+                        "from": "render_report",
+                        "artifact": "defect_retest_plan.md",
+                    },
+                ],
+            },
+        },
+        {
+            "id": "module_risk_report",
+            "name": "Module Risk Report",
+            "description": "Trace module state, resource, concurrency, recovery, and evidence boundaries into a source-backed risk report.",
+            "group": "core",
+            "definition": {
+                "id": "module_risk_report",
+                "name": "Module Risk Report",
+                "version": 1,
+                "inputs": [
+                    {
+                        "id": "module_scope",
+                        "type": "free_text",
+                        "required": True,
+                        "label": "模块或特性范围",
+                        "example": "iSCSI 登录、CmdSN 资源与异常恢复",
+                        "missing_guidance": "请指定要评估的模块、协议路径或特性边界。",
+                    },
+                    {
+                        "id": "test_goal",
+                        "type": "long_text",
+                        "required": True,
+                        "label": "风险评估目标",
+                        "example": "识别资源耗尽后无法恢复、共享队列放大和状态窗口风险",
+                        "missing_guidance": "请说明本次报告要支持的测试或发布决策。",
+                    },
+                    {
+                        "id": "repo_path",
+                        "type": "directory",
+                        "required": True,
+                        "resolver": "local",
+                        "label": "源码目录",
+                        "example": "D:/src/project",
+                        "missing_guidance": "请选择已索引的源码目录。",
+                    },
+                    {
+                        "id": "requirements_doc",
+                        "type": "file",
+                        "required": False,
+                        "label": "需求或设计材料",
+                        "example": "feature-design.docx",
+                        "missing_guidance": "可选：补充规格、状态机或资源约束。",
+                    },
+                ],
+                "steps": [
+                    {
+                        "id": "analyze_module_risks",
+                        "type": "agent_task",
+                        "provider": "builtin-llm",
+                        "goal": (
+                            "沿完整调用链、跨文件资源生命周期、状态转换、并发共享、异常恢复与现有兜底进行分析。"
+                            "局部可疑模式只能作为调查线索；在检查调用者、包装函数、回调、错误路径和释放路径前不得写成已确认缺陷。"
+                            "输出 risk_matrix.json 和 module_risk_report.md，并标明当前证据、反证检查与未决证据。"
+                        ),
+                        "required_artifacts": ["risk_matrix.json", "module_risk_report.md"],
+                    },
+                    {"id": "validate_evidence", "type": "evidence_validate"},
+                ],
+                "outputs": [
+                    {
+                        "id": "risk_matrix",
+                        "type": "json",
+                        "from": "analyze_module_risks",
+                        "artifact": "risk_matrix.json",
+                        "schema": {"type": "object", "additionalProperties": True},
+                    },
+                    {
+                        "id": "report",
+                        "type": "markdown",
+                        "from": "analyze_module_risks",
+                        "artifact": "module_risk_report.md",
+                    },
+                ],
+            },
+        },
         _source_flow_scenario_preset(
             preset_id="nvmf_connect_io_blackbox",
             name="NVMe-oF Connect / IO Black-box Scenario",
@@ -2102,6 +2374,22 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
             preset["group"] = "core"
         elif preset_id in COMMON_TEST_SCENARIO_PRESET_IDS:
             preset["group"] = "common_test_scenario"
+        _productize_workflow_inputs(preset["definition"])
+        preset["definition"].setdefault(
+            "knowledge_policy",
+            {
+                "sources": [
+                    "experience_patterns",
+                    "semantic_cases",
+                    "materials",
+                    "evidence_memory",
+                ],
+                "scopes": ["project", "personal_global"],
+                "mode": "preflight",
+                "max_results": 12,
+                "allow_followup": True,
+            },
+        )
         validate_workflow_definition(preset["definition"])
     preset_ids = [str(preset["id"]) for preset in presets]
     if preset_ids[: len(ORIGINAL_CORE_WORKFLOW_PRESET_IDS)] != list(ORIGINAL_CORE_WORKFLOW_PRESET_IDS):

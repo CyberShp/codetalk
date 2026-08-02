@@ -1468,6 +1468,9 @@ async def test_workbench_workflow_preset_api(workbench_client):
         "source_flow_sfmea_blackbox",
         "basic_source_report_codex",
         "basic_source_design_report_builtin",
+        "coverage_gap",
+        "defect_retest",
+        "module_risk_report",
     }
     by_preset_id = {item["id"]: item for item in preset_items}
     assert by_preset_id["source_flow_sfmea_blackbox"]["group"] == "core"
@@ -1859,12 +1862,15 @@ async def test_restore_builtin_workflows_preserves_custom_and_restores_release_p
     assert restored.status_code == 200
     body = restored.json()
     assert body["status"] == "ok"
-    assert body["restored_count"] == 3
+    assert body["restored_count"] == 6
     workflow_ids = [item["id"] for item in body["items"]]
     assert workflow_ids == [
         "source_flow_sfmea_blackbox",
         "basic_source_report_codex",
         "basic_source_design_report_builtin",
+        "coverage_gap",
+        "defect_retest",
+        "module_risk_report",
         "custom_keep_me",
     ]
     assert body["items"][0]["audit"]["warnings"] == []
@@ -1956,13 +1962,16 @@ async def test_workbench_core_workflow_readiness_api_covers_release_workflow(wor
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "ready"
-    assert body["summary"]["workflow_count"] == 3
+    assert body["summary"]["workflow_count"] == 6
     assert body["summary"]["missing_required"] == 0
     by_id = {item["id"]: item for item in body["workflows"]}
     assert set(by_id) == {
         "source_flow_sfmea_blackbox",
         "basic_source_report_codex",
         "basic_source_design_report_builtin",
+        "coverage_gap",
+        "defect_retest",
+        "module_risk_report",
     }
     assert by_id["source_flow_sfmea_blackbox"]["scenario"] == "source_flow_sfmea_blackbox"
     required_artifacts = by_id["source_flow_sfmea_blackbox"]["required_artifacts"]
@@ -2393,6 +2402,9 @@ async def test_workbench_system_audit_api_reports_control_plane_readiness(workbe
     assert checks["workflow_presets"]["details"]["available"] == [
         "basic_source_design_report_builtin",
         "basic_source_report_codex",
+        "coverage_gap",
+        "defect_retest",
+        "module_risk_report",
         "source_flow_sfmea_blackbox",
     ]
     assert checks["provider_capability_matrix"]["details"]["provider_count"] >= 4

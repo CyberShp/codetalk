@@ -5122,6 +5122,12 @@ def build_run_snapshot_v3(
     # A compiled execution plan, in contrast, is an explicit frozen component.
     if (artifact_dir / "compiled_plan.json").is_file():
         component_paths["execution_plan"] = "compiled_plan.json"
+    for component_id, relative_path in {
+        "output_contract": "output_contract.json",
+        "knowledge_retrieval": "knowledge_retrieval.json",
+    }.items():
+        if (artifact_dir / relative_path).is_file():
+            component_paths[component_id] = relative_path
     components: dict[str, dict[str, str]] = {}
     for component_id, relative_path in component_paths.items():
         path = artifact_dir / relative_path

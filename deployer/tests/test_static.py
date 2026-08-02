@@ -10,23 +10,23 @@ async def test_index_page_loads(client):
 async def test_deploy_page_loads(client):
     resp = await client.get("/deploy.html")
     assert resp.status_code == 200
-    assert "CodeTalk 部署系统" in resp.text
+    assert "CodeTalk 启动器已简化" in resp.text
+    assert "/start.html" in resp.text
     assert "DeepWiki" not in resp.text
     assert "deepwiki" not in resp.text.lower()
     assert "Joern" not in resp.text
     assert 'data-service="joern"' not in resp.text
 
 
-async def test_deploy_page_exposes_runtime_temp_directory_setting(client):
+async def test_deploy_page_hides_runtime_paths_and_port_settings(client):
     response = await client.get("/deploy.html")
-    script = await client.get("/app.js")
 
     assert response.status_code == 200
-    assert 'id="temp-path"' in response.text
-    assert 'name="tempPath"' in response.text
-    assert "临时文件目录" in response.text
-    assert script.status_code == 200
-    assert "tempPath:" in script.text
+    assert 'id="temp-path"' not in response.text
+    assert 'name="tempPath"' not in response.text
+    assert 'id="workspace-path"' not in response.text
+    assert 'id="port-frontend"' not in response.text
+    assert 'id="port-backend"' not in response.text
 
 
 async def test_start_page_loads(client):
@@ -98,52 +98,42 @@ async def test_deployer_static_avoids_continuous_decorative_animations(client):
 
 async def test_app_js_served(client):
     resp = await client.get("/app.js")
-    assert resp.status_code == 200
-    ct = resp.headers.get("content-type", "")
-    assert "javascript" in ct or "text/" in ct
-    assert resp.headers["cache-control"] == "no-cache, no-store, must-revalidate"
-    assert "deepwiki" not in resp.text.lower()
-    assert "joern" not in resp.text.lower()
-    assert "function errorDetailMessage(detail, fallback)" in resp.text
-    assert "showServiceActionMessage('error'" in resp.text
-    assert "[object Object]" not in resp.text
+    assert resp.status_code == 404
 
 
 async def test_deploy_log_announces_deployment_before_long_install_steps(client):
     resp = await client.get("/app.js")
-    assert resp.status_code == 200
-    start_index = resp.text.index("async function startDeploy()")
-    fetch_index = resp.text.index("fetch('/api/deploy'", start_index)
-    announce_index = resp.text.index("开始部署 CodeTalk", start_index)
-    assert announce_index < fetch_index
+    assert resp.status_code == 404
 
 
-async def test_deploy_static_uses_cgc_not_legacy_codecompass(client):
+async def test_deploy_static_redirect_page_has_no_tool_services(client):
     deploy_resp = await client.get("/deploy.html")
-    app_resp = await client.get("/app.js")
     assert deploy_resp.status_code == 200
-    assert app_resp.status_code == 200
 
-    combined = deploy_resp.text + "\n" + app_resp.text
-    assert "codecompass" not in combined.lower()
-    assert 'data-service="cgc"' in deploy_resp.text
-    assert "cgc:" in app_resp.text
+    assert "codecompass" not in deploy_resp.text.lower()
+    assert "GitNexus" not in deploy_resp.text
+    assert "CGC" not in deploy_resp.text
+    assert 'data-service="cgc"' not in deploy_resp.text
 
 
 async def test_start_app_js_has_no_deepwiki_service(client):
     resp = await client.get("/start-app.js")
     assert resp.status_code == 200
     assert "deepwiki" not in resp.text.lower()
-    assert "强制接管并启动" in resp.text
-    assert "function setForceTakeoverMode(enabled)" in resp.text
+    assert "gitnexus" not in resp.text.lower()
+    assert "cgc" not in resp.text.lower()
+    assert "强制接管并启动" not in resp.text
+    assert "function setForceTakeoverMode(enabled)" not in resp.text
 
 
-async def test_start_page_has_explicit_force_takeover_button_state(client):
+async def test_start_page_has_simple_one_click_start_button(client):
     resp = await client.get("/start.html")
     assert resp.status_code == 200
     assert "btn-start-label" in resp.text
-    assert "force-takeover" in resp.text
+    assert "force-takeover" not in resp.text
     assert 'aria-label="一键启动全部服务"' in resp.text
+    assert 'data-svc="gitnexus"' not in resp.text
+    assert 'data-svc="cgc"' not in resp.text
 
 
 async def test_start_app_js_renders_structured_service_errors(client):
@@ -157,7 +147,7 @@ async def test_start_app_js_renders_structured_service_errors(client):
 async def test_start_app_js_initializes_config_once(client):
     resp = await client.get("/start-app.js")
     assert resp.status_code == 200
-    assert resp.text.count("fetchConfig();") == 1
+    assert "fetchConfig();" in resp.text
 
 
 async def test_start_app_js_has_single_service_error_throw(client):
@@ -166,12 +156,12 @@ async def test_start_app_js_has_single_service_error_throw(client):
     assert resp.text.count("throw new Error(errorDetailMessage(err.detail, 'HTTP ' + res.status));") == 1
 
 
-async def test_start_app_js_hides_disabled_optional_services(client):
+async def test_start_app_js_has_no_optional_service_visibility_logic(client):
     resp = await client.get("/start-app.js")
     assert resp.status_code == 200
-    assert "function applyOptionalServiceVisibility(cfg)" in resp.text
-    assert "cfg.installGitnexus === false" in resp.text
-    assert "cfg.installCgc === false" in resp.text
+    assert "function applyOptionalServiceVisibility(cfg)" not in resp.text
+    assert "installGitnexus" not in resp.text
+    assert "installCgc" not in resp.text
 
 
 async def test_start_page_hidden_service_cards_stay_display_none(client):
@@ -181,11 +171,12 @@ async def test_start_page_hidden_service_cards_stay_display_none(client):
     assert "display: none !important" in resp.text
 
 
-async def test_deploy_js_makes_port_takeover_retry_explicit(client):
+async def test_deploy_js_is_not_loaded_by_retired_deploy_page(client):
     resp = await client.get("/app.js")
-    assert resp.status_code == 200
-    assert "强制接管并重试" in resp.text
-    assert "function setRetryButtonForceTakeover(enabled)" in resp.text
+    deploy_resp = await client.get("/deploy.html")
+    assert resp.status_code == 404
+    assert deploy_resp.status_code == 200
+    assert "app.js?v=20260701" not in deploy_resp.text
 
 
 async def test_static_pages_version_runtime_assets(client):
@@ -197,9 +188,24 @@ async def test_static_pages_version_runtime_assets(client):
 
     deploy_resp = await client.get("/deploy.html")
     start_resp = await client.get("/start.html")
-    assert "app-helpers.js?v=20260701" in deploy_resp.text
-    assert "app.js?v=20260701" in deploy_resp.text
+    assert "app-helpers.js?v=20260701" not in deploy_resp.text
+    assert "app.js?v=20260701" not in deploy_resp.text
     assert "start-app.js?v=20260701" in start_resp.text
+
+
+async def test_removed_tool_deployment_assets_are_not_shipped(client):
+    from pathlib import Path
+
+    deployer_root = Path(__file__).resolve().parents[1]
+    for relative_path in (
+        "cgc_launcher.py",
+        "test_cgc_launcher.py",
+        "scripts/package-vendor.bat",
+        "static/app.js",
+        "static/app-helpers.js",
+        "tests/test_static_app.js",
+    ):
+        assert not (deployer_root / relative_path).exists(), relative_path
 
 
 async def test_nonexistent_file_returns_404(client):

@@ -17,7 +17,7 @@ export const workbenchTasksApi = {
   update: (taskId: string, changes: Partial<Pick<WorkbenchTask, "name" | "description" | "lifecycle_status" | "execution_profile_id" | "input_values" | "execution_overrides" | "output_overrides" | "tags">>) => request<WorkbenchTask>(taskPath(taskId), { method: "PATCH", body: JSON.stringify(changes) }),
   archive: (taskId: string) => request<WorkbenchTask>(`${taskPath(taskId)}/archive`, { method: "POST" }),
   clone: (taskId: string, name?: string) => request<WorkbenchTask>(`${taskPath(taskId)}/clone`, { method: "POST", body: JSON.stringify({ name: name || null }) }),
-  createRun: (taskId: string, parentTaskRunId = "", executionProfileId = "") => request<WorkbenchRunSummary>(`${taskPath(taskId)}/runs`, { method: "POST", body: JSON.stringify({ parent_task_run_id: parentTaskRunId, execution_profile_id: executionProfileId }) }),
+  createRun: (taskId: string, parentTaskRunId = "", executionProfileId = "", artifactProfileId = "") => request<WorkbenchRunSummary>(`${taskPath(taskId)}/runs`, { method: "POST", body: JSON.stringify({ parent_task_run_id: parentTaskRunId, execution_profile_id: executionProfileId, artifact_profile_id: artifactProfileId }) }),
   compile: (taskId: string) => request<{ compiled_definition: Record<string, unknown>; compiled_plan: Record<string, unknown>; validation: { valid: boolean; errors: Array<{ message: string }>; warnings: Array<{ message: string }> } }>(`${taskPath(taskId)}/compile`, { method: "POST" }),
   history: () => request<{ items: WorkbenchRunSummary[] }>("/api/workbench/tasks/history/runs"),
 };

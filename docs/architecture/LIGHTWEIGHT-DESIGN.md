@@ -351,8 +351,8 @@ codetalk/
 - 端到端测试
 
 ### 当前: 部署向导 + 产品化打磨 ✅
-- 内置 Deployer 向导（7 步 SSE 流式部署，:9000）
-- 补充部署（独立安装 GitNexus，热重启 backend）
+- 内置 Deployer 向导（6 步 SSE 流式部署，:9000）
+- 一键安装并管理 backend/frontend；工具服务不属于部署器生命周期
 - 真实流式聊天（stream_complete，SSE 逐 token 推送）
 - 报告内嵌 AI 问答面板（ReportChatPanel）
 - Agent / GitNexus 探测、健康检查覆盖
@@ -361,7 +361,9 @@ codetalk/
 
 ## 11. 部署向导（Deployer）
 
-独立 FastAPI 服务，端口 9000，为零基础用户提供 GUI 一键部署体验。
+独立 FastAPI 服务，默认端口 9000，为用户提供一键启动和服务管理。
+用户不需要选择工作空间或填写服务端口；启动器优先使用 3003/3004，
+接管失败后自动选择可用端口。
 
 ### 11.1 组件结构
 
@@ -373,10 +375,10 @@ deployer/
 ├── config_store.py   # .deploy-config.json 配置持久化
 ├── checks.py         # 前置端口检查（psutil）
 ├── deployers/
-│   └── native.py     # NativeDeployer：7 步原生部署器
+│   └── native.py     # NativeDeployer：前后端原生部署器
 └── static/           # 前端静态页面（纯 HTML/JS）
-    ├── index.html    # 配置表单页
-    ├── deploy.html   # 部署进度页（SSE 消费）
+    ├── index.html    # 启动入口
+    ├── deploy.html   # 兼容跳转页
     └── start.html    # 启动管理页
 ```
 
@@ -389,26 +391,25 @@ deployer/
   "step": "install_backend",
   "status": "running | done | error",
   "message": "正在安装依赖...",
-  "progress": { "current": 2, "total": 7 }
+  "progress": { "current": 2, "total": 6 }
 }
 ```
 
 ### 11.3 配置持久化
 
-配置存储于 `deployer/.deploy-config.json`，支持 camelCase（前端）↔ snake_case（后端）自动转换：
+配置存储于 `deployer/.deploy-config.json`。服务端内部保留端口值以便重启，
+启动页不要求用户填写这些字段：
 
 | 前端 key | 后端 key |
 |----------|----------|
 | portBackend | backend_port |
-| installGitnexus | install_gitnexus |
+| portFrontend | frontend_port |
 
-### 11.4 补充部署
+### 11.4 服务边界
 
-`POST /api/deploy/supplement/gitnexus` 调用链：
-1. 从 `_deploy_state` 取旧 deployer，将其 `_processes` 复制到新 deployer
-2. 安装或定位 GitNexus 二进制
-3. 写入新 `.env` → 终止旧 backend → 重启 backend → 等待 5 秒
-4. 健康检查 `http://localhost:{gitnexus_port}/api/info`
+部署器只安装、启动、停止和重启 `backend` 与 `frontend`。GitNexus、CGC
+及其他分析工具由 CodeTalk 后端按运行时能力发现和调用，不提供独立部署入口，
+也不随启动器打包工具安装脚本。
 
 ---
 

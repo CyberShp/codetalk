@@ -19,20 +19,13 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 DEPLOYER_DIR = Path(__file__).parent.parent
 VENDOR_DIR = DEPLOYER_DIR / "vendor"
 
-# Make the deployer/ root importable so cgc_launcher can be found.
+# Make the deployer/ root importable for sibling helper modules.
 if str(DEPLOYER_DIR) not in sys.path:
     sys.path.insert(0, str(DEPLOYER_DIR))
 
 from checks import _format_port_unavailable_message, _probe_port_bind  # noqa: E402
 
-try:
-    import cgc_launcher as _cgc  # noqa: E402
-    _CGC_DEFAULT_PORT: int = _cgc.CGC_DEFAULT_PORT
-except ImportError:  # safety net — shouldn't happen in normal deployment
-    _cgc = None  # type: ignore[assignment]
-    _CGC_DEFAULT_PORT = 7072
-
-TOTAL_STEPS = 7
+TOTAL_STEPS = 6
 REMOVED_LEGACY_ENV_PREFIXES = ("DEEPWIKI_",)
 REMOVED_LEGACY_ENV_KEYS = {
     "DEEPWIKI_PATH",
@@ -54,7 +47,6 @@ SECRET_PATTERNS = (
 SERVICE_DEFAULTS = [
     ("backend", "backend_port", 3004, "http", "/health"),
     ("frontend", "frontend_port", 3003, "http", "/"),
-    ("gitnexus", "gitnexus_port", 7100, "http", "/api/info"),
 ]
 
 
@@ -118,10 +110,6 @@ class NativeDeployer:
             await self._step_install_frontend()
             if self._stopped:
                 return
-            if self._config.get("install_gitnexus", True):
-                await self._step_install_optional_gitnexus()
-                if self._stopped:
-                    return
             await self._step_start_services()
             if self._stopped:
                 return
@@ -149,16 +137,6 @@ class NativeDeployer:
                         results.append({"name": name, "healthy": False, "message": f"HTTP {resp.status_code}"})
                 except Exception as exc:
                     results.append({"name": name, "healthy": False, "message": str(exc)})
-
-            if self._config.get("install_cgc", True) and self._processes.get("cgc") is not None:
-                cgc_port = self._config_port("cgc_port", _CGC_DEFAULT_PORT)
-                try:
-                    resp = await client.get(f"http://localhost:{cgc_port}/api/v1/status")
-                    healthy = 200 <= resp.status_code < 400
-                    results.append({"name": "cgc", "healthy": healthy, "message": f"HTTP {resp.status_code}"})
-                except Exception as exc:
-                    results.append({"name": "cgc", "healthy": False, "message": str(exc)})
-
 
         return results
 
@@ -263,7 +241,7 @@ class NativeDeployer:
     # ------------------------------------------------------------------
 
     async def _step_install_frontend(self) -> None:
-        step = 3
+        step = 4
         frontend_dir = PROJECT_ROOT / "frontend"
         npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
 
@@ -323,10 +301,6 @@ class NativeDeployer:
 
         await self._emit("install_frontend", "done", "前端依赖安装并构建完成", step)
 
-    # ------------------------------------------------------------------
-    # Step 4: Install GitNexus
-    # ------------------------------------------------------------------
-
     async def _frontend_build_key(self, frontend_dir: Path) -> str:
         git_hash = await self._get_git_hash(PROJECT_ROOT) or "nogit"
         env_file = frontend_dir / ".env.local"
@@ -337,68 +311,61 @@ class NativeDeployer:
         source_hash = await asyncio.to_thread(_frontend_source_fingerprint, frontend_dir)
         return f"{git_hash}\n{source_hash}\n{env_text.strip()}"
 
-    def _resolve_cgc_cmd(self) -> list[str] | None:
-        """Resolve the cgc startup command, or None if no usable venv is found."""
-        if _cgc is not None:
-            return _cgc.resolve_cgc_cmd(self._config)
-        # Fallback: probe the default venv location directly.
-        scripts = "Scripts" if sys.platform == "win32" else "bin"
-        python_name = "python.exe" if sys.platform == "win32" else "python"
-        for venv_name in ("cgc-venv", "cgc-venv-throwaway"):
-            python_exe = PROJECT_ROOT.parent / venv_name / scripts / python_name
-            if python_exe.exists():
-                return [str(python_exe), "-m", "codegraphcontext"]
-        return None
+    # ------------------------------------------------------------------
+    # Step 3: Generate config files
+    # ------------------------------------------------------------------
 
-    def _cgc_cwd(self) -> str:
-        """Working directory for cgc (avoids GBK codec error from non-ASCII .env)."""
-        if _cgc is not None:
-            return _cgc.cgc_cwd()
-        import os as _os
-        cwd = Path(_os.path.expanduser("~")) / ".codegraphcontext"
-        cwd.mkdir(parents=True, exist_ok=True)
-        return str(cwd)
+    async def _step_generate_config(self) -> None:
+        step = 3
+        await self._emit("generate_config", "running", "生成配置文件...", step)
+        await self._write_runtime_config_files("generate_config", step)
+        await self._emit("generate_config", "done", "配置文件生成完成", step)
 
-    def _resolve_gitnexus_cmd(self) -> list[str]:
-        """Resolve the gitnexus binary path by probing install locations."""
-        if cached := self._config.get("_gitnexus_cmd"):
-            if isinstance(cached, list) and cached:
-                return cached
+    async def _write_runtime_config_files(self, step_name: str, step: int) -> None:
+        cfg = self._config
+        temp_path = self._runtime_temp_path()
+        cfg["temp_path"] = str(temp_path)
+        repos_dir = PROJECT_ROOT / "backend" / "data" / "repos"
+        repos_dir.mkdir(parents=True, exist_ok=True)
+        cfg["repos_path"] = str(repos_dir)
 
-        workspace = self._workspace_path()
-        gn_dir = workspace / "gitnexus"
-        if sys.platform == "win32":
-            local_bin = gn_dir / "node_modules" / ".bin" / "gitnexus.cmd"
-        else:
-            local_bin = gn_dir / "node_modules" / ".bin" / "gitnexus"
+        backend_port = cfg.get("backend_port", 3004)
+        frontend_port = cfg.get("frontend_port", 3003)
 
-        if local_bin.exists():
-            cmd = [str(local_bin)]
-            self._config["_gitnexus_cmd"] = cmd
-            print(f"[deployer] Resolved gitnexus binary: {local_bin}")
-            return cmd
+        env_lines = [
+            "DATA_DIR=data",
+            "SQLITE_DB=data/codetalk.db",
+            f"CODETALK_TEMP_DIR={temp_path}",
+            f"CODETALK_BACKEND_PORT={backend_port}",
+            f"REPOS_BASE_PATH={repos_dir}",
+            f"CORS_ORIGINS=http://localhost:{frontend_port},http://127.0.0.1:{frontend_port}",
+            "TOOL_HEALTH_INTERVAL=30",
+        ]
 
-        vendor_entry = VENDOR_DIR / "gitnexus" / "dist" / "cli" / "index.js"
-        if vendor_entry.exists():
-            cmd = ["node", str(vendor_entry)]
-            self._config["_gitnexus_cmd"] = cmd
-            print(f"[deployer] Resolved gitnexus binary: vendor ({vendor_entry})")
-            return cmd
+        backend_env = PROJECT_ROOT / "backend" / ".env"
+        known_keys = {ln.split("=", 1)[0] for ln in env_lines if "=" in ln}
+        existing_lines = backend_env.read_text(encoding="utf-8").splitlines() if backend_env.exists() else []
+        kept = [
+            ln for ln in existing_lines
+            if _keep_existing_backend_env_line(ln, known_keys)
+        ]
+        backend_env.write_text("\n".join(kept + env_lines) + "\n", encoding="utf-8")
+        await self._emit(step_name, "running", f"已写入 {backend_env}", step)
 
-        fallback = "gitnexus.cmd" if sys.platform == "win32" else "gitnexus"
-        print(f"[deployer] WARNING: No local/vendor gitnexus found, falling back to PATH: {fallback}")
-        return [fallback]
+        frontend_env = PROJECT_ROOT / "frontend" / ".env.local"
+        frontend_env.write_text(
+            f"NEXT_PUBLIC_API_URL=http://localhost:{backend_port}\n",
+            encoding="utf-8",
+        )
+        await self._emit(step_name, "running", f"已写入 {frontend_env}", step)
 
-    def _workspace_path(self) -> Path:
-        ws = self._config.get("workspace_path", "./workspace")
-        p = Path(ws)
-        if not p.is_absolute():
-            p = (PROJECT_ROOT / p).resolve()
-        return p
+    # ------------------------------------------------------------------
+    # Step 6: Start services
+    # ------------------------------------------------------------------
 
     def _runtime_temp_path(self) -> Path:
         configured = str(self._config.get("temp_path") or "").strip()
-        path = Path(configured).expanduser() if configured else self._workspace_path() / "tmp"
+        path = Path(configured).expanduser() if configured else Path("workspace/tmp")
         if not path.is_absolute():
             path = (PROJECT_ROOT / path).resolve()
         path.mkdir(parents=True, exist_ok=True)
@@ -415,131 +382,9 @@ class NativeDeployer:
 
     def _configure_runtime_temp_environment(self) -> Path:
         path = self._runtime_temp_path()
-        env = self._runtime_temp_env()
-        os.environ.update(env)
+        os.environ.update(self._runtime_temp_env())
         tempfile.tempdir = str(path)
         return path
-
-    async def _step_install_gitnexus(self) -> None:
-        step = 4
-        await self._emit("install_gitnexus", "running", "配置 GitNexus...", step)
-
-        workspace = self._workspace_path()
-        gn_dir = workspace / "gitnexus"
-        npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
-
-        if sys.platform == "win32":
-            local_bin = gn_dir / "node_modules" / ".bin" / "gitnexus.cmd"
-        else:
-            local_bin = gn_dir / "node_modules" / ".bin" / "gitnexus"
-
-        if local_bin.exists():
-            rc, stdout, _ = await self._run_capture(str(local_bin), "--version")
-            if rc == 0 and stdout.strip():
-                await self._emit("install_gitnexus", "done", f"GitNexus 已安装于工作目录 (v{stdout.strip()})，跳过", step)
-                self._config["_gitnexus_cmd"] = [str(local_bin)]
-                return
-
-        vendor_entry = VENDOR_DIR / "gitnexus" / "dist" / "cli" / "index.js"
-        if vendor_entry.exists():
-            rc3, stdout3, _ = await self._run_capture("node", str(vendor_entry), "--version")
-            if rc3 == 0:
-                await self._emit(
-                    "install_gitnexus", "done",
-                    f"GitNexus 已从 vendor 加载 (v{stdout3.strip()})", step,
-                )
-                self._config["_gitnexus_cmd"] = ["node", str(vendor_entry)]
-                return
-
-        gn_dir.mkdir(parents=True, exist_ok=True)
-        await self._emit("install_gitnexus", "running", f"安装 GitNexus 到 {gn_dir}...", step)
-        rc = await self._run_stream("install_gitnexus", step, npm_cmd, "install", "--prefix", str(gn_dir), "gitnexus")
-        if rc == 0 and local_bin.exists():
-            rc2, stdout2, _ = await self._run_capture(str(local_bin), "--version")
-            if rc2 == 0:
-                await self._emit("install_gitnexus", "done", f"GitNexus 已安装到工作目录 (v{stdout2.strip()})", step)
-                self._config["_gitnexus_cmd"] = [str(local_bin)]
-                return
-
-        await self._emit(
-            "install_gitnexus", "error",
-            "GitNexus 不可用：本地安装失败且 vendor/gitnexus 未找到", step,
-        )
-        raise RuntimeError("GitNexus installation failed")
-
-    async def _step_install_optional_gitnexus(self) -> None:
-        """Install GitNexus when available, but do not block core CodeTalk startup."""
-        try:
-            await self._step_install_gitnexus()
-        except Exception as exc:
-            self._config["install_gitnexus"] = False
-            await self._emit(
-                "install_gitnexus",
-                "running",
-                f"GitNexus 安装已跳过：{exc}。核心 backend/frontend 将继续部署；需要代码图谱增强时再补充安装 GitNexus。",
-                4,
-            )
-
-    # ------------------------------------------------------------------
-    # Step 5: Generate config files
-    # ------------------------------------------------------------------
-
-    async def _step_generate_config(self) -> None:
-        step = 5
-        await self._emit("generate_config", "running", "生成配置文件...", step)
-
-        cfg = self._config
-        workspace = self._workspace_path()
-        workspace.mkdir(parents=True, exist_ok=True)
-        temp_path = self._runtime_temp_path()
-        cfg["temp_path"] = str(temp_path)
-
-        repos_dir = workspace / "repos"
-        repos_dir.mkdir(parents=True, exist_ok=True)
-        cfg["repos_path"] = str(repos_dir)
-
-        backend_port = cfg.get("backend_port", 3004)
-        frontend_port = cfg.get("frontend_port", 3003)
-        gitnexus_port = cfg.get("gitnexus_port", 7100)
-
-        cgc_port = self._config_port("cgc_port", _CGC_DEFAULT_PORT)
-        env_lines = [
-            "DATA_DIR=data",
-            "SQLITE_DB=data/codetalk.db",
-            f"CODETALK_TEMP_DIR={temp_path}",
-            f"CODETALK_BACKEND_PORT={backend_port}",
-            f"REPOS_BASE_PATH={repos_dir}",
-            f"GITNEXUS_BASE_URL=http://localhost:{gitnexus_port}",
-            f"GITNEXUS_PORT={gitnexus_port}",
-            "GITNEXUS_BIN=gitnexus",
-            f"CGC_BASE_URL=http://localhost:{cgc_port}",
-            f"CGC_PORT={cgc_port}",
-            f"CORS_ORIGINS=http://localhost:{frontend_port},http://127.0.0.1:{frontend_port}",
-            "TOOL_HEALTH_INTERVAL=30",
-        ]
-
-        backend_env = PROJECT_ROOT / "backend" / ".env"
-        known_keys = {ln.split("=", 1)[0] for ln in env_lines if "=" in ln}
-        existing_lines = backend_env.read_text(encoding="utf-8").splitlines() if backend_env.exists() else []
-        kept = [
-            ln for ln in existing_lines
-            if _keep_existing_backend_env_line(ln, known_keys)
-        ]
-        backend_env.write_text("\n".join(kept + env_lines) + "\n", encoding="utf-8")
-        await self._emit("generate_config", "running", f"已写入 {backend_env}", step)
-
-        frontend_env = PROJECT_ROOT / "frontend" / ".env.local"
-        frontend_env.write_text(
-            f"NEXT_PUBLIC_API_URL=http://localhost:{backend_port}\n",
-            encoding="utf-8",
-        )
-        await self._emit("generate_config", "running", f"已写入 {frontend_env}", step)
-
-        await self._emit("generate_config", "done", "配置文件生成完成", step)
-
-    # ------------------------------------------------------------------
-    # Step 6: Start services
-    # ------------------------------------------------------------------
 
     def _backend_runtime_env(self) -> dict[str, str]:
         backend_port = str(self._config.get("backend_port", 3004))
@@ -761,22 +606,82 @@ class NativeDeployer:
                 except (asyncio.TimeoutError, Exception):
                     pass
 
+    async def _port_has_conflict(self, port: int) -> bool:
+        return bool(await self._scan_port_conflicts([port]))
+
+    def _candidate_service_ports(self, preferred: int, reserved: set[int]) -> list[int]:
+        candidates = [
+            preferred,
+            *range(preferred + 1, min(preferred + 51, 65536)),
+            *range(3000, 3051),
+            *range(4000, 4051),
+        ]
+        result: list[int] = []
+        for port in candidates:
+            if port in reserved or not (1024 <= port <= 65535):
+                continue
+            if port not in result:
+                result.append(port)
+        return result
+
+    async def _ensure_core_ports(self, step: int) -> bool:
+        """Take preferred ports when possible, otherwise move core services.
+
+        The user-facing contract is one-click start: first try to reclaim the
+        configured frontend/backend ports, then fall forward to nearby free
+        ports when the OS or another process prevents takeover.
+        """
+        service_ports = [
+            ("后端 API", "backend_port", 3004),
+            ("前端", "frontend_port", 3003),
+        ]
+        preferred_ports = [self._config_port(key, default) for _label, key, default in service_ports]
+        await self._emit("start_services", "running", f"清理占用端口 {preferred_ports}...", step)
+        await self._release_ports(preferred_ports, step, force_takeover=True)
+        await asyncio.sleep(1)
+
+        changed = False
+        reserved: set[int] = set()
+        for label, key, default in service_ports:
+            current = self._config_port(key, default)
+            selected = current
+            if await self._port_has_conflict(current):
+                selected = 0
+                for candidate in self._candidate_service_ports(current, reserved):
+                    if not await self._port_has_conflict(candidate):
+                        selected = candidate
+                        break
+                if not selected:
+                    raise RuntimeError(f"{label} 未找到可用端口（从 {current} 起连续探测失败）")
+                self._config[key] = selected
+                changed = True
+                await self._emit(
+                    "start_services",
+                    "running",
+                    f"{label} 端口 {current} 仍不可用，已自动切换到 {selected}",
+                    step,
+                )
+            reserved.add(selected)
+
+        if changed:
+            await self._write_runtime_config_files("start_services", step)
+        return changed
+
     async def _step_start_services(self) -> None:
-        step = 6
+        step = 5
         await self._emit("start_services", "running", "启动服务...", step)
 
         cfg = self._config
+        ports_changed = await self._ensure_core_ports(step)
+        if ports_changed and not bool(cfg.get("dev_mode", False)):
+            await self._emit(
+                "start_services",
+                "running",
+                "API 端口已自动切换，重新构建前端运行配置...",
+                step,
+            )
+            await self._step_install_frontend()
         backend_port = cfg.get("backend_port", 3004)
-        frontend_port = cfg.get("frontend_port", 3003)
-        gitnexus_port = cfg.get("gitnexus_port", 7100)
-
-        ports_to_clear = [backend_port, frontend_port]
-        if cfg.get("install_gitnexus", True):
-            ports_to_clear.append(gitnexus_port)
-        await self._emit("start_services", "running", f"清理占用端口 {ports_to_clear}...", step)
-        force_takeover = bool(cfg.get("force_takeover", False))
-        await self._release_ports(ports_to_clear, step, force_takeover=force_takeover)
-        await asyncio.sleep(1)
 
         backend_dir = PROJECT_ROOT / "backend"
         frontend_dir = PROJECT_ROOT / "frontend"
@@ -799,58 +704,6 @@ class NativeDeployer:
             step_index=step,
             env_extra=self._backend_runtime_env(),
         )
-
-        if cfg.get("install_gitnexus", True):
-            gitnexus_cmd = self._resolve_gitnexus_cmd()
-            await self._start_process(
-                "gitnexus",
-                [*gitnexus_cmd, "serve", "--port", str(gitnexus_port), "--host", "0.0.0.0"],
-                cwd=str(PROJECT_ROOT),
-                step_name="start_services",
-                step_index=step,
-                env_extra=self._runtime_temp_env(),
-            )
-
-        if cfg.get("install_cgc", True):
-            try:
-                await self._ensure_cgc(step)
-                cgc_cmd = self._resolve_cgc_cmd()
-                if cgc_cmd:
-                    cgc_port = self._config_port("cgc_port", _CGC_DEFAULT_PORT)
-                    await self._release_ports([cgc_port], step, force_takeover=force_takeover)
-                    # Tell CGC which paths it may index; otherwise its path guard rejects
-                    # repos outside the CGC cwd.
-                    _cgc_allowed_roots = ";".join([
-                        str(PROJECT_ROOT.parent),
-                        os.path.expanduser("~"),
-                    ])
-                    await self._start_process(
-                        "cgc",
-                        [*cgc_cmd, "api", "start", "--host", "127.0.0.1", "--port", str(cgc_port)],
-                        cwd=self._cgc_cwd(),
-                        step_name="start_services",
-                        step_index=step,
-                        env_extra={
-                            **self._runtime_temp_env(),
-                            "CGC_ALLOWED_ROOTS": _cgc_allowed_roots,
-                        },
-                    )
-                else:
-                    await self._emit(
-                        "start_services", "running",
-                        "CGC 启动已跳过：Python 解释器未找到（安装尝试后仍缺失或路径未配置）。"
-                        "请确认 cgc-venv 存在且包含有效的 python.exe，或在部署配置中设置 cgcVenvPath。",
-                        step,
-                    )
-            except Exception as exc:
-                self._processes.pop("cgc", None)
-                self._start_args.pop("cgc", None)
-                await self._emit(
-                    "start_services",
-                    "running",
-                    f"CGC 启动已跳过：{exc}。核心服务将继续启动；需要调用链/符号图能力时再修复 CGC 配置。",
-                    step,
-                )
 
         npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
         next_build_dir = frontend_dir / ".next"
@@ -1026,29 +879,6 @@ class NativeDeployer:
                 "cwd": str(PROJECT_ROOT / "frontend"),
                 "env_extra": self._frontend_runtime_env(),
             }
-        if name == "gitnexus":
-            gn_cmd = self._resolve_gitnexus_cmd()
-            return {
-                "cmd": [*gn_cmd, "serve", "--port", str(cfg.get("gitnexus_port", 7100)), "--host", "0.0.0.0"],
-                "cwd": str(PROJECT_ROOT),
-                "env_extra": self._runtime_temp_env(),
-            }
-        if name == "cgc":
-            cgc_cmd = self._resolve_cgc_cmd()
-            if cgc_cmd:
-                # Match CGC_ALLOWED_ROOTS injection from the quickstart path.
-                _cgc_allowed_roots = ";".join([
-                    str(PROJECT_ROOT.parent),
-                    os.path.expanduser("~"),
-                ])
-                return {
-                    "cmd": [*cgc_cmd, "api", "start", "--host", "127.0.0.1", "--port", str(self._config_port("cgc_port", _CGC_DEFAULT_PORT))],
-                    "cwd": self._cgc_cwd(),
-                    "env_extra": {
-                        **self._runtime_temp_env(),
-                        "CGC_ALLOWED_ROOTS": _cgc_allowed_roots,
-                    },
-                }
 
         return None
 
@@ -1129,14 +959,13 @@ class NativeDeployer:
     # ------------------------------------------------------------------
 
     async def _step_health_check(self) -> None:
-        step = 7
+        step = 6
         await self._emit("health_check", "running", "等待服务就绪...", step)
 
         import httpx
         max_wait = 60
         interval = 3
         elapsed = 0
-        cgc_warning_emitted = False
 
         while elapsed < max_wait:
             if self._stopped:
@@ -1150,31 +979,6 @@ class NativeDeployer:
                             all_ok = False
                 except Exception:
                     all_ok = False
-
-            if self._config.get("install_cgc", True) and self._processes.get("cgc") is not None:
-                cgc_port = self._config_port("cgc_port", _CGC_DEFAULT_PORT)
-                try:
-                    async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
-                        resp = await client.get(f"http://localhost:{cgc_port}/api/v1/status")
-                        if not (200 <= resp.status_code < 400):
-                            if not cgc_warning_emitted:
-                                await self._emit(
-                                    "health_check",
-                                    "running",
-                                    f"CGC 健康检查未通过（HTTP {resp.status_code}），核心服务继续可用；调用链/符号图能力可能暂不可用。",
-                                    step,
-                                )
-                                cgc_warning_emitted = True
-                except Exception:
-                    if not cgc_warning_emitted:
-                        await self._emit(
-                            "health_check",
-                            "running",
-                            "CGC 健康检查未通过，核心服务继续可用；调用链/符号图能力可能暂不可用。",
-                            step,
-                        )
-                        cgc_warning_emitted = True
-
 
             if all_ok:
                 await self._emit("health_check", "done", "所有核心服务健康运行！", step)
@@ -1190,20 +994,6 @@ class NativeDeployer:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-
-    async def _ensure_cgc(self, step: int) -> None:
-        """Install CGC venv + codegraphcontext + mcp if not already present."""
-        if _cgc is None:
-            return
-        venv_path_str = str(self._config.get("cgc_venv_path", "")).strip()
-        venv_path = Path(venv_path_str) if venv_path_str else None
-        await self._emit("start_services", "running", "正在安装 CGC（codegraphcontext + mcp）...", step)
-        try:
-            await asyncio.to_thread(_cgc.ensure_cgc_installed, venv_path)
-            await self._emit("start_services", "running", "CGC 安装完成", step)
-        except _cgc.CGCInstallError as exc:
-            await self._emit("start_services", "running", f"CGC 安装失败：{exc}", step)
-            raise RuntimeError(str(exc)) from exc
 
     async def _get_git_hash(self, cwd: Path) -> str:
         """Return the current HEAD commit hash, or '' if git is unavailable."""
@@ -1278,9 +1068,9 @@ class NativeDeployer:
             await _close_subprocess_transport(proc)
 
     async def _run_capture(self, *cmd: str) -> tuple[int, str, str]:
+        env = os.environ.copy()
+        env.update(self._runtime_temp_env())
         try:
-            env = os.environ.copy()
-            env.update(self._runtime_temp_env())
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
@@ -1295,8 +1085,6 @@ class NativeDeployer:
     def _service_targets(self) -> list[tuple[str, int, str, str]]:
         services: list[tuple[str, int, str, str]] = []
         for name, port_key, default_port, kind, path in SERVICE_DEFAULTS:
-            if name == "gitnexus" and not self._config.get("install_gitnexus", True):
-                continue
             services.append((name, self._config_port(port_key, default_port), kind, path))
         return services
 

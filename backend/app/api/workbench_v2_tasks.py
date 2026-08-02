@@ -14,15 +14,18 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.config import settings
+from app.services.artifact_profiles import ArtifactProfileStore
 from app.services.evidence_memory import EvidenceMemoryStore
 from app.services.ai_workbench_links import AIWorkbenchLinkStore
 from app.services.test_semantic_library import TestSemanticLibraryStore
+from app.services.knowledge_store import KnowledgeStore
 from app.services.workbench_task_run import (
     WorkbenchTaskRunPreparer,
     WorkbenchTaskRunStore,
     refresh_run_snapshot_v3,
     resolve_execution_profile,
 )
+from app.services.workbench_run_enrichment import enrich_prepared_task_run
 from app.services.workbench_task_run_events import WorkbenchTaskRunEventStore
 from app.services.workbench_task_store import WorkbenchTask, WorkbenchTaskStore
 from app.services.workbench_task_compile import TaskConfigurationError, compile_task_configuration
@@ -81,8 +84,12 @@ class TaskCloneRequest(BaseModel):
 
 
 class TaskRunCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     parent_task_run_id: str = ""
     execution_profile_id: str = ""
+    artifact_profile_id: str = ""
+    feature_tags: list[str] = Field(default_factory=list)
 
 
 def task_store() -> WorkbenchTaskStore:
@@ -95,6 +102,14 @@ def version_store() -> WorkflowVersionStore:
 
 def task_run_store() -> WorkbenchTaskRunStore:
     return WorkbenchTaskRunStore(settings.data_path / "workbench" / "task_runs")
+
+
+def artifact_profile_store() -> ArtifactProfileStore:
+    return ArtifactProfileStore(settings.data_path / "workbench" / "artifact_profiles.db")
+
+
+def knowledge_store() -> KnowledgeStore:
+    return KnowledgeStore(settings.data_path / "knowledge" / "knowledge.sqlite3")
 
 
 def _require_v2() -> None:
@@ -371,6 +386,23 @@ async def create_task_attempt(task_id: str, payload: TaskRunCreateRequest) -> di
                     detail="重试必须沿用父运行的执行档位；请创建新的运行以切换档位",
                 )
             execution_profile_id = frozen_profile_id
+            frozen_artifact_profile = parent_run.task_bundle.get("artifact_profile")
+            if not isinstance(frozen_artifact_profile, dict):
+                frozen_artifact_profile = None
+            requested_artifact_profile_id = str(payload.artifact_profile_id or "").strip()
+            parent_artifact_profile_id = str(
+                (frozen_artifact_profile or {}).get("profile_id") or ""
+            )
+            if (
+                requested_artifact_profile_id
+                and requested_artifact_profile_id != parent_artifact_profile_id
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail="重试必须沿用父运行的交付件档案；请创建新的运行以切换档案",
+                )
+            artifact_profile_id = ""
+            feature_tags = []
         else:
             version = _published_version(task.workflow_id, task.workflow_version_id)
             effective = _effective_configuration_payload(
@@ -390,6 +422,18 @@ async def create_task_attempt(task_id: str, payload: TaskRunCreateRequest) -> di
             execution_profile_id = str(
                 payload.execution_profile_id or task.execution_profile_id or ""
             ).strip()
+            frozen_artifact_profile = None
+            artifact_profile_id = str(payload.artifact_profile_id or "").strip()
+            feature_tags = payload.feature_tags or list(task.tags)
+        profile_store = artifact_profile_store()
+        if artifact_profile_id:
+            try:
+                profile_store.get_profile(artifact_profile_id)
+            except KeyError as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"交付件档案不存在：{artifact_profile_id}",
+                ) from exc
         if not repo_path.is_dir():
             raise HTTPException(status_code=422, detail=f"工作空间源码目录不可用：{repo_path}")
         for definition in effective_definition.get("inputs") or []:
@@ -423,6 +467,21 @@ async def create_task_attempt(task_id: str, payload: TaskRunCreateRequest) -> di
                     "description": task.description,
                     "tags": task.tags,
                 },
+            )
+            enrich_prepared_task_run(
+                prepared,
+                artifact_profile_store=profile_store,
+                knowledge_store=knowledge_store(),
+                evidence_memory=EvidenceMemoryStore(
+                    settings.data_path / "workbench" / "evidence_memory.db"
+                ),
+                semantic_library=TestSemanticLibraryStore(
+                    settings.data_path / "workbench" / "test_semantics.db"
+                ),
+                material_db_path=settings.sqlite_db,
+                selected_artifact_profile_id=artifact_profile_id,
+                feature_tags=feature_tags,
+                parent_artifact_profile=frozen_artifact_profile,
             )
         except (FileNotFoundError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=f"任务输入不完整或无效：{exc}") from exc
@@ -926,6 +985,7 @@ def _task_payload(task: WorkbenchTask) -> dict[str, Any]:
 
 
 def _run_summary(run: Any) -> dict[str, Any]:
+    execution_status = str(run.execution_status or "not_started")
     return {
         "task_run_id": run.task_run_id,
         "task_id": run.task_id,
@@ -933,13 +993,48 @@ def _run_summary(run: Any) -> dict[str, Any]:
         "parent_task_run_id": run.parent_task_run_id,
         "workflow_id": run.workflow_id,
         "workspace_id": run.workspace_id,
-        "execution_status": run.execution_status,
+        "execution_status": execution_status,
         "quality_status": run.quality_status,
         "delivery_status": run.delivery_status,
         "started_at": run.started_at,
         "completed_at": run.completed_at,
         "created_at": run.created_at,
+        "waiting_reason": _run_waiting_reason(execution_status),
+        "recovery_actions": _run_recovery_actions(execution_status),
     }
+
+
+def _run_waiting_reason(execution_status: str) -> str:
+    return {
+        "prepared": "工作流已准备，等待执行器接手。",
+        "queued": "工作流已进入队列，等待执行器接手。",
+        "waiting_for_input": "工作流正在等待人工输入。",
+        "running": "工作流正在执行。",
+    }.get(str(execution_status).lower(), "")
+
+
+def _run_recovery_actions(execution_status: str) -> list[dict[str, Any]]:
+    if str(execution_status).lower() not in {
+        "error",
+        "failed",
+        "invalid",
+        "interrupted",
+    }:
+        return []
+    return [
+        {
+            "id": "retry_attempt",
+            "kind": "retry",
+            "label": "从失败节点重试",
+            "enabled": True,
+        },
+        {
+            "id": "view_diagnostics",
+            "kind": "diagnostic",
+            "label": "查看内部诊断",
+            "enabled": True,
+        },
+    ]
 
 
 def _write_run(run: Any) -> None:

@@ -27,7 +27,6 @@ def _make_deployer():
         "mode": "native",
         "backend_port": 3004,
         "frontend_port": 3003,
-        "gitnexus_port": 7100,
     }
     return NativeDeployer(cfg, asyncio.Queue())
 
@@ -218,8 +217,9 @@ async def test_service_frontend_restart_with_deployer_uses_defaults(client, monk
 
 
 async def test_service_gitnexus_stop_with_deployer_raises_404(client):
-    """gitnexus not in _start_args → stop raises KeyError → 404."""
+    """gitnexus is no longer a managed service."""
     import server
     server._state.deployer = _make_deployer()
     resp = await client.post("/api/services/gitnexus/stop")
     assert resp.status_code == 404
+    assert resp.json()["detail"]["available_services"] == ["backend", "frontend"]

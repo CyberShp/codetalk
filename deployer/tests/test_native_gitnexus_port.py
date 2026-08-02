@@ -12,7 +12,7 @@ from deployers.native import NativeDeployer
 
 
 class ConfigStoreTests(unittest.TestCase):
-    def test_load_config_normalizes_legacy_gitnexus_key(self) -> None:
+    def test_load_config_drops_legacy_gitnexus_key(self) -> None:
         with TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "deploy-config.json"
             config_path.write_text(json.dumps({"mode": "native", "portGitnexus": "7111"}), encoding="utf-8")
@@ -21,10 +21,10 @@ class ConfigStoreTests(unittest.TestCase):
                 saved = config_store.load_config()
                 frontend_cfg = config_store.load_config_for_frontend()
 
-        self.assertEqual(saved["gitnexus_port"], "7111")
-        self.assertEqual(frontend_cfg["portGitnexus"], "7111")
+        self.assertNotIn("gitnexus_port", saved)
+        self.assertNotIn("portGitnexus", frontend_cfg)
 
-    def test_save_and_load_preserves_gitnexus_port_in_canonical_key(self) -> None:
+    def test_save_and_load_drops_gitnexus_port(self) -> None:
         with TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "deploy-config.json"
 
@@ -41,13 +41,13 @@ class ConfigStoreTests(unittest.TestCase):
                 saved = config_store.load_config()
                 frontend_cfg = config_store.load_config_for_frontend()
 
-        self.assertEqual(saved["gitnexus_port"], 7111)
+        self.assertNotIn("gitnexus_port", saved)
         self.assertNotIn("portGitnexus", saved)
-        self.assertEqual(frontend_cfg["portGitnexus"], 7111)
+        self.assertNotIn("portGitnexus", frontend_cfg)
 
 
 class NativeDeployerTests(unittest.IsolatedAsyncioTestCase):
-    async def test_check_health_uses_configured_gitnexus_port(self) -> None:
+    async def test_check_health_ignores_removed_gitnexus_port(self) -> None:
         calls: list[str] = []
 
         class FakeResponse:
@@ -81,8 +81,8 @@ class NativeDeployerTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(sys.modules, {"httpx": fake_httpx}):
             results = await deployer.check_health()
 
-        self.assertIn("http://localhost:7111/api/info", calls)
-        self.assertTrue(any(item["name"] == "gitnexus" and item["healthy"] for item in results))
+        self.assertNotIn("http://localhost:7111/api/info", calls)
+        self.assertFalse(any(item["name"] == "gitnexus" for item in results))
 
     async def test_scan_port_conflicts_reports_bind_denied_without_listener(self) -> None:
         class FakeScan:
@@ -199,8 +199,8 @@ class NativeDeployerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(("kill", "-9", "53181"), calls)
         self.assertNotIn(("kill", "-9", "4741"), calls)
 
-    async def test_start_services_keeps_core_running_when_cgc_install_fails(self) -> None:
-        """CGC is an optional enhancer; install failure must not fail CodeTalk startup."""
+    async def test_start_services_only_starts_backend_and_frontend(self) -> None:
+        """Removed tool-service flags cannot put CGC/GitNexus back in the start path."""
         queue: asyncio.Queue = asyncio.Queue()
         deployer = NativeDeployer(
             {
@@ -214,33 +214,22 @@ class NativeDeployerTests(unittest.IsolatedAsyncioTestCase):
         )
         started: list[str] = []
 
-        async def fake_release_ports(*args, **kwargs) -> None:
+        async def fake_ensure_core_ports(*args, **kwargs) -> None:
             return None
 
         async def fake_start_process(name, *args, **kwargs) -> None:
             started.append(name)
 
-        async def fake_ensure_cgc(step: int) -> None:
-            raise RuntimeError("offline wheelhouse missing")
-
         with (
-            patch.object(deployer, "_release_ports", fake_release_ports),
+            patch.object(deployer, "_ensure_core_ports", fake_ensure_core_ports),
             patch.object(deployer, "_start_process", fake_start_process),
-            patch.object(deployer, "_ensure_cgc", fake_ensure_cgc),
         ):
             await deployer._step_start_services()
 
         self.assertEqual(started, ["backend", "frontend"])
 
-        events = []
-        while not queue.empty():
-            events.append(await queue.get())
-        messages = "\n".join(str(event.get("message", "")) for event in events)
-        self.assertIn("CGC 启动已跳过", messages)
-        self.assertIn("offline wheelhouse missing", messages)
-
-    async def test_deploy_keeps_core_running_when_gitnexus_install_fails(self) -> None:
-        """GitNexus is optional in intranet deployments; install failure must not block core services."""
+    async def test_deploy_does_not_call_removed_gitnexus_install_step(self) -> None:
+        """Deploy now runs only the frontend/backend lifecycle."""
         queue: asyncio.Queue = asyncio.Queue()
         deployer = NativeDeployer(
             {
@@ -256,16 +245,11 @@ class NativeDeployerTests(unittest.IsolatedAsyncioTestCase):
         async def record(name: str) -> None:
             calls.append(name)
 
-        async def fail_gitnexus() -> None:
-            calls.append("install_gitnexus")
-            raise RuntimeError("npm registry unavailable")
-
         with (
             patch.object(deployer, "_step_check_env", lambda: record("check_env")),
             patch.object(deployer, "_step_install_backend", lambda: record("install_backend")),
             patch.object(deployer, "_step_generate_config", lambda: record("generate_config")),
             patch.object(deployer, "_step_install_frontend", lambda: record("install_frontend")),
-            patch.object(deployer, "_step_install_gitnexus", fail_gitnexus),
             patch.object(deployer, "_step_start_services", lambda: record("start_services")),
             patch.object(deployer, "_step_health_check", lambda: record("health_check")),
         ):
@@ -278,22 +262,13 @@ class NativeDeployerTests(unittest.IsolatedAsyncioTestCase):
                 "install_backend",
                 "generate_config",
                 "install_frontend",
-                "install_gitnexus",
                 "start_services",
                 "health_check",
             ],
         )
-        self.assertFalse(deployer._config["install_gitnexus"])
 
-        events = []
-        while not queue.empty():
-            events.append(await queue.get())
-        messages = "\n".join(str(event.get("message", "")) for event in events)
-        self.assertIn("GitNexus 安装已跳过", messages)
-        self.assertIn("npm registry unavailable", messages)
-
-    async def test_health_check_does_not_fail_deployment_when_optional_cgc_is_unhealthy(self) -> None:
-        """CGC health is diagnostic only; backend/frontend readiness is enough to deploy."""
+    async def test_health_check_ignores_removed_cgc_process(self) -> None:
+        """A stale cgc process entry cannot affect backend/frontend readiness."""
         queue: asyncio.Queue = asyncio.Queue()
         deployer = NativeDeployer(
             {
@@ -335,7 +310,7 @@ class NativeDeployerTests(unittest.IsolatedAsyncioTestCase):
         while not queue.empty():
             events.append(await queue.get())
         messages = "\n".join(str(event.get("message", "")) for event in events)
-        self.assertIn("CGC 健康检查未通过", messages)
+        self.assertNotIn("CGC 健康检查未通过", messages)
         self.assertIn("所有核心服务健康运行", messages)
 
 

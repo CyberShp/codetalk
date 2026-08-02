@@ -59,6 +59,14 @@ ALLOWED_JSON_SCHEMA_TYPES = frozenset({
     "null",
 })
 SAFE_RUNTIME_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+ALLOWED_KNOWLEDGE_SOURCES = frozenset({
+    "experience_patterns",
+    "semantic_cases",
+    "materials",
+    "evidence_memory",
+})
+ALLOWED_KNOWLEDGE_SCOPES = frozenset({"project", "personal_global"})
+ALLOWED_KNOWLEDGE_MODES = frozenset({"preflight", "on_demand"})
 
 
 class WorkflowValidationError(ValueError):
@@ -72,6 +80,9 @@ class WorkflowInput:
     required: bool = False
     role: str = ""
     resolver: str = ""
+    label: str = ""
+    example: str = ""
+    missing_guidance: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -184,6 +195,7 @@ class WorkflowStore:
 def validate_workflow_definition(payload: dict[str, Any]) -> WorkflowDefinition:
     if not isinstance(payload, dict):
         raise WorkflowValidationError("workflow definition must be an object")
+    _validate_knowledge_policy(payload.get("knowledge_policy"))
     workflow_id = _required_str(payload, "id")
     _validate_runtime_id(workflow_id, "workflow id")
     name = _required_str(payload, "name")
@@ -238,6 +250,41 @@ def validate_workflow_definition(payload: dict[str, Any]) -> WorkflowDefinition:
         outputs=outputs,
         raw=dict(payload),
     )
+
+
+def _validate_knowledge_policy(value: Any) -> None:
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        raise WorkflowValidationError("workflow knowledge_policy must be an object")
+    sources = value.get("sources", [])
+    if not isinstance(sources, list) or not all(isinstance(item, str) for item in sources):
+        raise WorkflowValidationError("knowledge sources must be a list of strings")
+    unsupported_sources = [item for item in sources if item not in ALLOWED_KNOWLEDGE_SOURCES]
+    if unsupported_sources:
+        raise WorkflowValidationError(
+            f"unsupported knowledge source: {unsupported_sources[0]}"
+        )
+    scopes = value.get("scopes", ["project", "personal_global"])
+    if not isinstance(scopes, list) or not all(isinstance(item, str) for item in scopes):
+        raise WorkflowValidationError("knowledge scopes must be a list of strings")
+    unsupported_scopes = [item for item in scopes if item not in ALLOWED_KNOWLEDGE_SCOPES]
+    if unsupported_scopes:
+        raise WorkflowValidationError(
+            f"unsupported knowledge scope: {unsupported_scopes[0]}"
+        )
+    mode = value.get("mode", "preflight")
+    if mode not in ALLOWED_KNOWLEDGE_MODES:
+        raise WorkflowValidationError(f"unsupported knowledge mode: {mode}")
+    max_results = value.get("max_results", 12)
+    if (
+        isinstance(max_results, bool)
+        or not isinstance(max_results, int)
+        or not 1 <= max_results <= 50
+    ):
+        raise WorkflowValidationError("knowledge max_results must be between 1 and 50")
+    if not isinstance(value.get("allow_followup", False), bool):
+        raise WorkflowValidationError("knowledge allow_followup must be boolean")
 
 
 def _validate_canvas_execution_contract(
@@ -443,6 +490,9 @@ def _parse_input(item: Any) -> WorkflowInput:
         required=bool(item.get("required", False)),
         role=str(item.get("role") or ""),
         resolver=resolver,
+        label=str(item.get("label") or ""),
+        example=str(item.get("example") or ""),
+        missing_guidance=str(item.get("missing_guidance") or ""),
         raw=dict(item),
     )
 

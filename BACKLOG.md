@@ -11,4 +11,12 @@ created: 2026-07-05
 
 | ID | Name | Status | Owner | Link |
 |----|------|--------|-------|------|
-当前没有处于 idea/spec/in-progress/review 的 Feature。F001 已归档，F002 已完成；历史结论见 `docs/archive/features/` 与 `docs/features/F002-clowder-agent-parity.md`。
+| F003 | Windows Desktop App | deferred-by-user | Codex | Deferred until the Web release is stable |
+| F004 | Workflow As Primary Entry | portable-complete | Codex | docs/AGENT_WORKBENCH_ROADMAP.md |
+| F005 | Workflow Input Productization | portable-complete | Codex | docs/AGENT_WORKBENCH_ROADMAP.md |
+| F006 | Run Cockpit Noise Reduction | portable-complete | Codex | docs/AGENT_WORKBENCH_ROADMAP.md |
+| F007 | Windows EXE Internal Smoke Runtime | deferred-by-user | Codex | docs/AGENT_WORKBENCH_ROADMAP.md |
+| F008 | Artifact Output Standardization | portable-complete | Codex | docs/AGENT_WORKBENCH_ROADMAP.md |
+| F009 | Coverage As Workflow Capability | portable-complete | Codex | docs/AGENT_WORKBENCH_ROADMAP.md |
+| F010 | Custom Output Artifact Profiles | portable-complete | Codex | [Design](docs/OUTPUT_ARTIFACT_CUSTOMIZATION.md) |
+| F011 | Test Knowledge Center and Experience Retrieval | portable-complete | Codex | [F011](docs/features/F011-test-knowledge-center.md) / [Design](docs/TEST_KNOWLEDGE_CENTER.md) |

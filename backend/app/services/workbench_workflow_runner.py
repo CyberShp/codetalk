@@ -38,8 +38,12 @@ from app.services.agent_run_harness import (
     _generic_agent_invocation_contract,
     _safe_required_artifact,
 )
+from app.services.artifact_profiles import validate_profile_artifacts
 from app.services.ai_thread_artifacts import ArtifactContractError
+from app.services.coverage_workflow import parse_coverage_inputs
+from app.services.evidence_memory import EvidenceMemoryStore
 from app.services.harness_facade import AgentHarnessFacade, HarnessRunRequest
+from app.services.knowledge_store import KnowledgeStore
 from app.services.flow_evidence import (
     build_flow_evidence_pack,
     build_flow_outline,
@@ -61,6 +65,13 @@ from app.services.input_consumption import (
     record_input_consumption_event,
 )
 from app.services.workbench_artifact_manifest import write_task_artifact_manifest
+from app.services.workbench_run_enrichment import (
+    finalize_enriched_task_run,
+    inject_requested_knowledge,
+    knowledge_followup_requests,
+    materialize_requested_knowledge,
+)
+from app.services.test_semantic_library import TestSemanticLibraryStore
 from app.services.workbench_task_run import BUILTIN_LLM_PROVIDER_ID
 from app.services.workbench_task_run import (
     FrozenV3ExecutionAuthorityError,
@@ -1162,6 +1173,10 @@ class WorkbenchWorkflowRunner:
         tool_dispatcher: ToolDispatcher | None = None,
         granted_tool_permissions: Iterable[str] = (),
         managed_tool_runtime_instance: ManagedToolRuntime | None = None,
+        knowledge_store: KnowledgeStore | None = None,
+        evidence_memory: EvidenceMemoryStore | None = None,
+        semantic_library: TestSemanticLibraryStore | None = None,
+        material_db_path: str | Path | None = None,
     ) -> None:
         self.artifact_root = Path(artifact_root)
         self.store = WorkbenchTaskRunStore(self.artifact_root)
@@ -1197,6 +1212,18 @@ class WorkbenchWorkflowRunner:
             if managed_runtime is not None
             else ()
         )
+        self._knowledge_store = knowledge_store or KnowledgeStore(
+            settings.data_path / "knowledge" / "knowledge.sqlite3"
+        )
+        evidence_db = settings.data_path / "workbench" / "evidence_memory.db"
+        semantic_db = settings.data_path / "workbench" / "test_semantics.db"
+        self._evidence_memory = evidence_memory or (
+            EvidenceMemoryStore(evidence_db) if evidence_db.is_file() else None
+        )
+        self._semantic_library = semantic_library or (
+            TestSemanticLibraryStore(semantic_db) if semantic_db.is_file() else None
+        )
+        self._material_db_path = Path(material_db_path or settings.sqlite_db)
 
     def execute_task_run(
         self,
@@ -3253,6 +3280,16 @@ class WorkbenchWorkflowRunner:
         task_root = self.artifact_root / _safe_segment(
             str((quality_retry_bundle or {}).get("task_run_id") or task_run_id)
         )
+        trusted_task_bundle = _task_bundle_with_frozen_enrichment(
+            task_root,
+            _read_json(task_root / "task_bundle.json"),
+        )
+        quality_retry_bundle = _task_bundle_with_frozen_enrichment(
+            task_root,
+            quality_retry_bundle,
+        )
+        _write_json(artifact_dir / "task_bundle.json", quality_retry_bundle)
+        trusted_workflow_snapshot = _read_json(task_root / "workflow_snapshot.json")
         from app.services.tool_action_journal import ToolActionContext, ToolActionJournal
 
         task_projection = _read_json(task_root / "task_run.json")
@@ -3420,8 +3457,13 @@ class WorkbenchWorkflowRunner:
             else [_snapshot_agent_turn_artifacts(artifact_dir, turn_id="turn_1")]
         )
         source_slice_requests = _agent_source_slice_requests(artifact_dir)
+        followup_requests = knowledge_followup_requests(
+            artifact_dir,
+            trusted_task_bundle if isinstance(trusted_task_bundle, dict) else {},
+        )
         injected_source_slices: list[dict[str, Any]] = []
         source_slice_warnings: list[str] = []
+        injected_knowledge: dict[str, Any] = {}
         if source_slice_requests:
             injected_source_slices, source_slice_warnings = _materialize_requested_source_slices(
                 repo_path=str((run_payload or {}).get("cwd") or ""),
@@ -3433,6 +3475,30 @@ class WorkbenchWorkflowRunner:
                 source_slices=injected_source_slices,
                 warnings=source_slice_warnings,
             )
+        if followup_requests:
+            injected_knowledge = materialize_requested_knowledge(
+                requests=followup_requests,
+                task_bundle=(
+                    trusted_task_bundle
+                    if isinstance(trusted_task_bundle, dict)
+                    else {}
+                ),
+                workflow_snapshot=(
+                    trusted_workflow_snapshot
+                    if isinstance(trusted_workflow_snapshot, dict)
+                    else {}
+                ),
+                knowledge_store=self._knowledge_store,
+                evidence_memory=self._evidence_memory,
+                semantic_library=self._semantic_library,
+                material_db_path=self._material_db_path,
+            )
+            _write_json(
+                artifact_dir / "knowledge_followup_results.json",
+                injected_knowledge,
+            )
+            inject_requested_knowledge(artifact_dir, injected_knowledge)
+        if source_slice_requests or followup_requests:
             _set_agent_turn_id(artifact_dir=artifact_dir, turn_id="turn_2")
             execution = execute_provider_turn()
             if isinstance(execution, ProviderUnsupported):
@@ -3563,6 +3629,8 @@ class WorkbenchWorkflowRunner:
             "source_slice_requests": source_slice_requests,
             "injected_source_slices": injected_source_slices,
             "source_slice_warnings": source_slice_warnings,
+            "knowledge_followup_requests": followup_requests,
+            "injected_knowledge": injected_knowledge,
             "validation": asdict(validation),
             "required_artifacts": required_artifacts,
         }
@@ -3607,6 +3675,8 @@ class WorkbenchWorkflowRunner:
                 required_artifacts=required_artifacts,
                 source_slice_requests=source_slice_requests,
                 injected_source_slices=injected_source_slices,
+                knowledge_followup_requests=followup_requests,
+                injected_knowledge=injected_knowledge,
                 failure_recovery=failure_recovery,
                 artifact_recovery=artifact_recovery,
             )
@@ -5442,7 +5512,11 @@ class WorkbenchWorkflowRunner:
             for item in step_results
             if isinstance(item, dict)
         }
-        for output in workflow_snapshot.get("outputs") or []:
+        output_declarations = _effective_output_declarations(
+            task_run=task_run,
+            workflow_snapshot=workflow_snapshot,
+        )
+        for output in output_declarations:
             if not isinstance(output, dict):
                 continue
             if not _workflow_output_enabled(output):
@@ -5466,7 +5540,7 @@ class WorkbenchWorkflowRunner:
                     item["from"] = source_step
             if not step_result:
                 item.update({
-                    "status": "missing",
+                    "status": _missing_output_status(output),
                     "reason": "source step was not declared or executed",
                 })
                 outputs.append(item)
@@ -5492,7 +5566,7 @@ class WorkbenchWorkflowRunner:
                 continue
             if not artifact_path.exists() or not artifact_path.is_file():
                 item.update({
-                    "status": "missing",
+                    "status": _missing_output_status(output),
                     "reason": "artifact file was not produced",
                     "path": _public_workflow_artifact_path(
                         task_run=task_run,
@@ -5532,6 +5606,30 @@ class WorkbenchWorkflowRunner:
                 })
                 outputs.append(item)
                 continue
+            profile_artifact = output.get("profile_artifact")
+            if isinstance(profile_artifact, dict):
+                profile_validation = validate_profile_artifacts(
+                    artifact_dir,
+                    {
+                        "id": str(output.get("profile_id") or ""),
+                        "version": int(output.get("profile_version") or 0),
+                        "name": str(output.get("profile_name") or "Resolved output profile"),
+                        "artifacts": [profile_artifact],
+                    },
+                )
+                profile_result = next(iter(profile_validation.get("artifacts") or []), {})
+                if profile_result.get("status") != "accepted":
+                    item.update({
+                        "status": "invalid",
+                        "reason": "profile_validation_failed",
+                        "path": _public_workflow_artifact_path(
+                            task_run=task_run,
+                            artifact_path=artifact_path,
+                        ),
+                        "schema_errors": list(profile_result.get("errors") or []),
+                    })
+                    outputs.append(item)
+                    continue
             item.update({
                 "status": "ok",
                 "path": _public_workflow_artifact_path(
@@ -5545,6 +5643,8 @@ class WorkbenchWorkflowRunner:
                     task_run=task_run,
                 ),
             })
+            if isinstance(profile_artifact, dict):
+                item["profile_managed"] = True
             outputs.append(item)
         return outputs
 
@@ -5590,6 +5690,7 @@ class WorkbenchWorkflowRunner:
                 profile_id=profile_id,
             ),
         )
+        finalize_enriched_task_run(self.store.load(task_run_id), payload)
         write_task_artifact_manifest(task_dir, task_run_id=result.task_run_id)
 
     def _write_v3_execution_artifact(
@@ -5611,6 +5712,10 @@ class WorkbenchWorkflowRunner:
             },
         )
         _write_json(task_dir / "task_rerun_plan.json", result.rerun_plan)
+        finalize_enriched_task_run(
+            self.store.load(task_run_id),
+            asdict(result),
+        )
         write_task_artifact_manifest(task_dir, task_run_id=result.task_run_id)
 
 
@@ -9811,6 +9916,8 @@ def _snapshot_agent_turn_artifacts(artifact_dir: Path, *, turn_id: str) -> str:
         "raw_output.txt",
         "source_slice_requests.json",
         "source_slices.json",
+        "knowledge_followup_requests.json",
+        "knowledge_followup_results.json",
     ):
         source = artifact_dir / filename
         if source.exists() and source.is_file():
@@ -10952,6 +11059,8 @@ def _agent_run_lifecycle_summary(
     required_artifacts: list[str],
     source_slice_requests: list[dict[str, Any]],
     injected_source_slices: list[dict[str, Any]],
+    knowledge_followup_requests: list[dict[str, str]],
+    injected_knowledge: dict[str, Any],
     failure_recovery: dict[str, Any],
     artifact_recovery: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -11009,6 +11118,20 @@ def _agent_run_lifecycle_summary(
                 ["source_slice_requests.json", "source_slices.json"],
             ),
         })
+    if knowledge_followup_requests or injected_knowledge:
+        stages.append({
+            "stage": "knowledge_followup_context",
+            "status": str(injected_knowledge.get("status") or "requested"),
+            "requested_count": len(knowledge_followup_requests),
+            "injected_count": len(injected_knowledge.get("records") or []),
+            "artifacts": _existing_relative_artifacts(
+                artifact_dir,
+                [
+                    "knowledge_followup_requests.json",
+                    "knowledge_followup_results.json",
+                ],
+            ),
+        })
     stages.append({
         "stage": "artifact_validation",
         "status": str(validation.get("status") or ""),
@@ -11048,6 +11171,8 @@ def _agent_run_lifecycle_summary(
         ],
         "source_slice_request_count": len(source_slice_requests),
         "injected_source_slice_count": len(injected_source_slices),
+        "knowledge_followup_request_count": len(knowledge_followup_requests),
+        "injected_knowledge_record_count": len(injected_knowledge.get("records") or []),
         "artifact_recovery": artifact_recovery or {},
         "replay_plan_artifact": (
             "agent_replay_plan.json"
@@ -12935,26 +13060,7 @@ def _dedupe_changed_files(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _coverage_parse_payload(input_snapshot: dict[str, Any]) -> dict[str, Any]:
-    coverage_inputs = _coverage_input_payloads(input_snapshot)
-    files: list[dict[str, Any]] = []
-    uncovered_functions: list[dict[str, Any]] = []
-    warnings: list[str] = []
-    for item in coverage_inputs:
-        text = _read_text_from_input_payload(item)
-        if not text:
-            warnings.append(f"{item.get('input_id') or item.get('filename') or 'coverage'}: empty coverage text")
-            continue
-        parsed = _parse_lcov(text)
-        files.extend(parsed["files"])
-        uncovered_functions.extend(parsed["uncovered_functions"])
-    summary = _coverage_summary(files, uncovered_functions, warnings)
-    return {
-        "kind": "coverage_parse",
-        "inputs": coverage_inputs,
-        "files": files,
-        "uncovered_functions": uncovered_functions,
-        "summary": summary,
-    }
+    return parse_coverage_inputs(input_snapshot)
 
 
 def _coverage_input_payloads(input_snapshot: dict[str, Any]) -> list[dict[str, Any]]:
@@ -13067,6 +13173,127 @@ def _read_json(path: Path) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+
+
+def _read_frozen_enrichment_component(
+    task_root: Path,
+    component_id: str,
+    expected_path: str,
+) -> dict[str, Any] | None:
+    snapshot = _read_json(task_root / "run_snapshot_v3.json")
+    components = snapshot.get("components") if isinstance(snapshot, dict) else None
+    descriptor = components.get(component_id) if isinstance(components, dict) else None
+    if not isinstance(descriptor, dict):
+        return None
+    relative_path = str(descriptor.get("path") or "")
+    expected_sha256 = str(descriptor.get("sha256") or "").lower()
+    if relative_path != expected_path or len(expected_sha256) != 64:
+        raise RuntimeError(f"invalid frozen enrichment component: {component_id}")
+    path = task_root / relative_path
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise RuntimeError(f"missing frozen enrichment component: {component_id}") from exc
+    if hashlib.sha256(data).hexdigest() != expected_sha256:
+        raise RuntimeError(f"changed frozen enrichment component: {component_id}")
+    try:
+        payload = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"invalid frozen enrichment payload: {component_id}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"invalid frozen enrichment payload: {component_id}")
+    return payload
+
+
+def _task_bundle_with_frozen_enrichment(
+    task_root: Path,
+    task_bundle: Any,
+) -> dict[str, Any]:
+    result = dict(task_bundle) if isinstance(task_bundle, dict) else {}
+    result.pop("artifact_profile", None)
+    result.pop("knowledge_retrieval", None)
+    output_contract = _read_frozen_enrichment_component(
+        task_root,
+        "output_contract",
+        "output_contract.json",
+    )
+    knowledge_retrieval = _read_frozen_enrichment_component(
+        task_root,
+        "knowledge_retrieval",
+        "knowledge_retrieval.json",
+    )
+    if output_contract is not None:
+        result["artifact_profile"] = output_contract
+    if knowledge_retrieval is not None:
+        result["knowledge_retrieval"] = knowledge_retrieval
+    return result
+
+
+def _effective_output_declarations(
+    *,
+    task_run: Any,
+    workflow_snapshot: dict[str, Any],
+) -> list[dict[str, Any]]:
+    declarations = [
+        dict(item)
+        for item in workflow_snapshot.get("outputs") or []
+        if isinstance(item, dict)
+    ]
+    task_root = Path(str(task_run.artifact_dir))
+    output_contract = _read_frozen_enrichment_component(
+        task_root,
+        "output_contract",
+        "output_contract.json",
+    )
+    if output_contract is None:
+        return declarations
+    indexes = {
+        str(item.get("id") or ""): index
+        for index, item in enumerate(declarations)
+        if str(item.get("id") or "")
+    }
+    for artifact in output_contract.get("artifacts") or []:
+        if not isinstance(artifact, dict):
+            continue
+        artifact_id = str(artifact.get("id") or "").strip()
+        filename = str(artifact.get("filename") or "").strip()
+        if not artifact_id or not filename:
+            continue
+        existing_index = indexes.get(artifact_id)
+        existing = declarations[existing_index] if existing_index is not None else {}
+        source_step = str(
+            artifact.get("from")
+            or artifact.get("source")
+            or existing.get("from")
+            or existing.get("source")
+            or ""
+        )
+        required = bool(artifact.get("required", False))
+        if existing:
+            required = bool(existing.get("required", True)) or required
+        declaration = {
+            **existing,
+            "id": artifact_id,
+            "type": str(artifact.get("format") or existing.get("type") or ""),
+            "artifact": filename,
+            "required": required,
+            "profile_artifact": dict(artifact),
+            "profile_id": str(output_contract.get("profile_id") or ""),
+            "profile_version": int(output_contract.get("profile_version") or 0),
+            "profile_name": str(output_contract.get("name") or ""),
+        }
+        if source_step:
+            declaration["from"] = source_step
+        if existing_index is None:
+            indexes[artifact_id] = len(declarations)
+            declarations.append(declaration)
+        else:
+            declarations[existing_index] = declaration
+    return declarations
+
+
+def _missing_output_status(output: dict[str, Any]) -> str:
+    return "missing" if output.get("required", True) is not False else "optional_missing"
 
 
 def _resolve_artifact_path(artifact_dir: Path, artifact_name: str) -> Path | None:

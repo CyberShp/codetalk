@@ -96,18 +96,6 @@
       box-shadow: 0 12px 28px rgba(37, 99, 235, 0.2);
     }
 
-    .btn-start-all.force-takeover {
-      background: rgba(251, 191, 36, 0.18);
-      border-color: rgba(251, 191, 36, 0.55);
-      color: var(--warning);
-      box-shadow: 0 0 18px rgba(251, 191, 36, 0.22);
-    }
-
-    .btn-start-all.force-takeover:hover:not(:disabled) {
-      background: rgba(251, 191, 36, 0.26);
-      box-shadow: 0 0 24px rgba(251, 191, 36, 0.28);
-    }
-
     .btn-stop-all {
       background: rgba(248, 113, 113, 0.12);
       border: 1px solid rgba(248, 113, 113, 0.35);
@@ -442,24 +430,12 @@
     <!-- Config Info (populated by JS from /api/config) -->
     <div id="config-info-bar" class="config-info-bar">
       <div class="config-info-item">
-        <span class="config-info-label">工作目录</span>
-        <span class="config-info-value" id="cfg-workspace">—</span>
-      </div>
-      <div class="config-info-item">
         <span class="config-info-label">前端</span>
         <span class="config-info-value" id="cfg-frontend-url">—</span>
       </div>
       <div class="config-info-item">
         <span class="config-info-label">后端 API</span>
         <span class="config-info-value" id="cfg-backend-url">—</span>
-      </div>
-      <div class="config-info-item">
-        <span class="config-info-label">GitNexus</span>
-        <span class="config-info-value" id="cfg-gitnexus-url">—</span>
-      </div>
-      <div class="config-info-item">
-        <span class="config-info-label">CGC</span>
-        <span class="config-info-value" id="cfg-cgc-url">—</span>
       </div>
     </div>
 
@@ -514,32 +490,6 @@
           <button class="svc-btn svc-btn-start" data-action="start" data-svc="frontend" type="button">启动</button>
           <button class="svc-btn svc-btn-stop" data-action="stop" data-svc="frontend" type="button">停止</button>
           <button class="svc-btn svc-btn-restart" data-action="restart" data-svc="frontend" type="button">重启</button>
-        </div>
-      </div>
-      <div class="svc-card" data-svc="gitnexus">
-        <div class="svc-card-header">
-          <span class="svc-name">GitNexus</span>
-          <span class="svc-status-dot dot-stopped" id="dot-gitnexus"></span>
-        </div>
-        <span class="svc-port" id="port-gitnexus">:7100</span>
-        <span class="svc-status-label label-stopped" id="label-gitnexus">已停止</span>
-        <div class="svc-actions">
-          <button class="svc-btn svc-btn-start" data-action="start" data-svc="gitnexus" type="button">启动</button>
-          <button class="svc-btn svc-btn-stop" data-action="stop" data-svc="gitnexus" type="button">停止</button>
-          <button class="svc-btn svc-btn-restart" data-action="restart" data-svc="gitnexus" type="button">重启</button>
-        </div>
-      </div>
-      <div class="svc-card" data-svc="cgc">
-        <div class="svc-card-header">
-          <span class="svc-name">CGC</span>
-          <span class="svc-status-dot dot-stopped" id="dot-cgc"></span>
-        </div>
-        <span class="svc-port" id="port-cgc">:7072</span>
-        <span class="svc-status-label label-stopped" id="label-cgc">已停止</span>
-        <div class="svc-actions">
-          <button class="svc-btn svc-btn-start" data-action="start" data-svc="cgc" type="button">启动</button>
-          <button class="svc-btn svc-btn-stop" data-action="stop" data-svc="cgc" type="button">停止</button>
-          <button class="svc-btn svc-btn-restart" data-action="restart" data-svc="cgc" type="button">重启</button>
         </div>
       </div>
     </div>

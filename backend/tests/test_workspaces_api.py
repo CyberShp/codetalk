@@ -197,6 +197,26 @@ class TestWorkspaceCRUD:
         assert data["indexed"] == 0
         assert any("_index_workspace" in c for c in background_tasks)
 
+    async def test_create_without_repo_path_skips_indexing(self, client_v2, background_tasks):
+        resp = await client_v2.post(
+            "/api/workspaces",
+            json={"name": "planning-ws"},
+        )
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["name"] == "planning-ws"
+        assert data["repo_path"] == ""
+        assert data["indexed"] == -1
+        assert background_tasks == []
+
+    async def test_reindex_without_repo_path_returns_clear_error(self, client_v2, sqlite_db):
+        ws_id = "ws-no-local-folder"
+        await _seed_ws(sqlite_db, ws_id, indexed=-1, repo_path="")
+
+        resp = await client_v2.post(f"/api/workspaces/{ws_id}/reindex")
+        assert resp.status_code == 409
+        assert "未绑定本地文件夹" in resp.json()["detail"]
+
     async def test_browse_folders_returns_directories_only(self, client_v2, tmp_path):
         folder_root = tmp_path / "browser-root"
         folder_root.mkdir()

@@ -351,15 +351,29 @@ Tests:
 - context-discovery artifacts distinguish CodeTalk-callable fast-context from Agent-owned fast-context or CodeHub MCP.
 - coverage and black-box recommendation workflows preserve the same AGENTS.md instruction path, not only module-scope workflows.
 
-## Next Implementation Phases
+## Implemented Foundation
 
-1. Finish the visible provider capability matrix, separating CodeTalk-callable MCP providers, Agent-owned MCP providers, local deterministic tools, GitNexus, CGC, and semantic memory.
-2. Add or harden provider diagnostics for `fast-context` MCP, `ccr code`, Claude Code, OpenCode, and user-defined internal Agent CLIs.
-3. Complete Agent Run Harness routing for workflow execution, including task bundles, artifact declarations, validation matrix, accepted/rejected evidence, and materialization.
-4. Extend Evidence Memory retrieval so black-box test generation can use semantic test-library terminology, validated source facts, source slices, MR facts, and coverage facts.
-5. Add source-read and consumption trajectory artifacts so the UI can answer "which search hit was actually read and used".
-6. Add UI views for task bundle, provider warnings, provider ownership, validated evidence, rejected evidence, generated artifacts, and source slices.
-7. Keep AGENTS.md and other repo-local agent instructions visible in task bundles and debug artifacts so external CLI behavior is auditable.
-8. Add custom workflow input/output schema editing, including file inputs, link inputs, user-defined artifacts, and Agent-owned MCP hints.
-9. Add regression coverage that a repo `AGENTS.md` fast-context-first rule is captured in the task bundle, appears in execution artifacts, and degrades cleanly when the MCP bridge is unavailable.
-10. Add regression coverage that Agent-owned MCP links, such as internal MR links, are passed to the Agent CLI but still require CodeTalk-local artifact and source validation before evidence materialization.
+- [x] Visible provider capability matrix and provider diagnostics.
+- [x] Agent Run Harness routing, declared artifacts, validation, and materialization.
+- [x] Federated Evidence Memory, semantic case, material, MR, and coverage context.
+- [x] Source-read and evidence-consumption trajectory artifacts.
+- [x] Workbench views for provider ownership, diagnostics, evidence, artifacts, and source slices.
+- [x] Repo-local `AGENTS.md` policy preservation across Agent turns.
+- [x] Custom workflow input/output schemas and Agent-owned MCP hints.
+- [x] Regression coverage for fast-context degradation and explicit Agent-owned MR inputs.
+
+## Iteration Status
+
+| ID | Direction | Status | Acceptance |
+|----|-----------|--------|------------|
+| F004 | Workflow as primary entry | portable-complete | Built-in templates cover coverage gaps, MR impact, source-flow/SFMEA/black-box, defect retest, and module-risk reports. |
+| F005 | Workflow input productization | portable-complete | Workflows declare required/optional inputs with labels, examples, file/link types, reuse from previous runs, and missing-input guidance. |
+| F006 | Run cockpit noise reduction | portable-complete | Default view shows current step, waiting reason, failure reason, recovery actions, and artifacts; stdout/stderr remain folded. |
+| F007 | Windows EXE internal smoke runtime | deferred-by-user | Desktop code is excluded from this branch; the current release is frontend/backend Web only. |
+| F008 | Artifact output standardization | portable-complete | Standard outputs include `summary.md`, `manifest.json`, evidence artifacts, test design, risk matrix, and downloadable bundle. |
+| F009 | Coverage as workflow capability | portable-complete | Coverage is a workflow input/backend capability and no user-facing `/coverage` route remains. |
+| F010 | Custom output artifact profiles | portable-complete | Workflow outputs resolve through versioned, validated artifact profiles. |
+| F011 | Test knowledge center and experience retrieval | portable-complete | Imports, explicit-MR enrichment, bounded retrieval, authority controls, management UI, and replay gates are implemented. |
+
+See `docs/OUTPUT_ARTIFACT_CUSTOMIZATION.md` for the F010 design direction.
+See `docs/TEST_KNOWLEDGE_CENTER.md` for the F011 design direction.

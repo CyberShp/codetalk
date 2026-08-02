@@ -538,6 +538,9 @@
 .ct-v2-task-detail-header h1 { grid-column: 1 / -1; margin: 4px 0 0; font-size: 23px; letter-spacing: 0; }
 .ct-v2-task-detail-header p { grid-column: 1 / -1; margin: 0; color: #70808d; font-size: 12px; }
 .ct-v2-task-detail-header > div:last-child { display: flex; gap: 8px; }
+.ct-v2-run-artifact-profile { display: grid; gap: 2px; min-width: 190px; color: #64748b; font-size: 10px; }
+.ct-v2-run-artifact-profile > span { display: flex; align-items: center; gap: 4px; }
+.ct-v2-run-artifact-profile select { height: 36px; min-width: 0; border: 1px solid #cbd7df; border-radius: 5px; background: #fff; padding: 0 28px 0 8px; color: #334551; font-size: 11px; }
 .ct-v2-task-detail-header button { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 13px; border: 1px solid #cbd7df; border-radius: 5px; background: #fff; color: #334551; }
 .ct-v2-task-detail-header .ct-v2-primary-button { border-color: #087f98; background: #087f98; color: #fff; }
 .ct-v2-detail-tabs { display: flex; gap: 2px; padding: 0 28px; border-bottom: 1px solid #d8e1e7; background: #fff; }
@@ -577,6 +580,8 @@
   .ct-v2-task-filters .ct-v2-search-field { grid-column: 1 / -1; }
   .ct-v2-history-band, .ct-v2-overview-grid { grid-template-columns: 1fr; }
   .ct-v2-task-detail-header { align-items: flex-start; flex-direction: column; padding: 18px; }
+  .ct-v2-task-detail-header > div:last-child { width: 100%; flex-wrap: wrap; }
+  .ct-v2-run-artifact-profile { width: 100%; }
   .ct-v2-detail-tabs { padding: 0 14px; overflow-x: auto; }
   .ct-v2-task-detail-body { padding: 16px 14px; }
   .ct-v2-attempt-list article { grid-template-columns: 1fr 1fr; padding: 12px; }
@@ -603,6 +608,12 @@
 .ct-v2-task-step > h2, .ct-v2-step-title h2 { margin: 0 0 5px; font-size: 18px; letter-spacing: 0; }
 .ct-v2-task-step > p, .ct-v2-step-title p { margin: 0 0 18px; color: #6f7f8b; font-size: 12px; }
 .ct-v2-workflow-choice { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.ct-v2-workflow-choice-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.ct-v2-workflow-choice-heading h2 { margin: 0 0 5px; font-size: 18px; letter-spacing: 0; }
+.ct-v2-workflow-choice-heading p { margin: 0 0 18px; color: #6f7f8b; font-size: 12px; }
+.ct-v2-workflow-filter { display: inline-flex; flex: none; padding: 2px; border: 1px solid #d3dde5; border-radius: 6px; background: #f4f7f8; }
+.ct-v2-workflow-filter button { min-height: 30px; padding: 0 10px; border: 0; border-radius: 4px; color: #60717c; background: transparent; font-size: 12px; }
+.ct-v2-workflow-filter button.is-active { color: #123d47; background: #fff; box-shadow: 0 1px 2px rgb(15 45 54 / 10%); }
 .ct-v2-workflow-choice label { display: grid; min-height: 118px; grid-template-columns: 20px 1fr; align-content: start; gap: 5px 7px; padding: 14px; border: 1px solid #d3dde5; border-radius: 6px; background: #fff; cursor: pointer; }
 .ct-v2-workflow-choice label.is-selected { border-color: #16849b; box-shadow: inset 0 0 0 1px #16849b; }
 .ct-v2-workflow-choice input { grid-row: 1 / 4; margin-top: 2px; }
@@ -672,6 +683,8 @@
   .ct-v2-output-list article.is-custom { grid-template-columns: 1fr 1fr; }
 }
 @media (max-width: 650px) {
+  .ct-v2-workflow-choice-heading { align-items: stretch; flex-direction: column; }
+  .ct-v2-workflow-filter { align-self: flex-start; }
   .ct-v2-task-wizard > header { grid-template-columns: auto 1fr; padding: 0 14px; }
   .ct-v2-task-wizard > header em, .ct-v2-task-wizard > ol strong { display: none; }
   .ct-v2-task-wizard > ol { padding: 0 10px; }

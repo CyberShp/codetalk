@@ -1163,6 +1163,7 @@ def test_prepared_runs_persist_task_attempt_metadata_and_legacy_defaults(tmp_pat
 async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_path, monkeypatch):
     from app.api import agent_workbench, workbench_v2_tasks
     from app.config import settings
+    from app.services.artifact_profiles import ArtifactProfileStore
     from app.services.workbench_task_run_events import WorkbenchTaskRunEventStore
     from app.services.workflow_version_store import WorkflowVersionStore
 
@@ -1228,6 +1229,36 @@ async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_pat
         },
         validation={"valid": True, "errors": [], "warnings": []},
     )
+    artifact_profile = ArtifactProfileStore(
+        data_dir / "workbench" / "artifact_profiles.db"
+    ).create_profile(
+        {
+            "name": "Protocol review",
+            "artifacts": [
+                {
+                    "id": "review",
+                    "filename": "protocol-review.md",
+                    "format": "markdown",
+                    "required": True,
+                }
+            ],
+        }
+    )
+    other_artifact_profile = ArtifactProfileStore(
+        data_dir / "workbench" / "artifact_profiles.db"
+    ).create_profile(
+        {
+            "name": "Other output",
+            "artifacts": [
+                {
+                    "id": "other",
+                    "filename": "other.md",
+                    "format": "markdown",
+                    "required": True,
+                }
+            ],
+        }
+    )
 
     app = FastAPI()
     app.include_router(agent_workbench.router)
@@ -1262,9 +1293,19 @@ async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_pat
 
         compiled = await client.post(f"/api/workbench/tasks/{task_id}/compile")
 
+        unknown_profile = await client.post(
+            f"/api/workbench/tasks/{task_id}/runs",
+            json={"artifact_profile_id": "apro_missing"},
+        )
+        assert unknown_profile.status_code == 422
+        assert "交付件档案不存在" in unknown_profile.json()["detail"]
+
         # A new Attempt must inherit the task's selected profile when the
         # caller does not override it. The task page follows this code path.
-        first = await client.post(f"/api/workbench/tasks/{task_id}/runs", json={})
+        first = await client.post(
+            f"/api/workbench/tasks/{task_id}/runs",
+            json={"artifact_profile_id": artifact_profile["id"]},
+        )
         first_run_dir = data_dir / "workbench" / "task_runs" / first.json()["task_run_id"]
         (first_run_dir / "workflow_execution.json").write_text(
             json.dumps({
@@ -1296,6 +1337,13 @@ async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_pat
                 "execution_profile_id": "rapid",
             },
         )
+        artifact_profile_switch_retry = await client.post(
+            f"/api/workbench/tasks/{task_id}/runs",
+            json={
+                "parent_task_run_id": first.json()["task_run_id"],
+                "artifact_profile_id": other_artifact_profile["id"],
+            },
+        )
         listed = await client.get(
             "/api/workbench/tasks",
             params={
@@ -1325,6 +1373,8 @@ async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_pat
     assert second.json()["parent_task_run_id"] == first.json()["task_run_id"]
     assert profile_switch_retry.status_code == 422
     assert "沿用父运行" in profile_switch_retry.json()["detail"]
+    assert artifact_profile_switch_retry.status_code == 422
+    assert "沿用父运行的交付件档案" in artifact_profile_switch_retry.json()["detail"]
     assert listed.status_code == 200
     assert [item["task_id"] for item in listed.json()["items"]] == [task_id]
     assert listed.json()["items"][0]["latest_run"]["attempt_number"] == 2
@@ -1348,7 +1398,13 @@ async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_pat
     )
     assert run_bundle["effective_compiled_definition"]["outputs"][0]["artifact"] == "task-report.md"
     assert run_bundle["execution_profile"]["id"] == "deep"
+    assert run_bundle["artifact_profile"]["resolution_source"] == "run_selection"
+    assert run_bundle["artifact_profile"]["profile_id"] == artifact_profile["id"]
+    assert run_bundle["artifact_profile"]["artifacts"][0]["filename"] == "protocol-review.md"
     assert retried_bundle["inputs"]["target"] == "lib/nvmf"
+    assert retried_bundle["artifact_profile"]["resolution_source"] == "parent_attempt"
+    assert retried_bundle["artifact_profile"]["profile_id"] == artifact_profile["id"]
+    assert retried_bundle["artifact_profile"]["profile_version"] == artifact_profile["version"]
     assert retried_bundle["effective_compiled_definition"]["outputs"][0]["artifact"] == "task-report.md"
     assert retried_bundle["retry_source"] == {
         "task_run_id": first.json()["task_run_id"],

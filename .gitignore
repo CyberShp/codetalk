@@ -41,6 +41,7 @@ data/
 .kimi/
 .obsidian/
 AGENTS.md
+!AGENTS.md
 CLAUDE.md
 GEMINI.md
 KIMI.md

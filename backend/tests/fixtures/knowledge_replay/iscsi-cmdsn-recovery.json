@@ -1,0 +1,22 @@
+{
+  "case_id": "iscsi-cmdsn-recovery",
+  "title": "iSCSI CmdSN resource advertisement does not recover after oversubscription",
+  "query": "iscsi cmdsn resource recovery",
+  "source": {
+    "kind": "incident_report",
+    "identity": "fixture://knowledge-replay/iscsi-cmdsn-recovery",
+    "revision": "fixture-v1",
+    "locator": {
+      "kind": "fixture",
+      "path": "iscsi-cmdsn-recovery.json",
+      "line_start": 1,
+      "line_end": 14,
+      "excerpt": "8K resource limit, 16K in production, IO zero, CmdSN stops advancing"
+    }
+  },
+  "summary": "The iSCSI CMD resource is specified as 8K but production uses 16K and IO reaches zero. Lowering the allocation below 8K does not recover IO because an advertised available resource count remains depleted after a CmdSN stops advancing.",
+  "content": "Observed history: the iSCSI CMD resource specification is 8K; production reached 16K and IO became zero. After the resource count was reduced below 8K, IO still did not recover. The historical explanation was a CmdSN advertisement that stopped advancing, leaving fewer externally available resources until the advertised count reached zero.",
+  "terms": ["iscsi", "cmdsn", "resource", "recovery", "io"],
+  "applicability": ["resource oversubscription", "advertised resource recovery"],
+  "exclusions": ["history alone does not prove a current CmdSN defect"]
+}

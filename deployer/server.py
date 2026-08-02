@@ -46,7 +46,7 @@ class DeploymentState:
 
 
 _state = DeploymentState()
-KNOWN_SERVICES = ("backend", "frontend", "gitnexus", "cgc")
+KNOWN_SERVICES = ("backend", "frontend")
 _SECRET_VALUE_RE = re.compile(
     r"(?i)(api[-_]?key|token|access[-_]?token|secret|password)"
     r"(\s*(?:=|:)\s*|\s+)([^\s,;]+)"
@@ -85,19 +85,11 @@ purge_removed_deepwiki_bytecode()
 
 
 def _enabled_service_ports(cfg: dict) -> list[int]:
-    """Return ports whose conflicts block the core deployment.
-
-    CGC is an optional enhancer and is already started inside a best-effort
-    branch. Its port conflict should degrade CGC only, not prevent
-    backend/frontend from starting.
-    """
-    ports = [
+    """Return the core frontend/backend ports managed by the deployer."""
+    return [
         int(cfg.get("backend_port", 3004)),
         int(cfg.get("frontend_port", 3003)),
     ]
-    if cfg.get("install_gitnexus", True):
-        ports.append(int(cfg.get("gitnexus_port", 7100)))
-    return ports
 
 
 def _launch_job(coro) -> str:
@@ -181,7 +173,7 @@ async def api_deploy(body: dict):
 
         cfg = config_store.load_config()
         cfg.update(config_store.normalize_to_snake(body))
-        force_takeover: bool = bool(cfg.get("force_takeover", False))
+        force_takeover: bool = True
         dev_mode: bool = bool(cfg.get("dev_mode", False))
         cfg["force_takeover"] = force_takeover
         cfg["dev_mode"] = dev_mode
@@ -196,18 +188,6 @@ async def api_deploy(body: dict):
                 deployer._processes.update(old_deployer._processes)
             if old_deployer is not None and hasattr(old_deployer, "_start_args"):
                 deployer._start_args.update(old_deployer._start_args)
-            if not force_takeover:
-                ports = _enabled_service_ports(cfg)
-                conflicts = await deployer._scan_port_conflicts(ports)
-                if conflicts:
-                    raise HTTPException(
-                        status_code=409,
-                        detail={
-                            "message": "检测到端口冲突，服务尚未启动",
-                            "conflicts": conflicts,
-                            "hint": "请修改冲突端口，或确认占用进程可终止后启用“接管端口”重试",
-                        },
-                    )
         else:
             raise HTTPException(
                 status_code=400,
@@ -243,6 +223,8 @@ async def _run_deployment(deployer) -> None:
                     "message": f"部署失败：{_safe_diagnostic(error_msg)}。请查看上方失败步骤，修正后重试",
                 })
             else:
+                if hasattr(deployer, "_config"):
+                    config_store.save_config(deployer._config)
                 await q.put({"step": "done", "status": "done", "message": "部署完成"})
             await q.put(None)  # sentinel -- signals SSE stream end
 
@@ -294,57 +276,6 @@ async def api_deploy_stop():
     return {"ok": True, "message": "部署已停止"}
 
 
-@app.post("/api/deploy/supplement/gitnexus")
-async def api_supplement_gitnexus():
-    """Install GitNexus as a supplementary service after native deployment."""
-    if _state.running:
-        raise HTTPException(status_code=409, detail="已有部署任务正在运行，请等待完成或先停止当前任务")
-
-    cfg = config_store.load_config()
-    event_queue: asyncio.Queue = asyncio.Queue()
-    deployer = NativeDeployer(cfg, event_queue)
-    old_deployer = _state.deployer
-    if old_deployer is not None and hasattr(old_deployer, "_processes"):
-        deployer._processes.update(old_deployer._processes)
-    if old_deployer is not None and hasattr(old_deployer, "_start_args"):
-        deployer._start_args.update(old_deployer._start_args)
-
-    _state.deployer = deployer
-    _state.event_queue = event_queue
-    job_id = _launch_job(_run_supplement_gitnexus(deployer, cfg))
-    return {"job_id": job_id}
-
-
-async def _run_supplement_gitnexus(deployer: NativeDeployer, cfg: dict) -> None:
-    cancelled = False
-    error_msg = ""
-    try:
-        await deployer._step_install_gitnexus()
-        await deployer._step_generate_config()
-        config_store.save_config(cfg)
-    except asyncio.CancelledError:
-        cancelled = True
-        q = _state.event_queue
-        if q is not None:
-            await q.put({"step": "install_gitnexus", "status": "cancelled", "message": "安装已取消"})
-    except Exception as exc:
-        error_msg = str(exc)
-        q = _state.event_queue
-        if q is not None:
-            await q.put({"step": "install_gitnexus", "status": "error", "message": _safe_diagnostic(error_msg)})
-    finally:
-        _state.running = False
-        q = _state.event_queue
-        if q is not None:
-            if cancelled:
-                await q.put({"step": "done", "status": "cancelled", "message": "GitNexus 安装已取消"})
-            elif error_msg:
-                await q.put({"step": "done", "status": "error", "message": "GitNexus 安装失败，请查看失败步骤后重试"})
-            else:
-                await q.put({"step": "done", "status": "done", "message": "GitNexus 安装完成"})
-            await q.put(None)
-
-
 @app.post("/api/quickstart")
 async def api_quickstart(request: Request):
     """Quick-start services using saved config, bootstrapping missing core deps."""
@@ -359,7 +290,7 @@ async def api_quickstart(request: Request):
         if _state.running:
             raise HTTPException(status_code=409, detail="已有部署任务正在运行，请等待完成或先停止当前任务")
 
-        force_takeover: bool = bool(body.get("force_takeover") or body.get("forceTakeover", False))
+        force_takeover: bool = True
         dev_mode: bool = bool(body.get("dev_mode") or body.get("devMode", False))
 
         cfg = config_store.load_config()
@@ -373,19 +304,6 @@ async def api_quickstart(request: Request):
             deployer._processes.update(old_deployer._processes)
         if old_deployer is not None and hasattr(old_deployer, "_start_args"):
             deployer._start_args.update(old_deployer._start_args)
-
-        if not force_takeover:
-            ports = _enabled_service_ports(cfg)
-            conflicts = await deployer._scan_port_conflicts(ports)
-            if conflicts:
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "message": "检测到端口冲突，服务尚未启动",
-                        "conflicts": conflicts,
-                        "hint": "请修改冲突端口，或确认占用进程可终止后启用“接管端口”重试",
-                    },
-                )
 
         _state.deployer = deployer
         _state.event_queue = event_queue
@@ -401,8 +319,6 @@ async def _run_quickstart(deployer: NativeDeployer) -> None:
         await deployer._step_install_backend()
         await deployer._step_generate_config()
         await deployer._step_install_frontend()
-        if deployer._config.get("install_gitnexus", True):
-            await deployer._step_install_optional_gitnexus()
         await deployer._step_start_services()
         await deployer._step_health_check()
     except asyncio.CancelledError:
@@ -422,6 +338,7 @@ async def _run_quickstart(deployer: NativeDeployer) -> None:
                     "message": f"快速启动失败：{_safe_diagnostic(error_msg)}。请查看上方失败步骤，修正后重试",
                 })
             else:
+                config_store.save_config(deployer._config)
                 await q.put({"step": "done", "status": "done", "message": "全部服务已启动"})
             await q.put(None)
 

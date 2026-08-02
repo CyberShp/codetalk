@@ -22,7 +22,7 @@ VENDOR_WHEELS_DIR = DEPLOYER_DIR / "vendor" / "wheels"
 HOST = os.environ.get("CODETALK_DEPLOYER_HOST", "0.0.0.0")
 PORT = int(os.environ.get("CODETALK_DEPLOYER_PORT", "9000"))
 DISPLAY_HOST = "localhost" if HOST in {"0.0.0.0", "::"} else HOST
-URL = f"http://{DISPLAY_HOST}:{PORT}"
+URL = f"http://{DISPLAY_HOST}:{PORT}/start.html"
 PYTHON_CANDIDATES = ("python3.12", "python3.11", "python3.10", "python3", "python")
 
 
@@ -126,7 +126,7 @@ def _install_dependencies() -> None:
 
 
 def _display_url(port: int) -> str:
-    return f"http://{DISPLAY_HOST}:{port}"
+    return f"http://{DISPLAY_HOST}:{port}/start.html"
 
 
 def _refresh_deployer_url() -> None:
