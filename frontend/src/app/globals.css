@@ -4006,6 +4006,16 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   opacity: 0.9;
 }
 
+.ct-home-workbench::before {
+  display: none;
+}
+
+.ct-home-workbench *,
+.ct-home-workbench *::before,
+.ct-home-workbench *::after {
+  animation: none !important;
+}
+
 .ct-home-topbar h1 {
   letter-spacing: 0;
 }
@@ -6084,6 +6094,28 @@ textarea:focus-visible {
   font-size: 12px;
 }
 
+.ct-artifact-profiles-workspace {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid #dce3e8;
+  border-radius: 7px;
+  background: #fff;
+}
+
+.ct-artifact-profiles-workspace > aside {
+  min-height: 0;
+  overflow: auto;
+  border-right: 1px solid #dce3e8;
+  padding: 14px;
+}
+
+.ct-artifact-profiles-workspace > section {
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 14px 16px 0;
+}
+
 .ct-asset-workspace .ct-v2-table th,
 .ct-asset-workspace .ct-v2-table td {
   overflow: hidden;
@@ -6146,12 +6178,16 @@ textarea:focus-visible {
 }
 
 .ct-asset-tags span {
+  max-width: 100%;
+  overflow: hidden;
   border: 1px solid #d8e0e5;
   border-radius: 4px;
   background: #f8fafb;
   padding: 2px 5px;
   color: #536170;
   font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ct-asset-detail {
@@ -6175,8 +6211,13 @@ textarea:focus-visible {
 }
 
 .ct-asset-detail > header span {
+  display: block;
+  max-width: min(100%, 280px);
+  overflow: hidden;
   color: #087b94;
   font: 600 10px ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ct-asset-detail > header h2 {
@@ -6663,6 +6704,22 @@ body:has(.ct-asset-modal) .ct-ai-dock-wrap {
   .ct-asset-filters,
   .ct-asset-filters.is-evidence {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .ct-artifact-profiles-workspace {
+    display: block;
+    overflow: visible;
+  }
+
+  .ct-artifact-profiles-workspace > aside {
+    max-height: none;
+    border-right: 0;
+    border-bottom: 1px solid #dce3e8;
+  }
+
+  .ct-artifact-profiles-workspace > section {
+    overflow: visible;
+    padding: 14px;
   }
 
   .ct-asset-filters .ct-v2-search-field {

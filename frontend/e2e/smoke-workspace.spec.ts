@@ -350,8 +350,10 @@ test.describe("Workspace smoke tests", () => {
       timeout: 15_000,
     });
     expect(threadId).not.toBe(staleThread.id);
-    await expect(page.getByText(`workspace / ${workspaceId}`)).toBeVisible();
-    await expect(page.getByText(`workspace:${workspaceId}`).first()).toBeVisible();
+    await expect(page.locator(".ct-codex-ai__topbar span").first()).toContainText("workspace /");
+    await expect(page.locator(".ct-codex-ai__topbar span").first()).not.toContainText(workspaceId);
+    await expect(page.locator(".ct-codex-ai__project small")).toContainText("workspace:");
+    await expect(page.locator(".ct-codex-ai__project small")).not.toContainText(workspaceId);
 
     const threadResp = await request.get(`${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}`);
     expect(threadResp.ok()).toBeTruthy();

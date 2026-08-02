@@ -1,6 +1,7 @@
 "use client";
 
 import type { WorkbenchController } from "./workbench-controller";
+import { compactMachineToken } from "@/lib/display-text";
 import type { WorkbenchTaskArtifact } from "@/lib/types";
 
 export function RunCockpitView({ scope }: { scope: WorkbenchController }) {
@@ -684,7 +685,7 @@ export function RunCockpitView({ scope }: { scope: WorkbenchController }) {
                                 : `运行中 · ${workflowDisplayName(preparedRun.workflow_id)}`}
                           </p>
                           <p className="mt-0.5 font-data text-[11px] text-on-surface-variant">
-                            任务 {preparedRun.task_run_id.slice(0, 8)} · {runPanelProgress.completed}/{runPanelProgress.total} 节点 · {runPanelProgress.percent}%
+                            任务 {compactMachineToken(preparedRun.task_run_id, 18)} · {runPanelProgress.completed}/{runPanelProgress.total} 节点 · {runPanelProgress.percent}%
                           </p>
                         </div>
                         <div className="flex shrink-0 items-center gap-2">
@@ -1318,7 +1319,7 @@ export function RunCockpitView({ scope }: { scope: WorkbenchController }) {
                       </summary>
                       <div className="mt-2 space-y-1 font-data text-[10px] text-on-surface-variant">
                         <p className="break-words">
-                          task_run_id:{preparedRun.task_run_id}
+                          task_run_id:{compactMachineToken(preparedRun.task_run_id, 24)}
                         </p>
                         <p className="break-words">
                           provider:
@@ -1353,7 +1354,7 @@ export function RunCockpitView({ scope }: { scope: WorkbenchController }) {
                         Agent 运行阶段
                       </p>
                       <span className="font-data text-[10px] text-on-surface-variant">
-                        {preparedRun.task_run_id}
+                        {compactMachineToken(preparedRun.task_run_id, 24)}
                       </span>
                     </div>
                     <div className="grid gap-1.5 sm:grid-cols-4">
@@ -1458,7 +1459,7 @@ export function RunCockpitView({ scope }: { scope: WorkbenchController }) {
                 </div>
                 <div className="min-w-0 rounded-xl border border-outline-variant/30 bg-surface/80 p-4 text-xs">
                   <p className="font-medium text-on-surface">
-                    {preparedRun.task_run_id}
+                    {compactMachineToken(preparedRun.task_run_id, 24)}
                   </p>
                   <p className="mt-1 break-words font-data text-on-surface-variant">
                     {preparedRun.artifact_dir}
@@ -3172,7 +3173,7 @@ export function RunCockpitView({ scope }: { scope: WorkbenchController }) {
                                 {stepId}
                               </p>
                               <p className="break-words font-data text-[11px] text-on-surface-variant">
-                                {agentRun.provider} / {agentRun.run_id}
+                                {agentRun.provider} / {compactMachineToken(agentRun.run_id, 24)}
                               </p>
                             </div>
                             {!isV3PreparedRun && (
@@ -3410,12 +3411,12 @@ export function RunCockpitView({ scope }: { scope: WorkbenchController }) {
                         }`}
                       >
                         <span className="block font-medium text-on-surface">
-                          {run.workflow_id}
+                          {compactMachineToken(run.workflow_id, 28)}
                         </span>
                         <span className="block break-words font-data text-[11px] text-on-surface-variant">
                           {busyAction === `restore-task-run-${run.task_run_id}`
                             ? "restoring..."
-                            : run.task_run_id}
+                            : compactMachineToken(run.task_run_id, 24)}
                         </span>
                       </button>
                     ))}

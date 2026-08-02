@@ -50,9 +50,7 @@ export function WorkflowLibraryPage() {
     <main className="ct-v2-library">
       <header className="ct-v2-page-header">
         <div>
-          <p>工作流中心</p>
           <h1>工作流</h1>
-          <span>管理可复用的执行规范、草稿和发布版本。</span>
         </div>
         <Link className="ct-v2-primary-link" href="/workflows/new"><Plus size={16} />新建工作流</Link>
       </header>

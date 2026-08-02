@@ -15,6 +15,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { compactMachineToken } from "@/lib/display-text";
 import type { AgentRuntime, AIConversation, WorkflowDefinition, Workspace } from "@/lib/types";
 
 const PROJECT_LIST_RENDER_LIMIT = 80;
@@ -35,7 +36,14 @@ function projectIdForThread(thread: AIConversation): string {
 }
 
 function publicProjectDetail(workspace: Workspace): string {
-  return `workspace:${workspace.id}`;
+  return `workspace:${compactMachineToken(workspace.id, 18)}`;
+}
+
+function publicScopeDetail(thread: AIConversation): string {
+  if (thread.scope_type === "workspace" || thread.workspace_id) {
+    return `workspace / ${compactMachineToken(projectIdForThread(thread), 18)}`;
+  }
+  return `${thread.scope_type} / ${compactMachineToken(thread.scope_id, 18)}`;
 }
 
 function formatTime(value: string): string {
@@ -213,7 +221,6 @@ export default function AIHomePage() {
             CodeTalk AI
           </span>
           <h1>按项目管理持续对话</h1>
-          <p>直接像 Codex 一样打开线程、切换项目、持续追问；智能体编排、报告和工作空间只是上下文来源。</p>
         </div>
         <Link href="/workspaces/new" className="ct-ai-home__new-project">
           <FolderPlus size={16} />
@@ -264,7 +271,6 @@ export default function AIHomePage() {
               <div>
                 <span>当前项目</span>
                 <h2>{selectedProject?.name ?? "未选择项目"}</h2>
-                <p>{selectedProject?.detail ?? "选择一个项目来查看或新建线程"}</p>
               </div>
               {selectedProject?.workspace && (
                 <div className="ct-thread-create">
@@ -309,7 +315,7 @@ export default function AIHomePage() {
             {visibleThreads.length === 0 ? (
               <div className="ct-thread-hub__empty ct-thread-hub__empty--large">
                 <MessageSquareText size={34} />
-                <p>这个项目还没有 AI 调查线程。新建一个线程后，可以围绕需求、报告、用例或运行结果持续追问。</p>
+                <p>暂无线程</p>
               </div>
             ) : (
               <div className="ct-thread-timeline">
@@ -322,7 +328,7 @@ export default function AIHomePage() {
                       <div>
                         <span>{scopeLabel(thread)}</span>
                         <h3>{thread.title}</h3>
-                        <p>{thread.scope_type} / {thread.scope_id}</p>
+                        <p title={`${thread.scope_type} / ${thread.scope_id}`}>{publicScopeDetail(thread)}</p>
                       </div>
                       <div className="ct-thread-card__meta">
                         <span>

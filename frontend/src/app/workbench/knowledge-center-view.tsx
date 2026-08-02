@@ -5,13 +5,16 @@ import {
   ClipboardList,
   FileText,
   History,
+  Inbox,
   Loader2,
+  PlusCircle,
   RotateCcw,
   Search,
   Upload,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 
+import { compactMachineToken } from "@/lib/display-text";
 import {
   addKnowledgePatternVersion,
   getKnowledgeIncident,
@@ -39,6 +42,39 @@ const tabLabels: Record<Tab, string> = {
   patterns: "经验模式",
   imports: "导入任务",
 };
+
+function KnowledgeEmptyState({
+  icon,
+  title,
+  body,
+  action,
+  onAction,
+}: {
+  icon: ReactNode;
+  title: string;
+  body: string;
+  action?: string;
+  onAction?: () => void;
+}) {
+  return (
+    <div className="rounded-md border border-dashed border-outline-variant/50 bg-surface-container/40 p-5 text-center">
+      <div className="mx-auto grid h-10 w-10 place-items-center rounded-md border border-outline-variant/40 bg-surface text-primary">
+        {icon}
+      </div>
+      <h2 className="mt-3 text-sm font-semibold text-on-surface">{title}</h2>
+      <p className="mx-auto mt-1 max-w-sm text-xs leading-5 text-on-surface-variant">{body}</p>
+      {action && onAction && (
+        <button
+          type="button"
+          onClick={onAction}
+          className="mt-4 inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-xs font-medium text-on-primary"
+        >
+          <PlusCircle size={14} /> {action}
+        </button>
+      )}
+    </div>
+  );
+}
 
 export function KnowledgeCenterView() {
   const [tab, setTab] = useState<Tab>("incidents");
@@ -109,7 +145,7 @@ export function KnowledgeCenterView() {
         mr_url: mrUrl.trim() || undefined,
       });
       setPaste("");
-      setMessage(result.extraction.status + " · " + result.job.job_id);
+      setMessage(result.extraction.status + " · " + compactMachineToken(result.job.job_id));
       await loadJobs();
       setTab("imports");
     } catch (error) {
@@ -129,7 +165,7 @@ export function KnowledgeCenterView() {
         mrUrl: mrUrl.trim() || undefined,
       });
       setFiles([]);
-      setMessage(result.extraction.status + " · " + result.job.job_id);
+      setMessage(result.extraction.status + " · " + compactMachineToken(result.job.job_id));
       await loadJobs();
       setTab("imports");
     } catch (error) {
@@ -156,7 +192,7 @@ export function KnowledgeCenterView() {
     setBusy(`enrich-${job.job_id}`);
     try {
       const result = await startKnowledgeAgentEnrichment(job.job_id);
-      setMessage(`Agent 运行已启动 · ${result.task_run_id}`);
+      setMessage(`Agent 运行已启动 · ${compactMachineToken(result.task_run_id)}`);
       await loadJobs();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Agent 提炼启动失败");
@@ -166,31 +202,10 @@ export function KnowledgeCenterView() {
   }
 
   return (
-    <section className="flex min-h-0 flex-col gap-4 p-5">
-      <header className="flex flex-wrap items-start justify-between gap-3">
+    <section className="flex min-h-0 flex-col gap-4">
+      <header className="ct-v2-page-header">
         <div>
-          <p className="text-xs uppercase tracking-[0.18em] text-on-surface-variant">Knowledge Center</p>
-          <h1 className="mt-1 text-xl font-semibold text-on-surface">测试知识中心</h1>
-          <p className="mt-1 text-sm text-on-surface-variant">
-            历史材料只作为调查线索，当前结论仍需本次运行证据。
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2 text-xs">
-          <select
-            aria-label="知识作用域"
-            value={scope}
-            onChange={(event) => setScope(event.target.value as "project" | "personal_global")}
-            className="h-9 rounded-md border border-outline-variant/50 bg-surface px-2 text-on-surface"
-          >
-            <option value="personal_global">个人全局</option>
-            <option value="project">当前项目</option>
-          </select>
-          <input
-            value={workspaceIdentity}
-            onChange={(event) => setWorkspaceIdentity(event.target.value)}
-            placeholder="项目身份（可选）"
-            className="h-9 w-52 rounded-md border border-outline-variant/50 bg-surface px-3 text-on-surface"
-          />
+          <h1>经验知识库</h1>
         </div>
       </header>
 
@@ -208,7 +223,7 @@ export function KnowledgeCenterView() {
       </nav>
 
       <div className="flex flex-wrap items-center gap-2">
-        <div className="relative min-w-64 flex-1">
+        <div className="relative min-w-64 flex-1 lg:max-w-xl">
           <Search size={15} className="pointer-events-none absolute left-3 top-2.5 text-on-surface-variant" />
           <input
             aria-label="搜索知识"
@@ -218,13 +233,29 @@ export function KnowledgeCenterView() {
             className="h-9 w-full rounded-md border border-outline-variant/50 bg-surface pl-9 pr-3 text-sm text-on-surface"
           />
         </div>
+        <select
+          aria-label="知识作用域"
+          value={scope}
+          onChange={(event) => setScope(event.target.value as "project" | "personal_global")}
+          className="h-9 rounded-md border border-outline-variant/50 bg-surface px-2 text-xs text-on-surface"
+        >
+          <option value="personal_global">个人全局</option>
+          <option value="project">当前项目</option>
+        </select>
+        <input
+          aria-label="项目身份"
+          value={workspaceIdentity}
+          onChange={(event) => setWorkspaceIdentity(event.target.value)}
+          placeholder="项目身份（可选）"
+          className="h-9 w-52 rounded-md border border-outline-variant/50 bg-surface px-3 text-xs text-on-surface"
+        />
         {busy === "load" && <Loader2 size={16} className="animate-spin text-primary" />}
         {message && <span className="text-xs text-on-surface-variant">{message}</span>}
       </div>
 
       {tab === "incidents" && (
-        <div className="grid min-h-0 gap-4 lg:grid-cols-[minmax(260px,0.8fr)_minmax(0,1.4fr)]">
-          <div className="space-y-2 overflow-auto">
+        <div data-testid="knowledge-master-detail" className="grid min-h-0 gap-4 lg:grid-cols-[minmax(300px,0.9fr)_minmax(0,1.7fr)]">
+          <div data-testid="knowledge-list-pane" className="space-y-2 overflow-auto">
             {incidents.map((incident) => (
               <button
                 key={incident.incident_id}
@@ -245,9 +276,17 @@ export function KnowledgeCenterView() {
                 </span>
               </button>
             ))}
-            {!incidents.length && <p className="p-4 text-sm text-on-surface-variant">暂无历史事件</p>}
+            {!incidents.length && (
+              <KnowledgeEmptyState
+                icon={<History size={22} />}
+                title="还没有历史事件"
+                body="导入缺陷复盘、测试记录或运行材料后，这里会沉淀可检索的事件线索。"
+                action="导入事件"
+                onAction={() => setTab("imports")}
+              />
+            )}
           </div>
-          <article className="min-w-0 rounded-md border border-outline-variant/30 p-4">
+          <article data-testid="knowledge-detail-pane" className="min-w-0 rounded-md border border-outline-variant/30 p-4">
             {selectedIncident ? (
               <>
                 <h2 className="text-lg font-semibold text-on-surface">{selectedIncident.title}</h2>
@@ -276,14 +315,18 @@ export function KnowledgeCenterView() {
                 </button>
               </>
             ) : (
-              <p className="text-sm text-on-surface-variant">选择一个事件查看详情和溯源。</p>
+              <KnowledgeEmptyState
+                icon={<FileText size={22} />}
+                title="选择事件查看详情"
+                body="左侧事件会展示摘要、关键词、作用域和证据溯源，便于测试复核时快速引用。"
+              />
             )}
           </article>
         </div>
       )}
 
       {tab === "patterns" && (
-        <div className="grid min-h-0 gap-4 lg:grid-cols-[minmax(260px,0.8fr)_minmax(0,1.4fr)]">
+        <div className="grid min-h-0 gap-4 lg:grid-cols-[minmax(300px,0.9fr)_minmax(0,1.7fr)]">
           <div className="space-y-2 overflow-auto">
             {patterns.map((pattern) => (
               <button
@@ -300,7 +343,15 @@ export function KnowledgeCenterView() {
                 </span>
               </button>
             ))}
-            {!patterns.length && <p className="p-4 text-sm text-on-surface-variant">暂无经验模式</p>}
+            {!patterns.length && (
+              <KnowledgeEmptyState
+                icon={<ClipboardList size={22} />}
+                title="还没有经验模式"
+                body="从已导入事件中提炼稳定模式，再由测试人员复核是否可复用。"
+                action="导入材料"
+                onAction={() => setTab("imports")}
+              />
+            )}
           </div>
           <article className="min-w-0 rounded-md border border-outline-variant/30 p-4">
             {selectedPattern ? (
@@ -347,7 +398,11 @@ export function KnowledgeCenterView() {
                 </div>
               </>
             ) : (
-              <p className="text-sm text-on-surface-variant">选择一个模式管理版本和状态。</p>
+              <KnowledgeEmptyState
+                icon={<ClipboardList size={22} />}
+                title="选择模式管理版本"
+                body="打开一个经验模式后，可以复核状态、追加版本或恢复历史版本。"
+              />
             )}
           </article>
         </div>
@@ -382,7 +437,7 @@ export function KnowledgeCenterView() {
               {jobs.map((job) => (
                 <div key={job.job_id} className="rounded border border-outline-variant/30 p-3">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="font-mono text-xs text-on-surface">{job.job_id}</span>
+                    <span className="font-mono text-xs text-on-surface" title={job.job_id}>{compactMachineToken(job.job_id)}</span>
                     <span className="text-xs text-primary">{job.status}</span>
                   </div>
                   <p className="mt-1 text-xs text-on-surface-variant">{job.source_count} 个来源 · {job.scope}</p>
@@ -417,7 +472,13 @@ export function KnowledgeCenterView() {
                   ))}
                 </div>
               ))}
-              {!jobs.length && <p className="text-sm text-on-surface-variant">暂无导入任务</p>}
+              {!jobs.length && (
+                <KnowledgeEmptyState
+                  icon={<Inbox size={22} />}
+                  title="暂无导入任务"
+                  body="导入粘贴材料或文件后，这里会显示解析、提炼和失败重试状态。"
+                />
+              )}
             </div>
           </div>
         </div>

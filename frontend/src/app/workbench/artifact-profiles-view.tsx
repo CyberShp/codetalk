@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  AlertTriangle,
   Check,
   FileOutput,
   FolderKanban,
@@ -208,7 +207,7 @@ export function ArtifactProfilesView({
   }
 
   return (
-    <div className="grid min-h-0 gap-4 xl:grid-cols-[280px_minmax(0,1fr)]">
+    <div className="ct-artifact-profiles-workspace grid min-h-0 gap-4 xl:grid-cols-[280px_minmax(0,1fr)]">
       <aside className="min-h-0 border-r border-outline-variant/30 pr-4">
         <div className="mb-3 flex items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-2">
@@ -380,11 +379,6 @@ export function ArtifactProfilesView({
               设为本机默认
             </button>
           )}
-        </div>
-
-        <div className="flex items-start gap-2 border-l-2 border-amber-400 px-3 py-2 text-xs text-on-surface-variant">
-          <AlertTriangle size={14} className="mt-0.5 shrink-0 text-amber-400" />
-          <span>证据校验、路径校验和清单生成不能被档案关闭。</span>
         </div>
 
         {selected && (

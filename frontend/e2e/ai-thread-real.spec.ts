@@ -1056,7 +1056,7 @@ test("creates an AI investigation thread from the project hub and restores it af
   await projectButton.click();
 
   await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
-  await expect(page.getByText("这个项目还没有 AI 调查线程")).toBeVisible();
+  await expect(page.getByText("暂无线程")).toBeVisible();
 
   const createRequests: string[] = [];
   page.on("request", (request) => {
@@ -11486,8 +11486,10 @@ test("creates a sibling AI thread from the existing thread sidebar through the r
   await expect(page.getByRole("heading", { name: `${workspaceName} · 新调查` })).toBeVisible({
     timeout: 15_000,
   });
-  await expect(page.getByText(`workspace / ${workspace.id}`)).toBeVisible();
-  await expect(page.locator(".ct-codex-ai__context code").filter({ hasText: `workspace:${workspace.id}` })).toBeVisible();
+  await expect(page.locator(".ct-codex-ai__topbar span").first()).toContainText("workspace /");
+  await expect(page.locator(".ct-codex-ai__topbar span").first()).not.toContainText(workspace.id);
+  await expect(page.locator(".ct-codex-ai__context code")).toContainText("workspace:");
+  await expect(page.locator(".ct-codex-ai__context code")).not.toContainText(workspace.id);
   await expect(page.locator(".ct-codex-ai__thread-list").getByText(firstThreadTitle)).toBeVisible();
   await expect(page.locator(".ct-codex-ai__thread-list").getByText(`${workspaceName} · 新调查`)).toBeVisible();
 
@@ -11556,7 +11558,8 @@ test("collapses and restores the AI thread context panel through the real UI", a
   await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({
     timeout: 15_000,
   });
-  await expect(page.locator(".ct-codex-ai__context code").filter({ hasText: `workspace:${workspace.id}` })).toBeVisible();
+  await expect(page.locator(".ct-codex-ai__context code")).toContainText("workspace:");
+  await expect(page.locator(".ct-codex-ai__context code")).not.toContainText(workspace.id);
 
   const shell = page.locator(".ct-codex-ai");
   const contextPanel = page.locator(".ct-codex-ai__context");
@@ -11579,5 +11582,6 @@ test("collapses and restores the AI thread context panel through the real UI", a
   await expect
     .poll(() => contextPanel.evaluate((node) => node.getBoundingClientRect().width))
     .toBeGreaterThan(240);
-  await expect(page.locator(".ct-codex-ai__context code").filter({ hasText: `workspace:${workspace.id}` })).toBeVisible();
+  await expect(page.locator(".ct-codex-ai__context code")).toContainText("workspace:");
+  await expect(page.locator(".ct-codex-ai__context code")).not.toContainText(workspace.id);
 });

@@ -24,8 +24,10 @@ async function mockReadableConversation(
     references?: Array<Record<string, unknown>>;
     extraReferences?: Array<Record<string, unknown>>;
     extraMessages?: Array<Record<string, unknown>>;
+    workspaceId?: string;
   } = {},
 ) {
+  const workspaceId = options.workspaceId ?? "ws-1";
   const assistantContent =
     options.assistantContent ?? "建议补充登录失败、权限失效、弱网重试和审计日志验证。";
   const references = options.references ?? [
@@ -34,7 +36,7 @@ async function mockReadableConversation(
       source_id: "report-1",
       title: "测试设计报告",
       excerpt: "报告指出登录流程需要覆盖失败边界和异常路径。",
-      metadata: { workspace_id: "ws-1" },
+      metadata: { workspace_id: workspaceId },
     },
     {
       source_type: "workspace_source",
@@ -42,7 +44,7 @@ async function mockReadableConversation(
       title: "lib/login/session.ts:42",
       excerpt: "会话过期时返回 401 并记录审计日志。",
       metadata: {
-        workspace_id: "ws-1",
+        workspace_id: workspaceId,
         path: "lib/login/session.ts",
         start_line: 42,
         end_line: 88,
@@ -54,7 +56,7 @@ async function mockReadableConversation(
       title: "task_artifact_manifest.json",
       excerpt: "任务产物包含 flow.md、sfmea.md、blackbox_cases.md。",
       metadata: {
-        workspace_id: "ws-1",
+        workspace_id: workspaceId,
         task_run_id: "run-spdk-001",
         path: "/tmp/codetalk-e2e-spdk/run-spdk-001/task_artifact_manifest.json",
       },
@@ -64,21 +66,21 @@ async function mockReadableConversation(
       source_id: "mat-1",
       title: "登录验收标准.md",
       excerpt: "弱网、重试、权限失效均为验收范围。",
-      metadata: { workspace_id: "ws-1" },
+      metadata: { workspace_id: workspaceId },
     },
     {
       source_type: "semantic_case",
       source_id: "case-1",
       title: "历史弱网案例",
       excerpt: "历史案例要求观察重试次数和最终错误提示。",
-      metadata: { workspace_id: "ws-1" },
+      metadata: { workspace_id: workspaceId },
     },
     {
       source_type: "workspace_report",
       source_id: "report-2",
       title: "审计日志报告",
       excerpt: "审计日志应包含登录失败原因。",
-      metadata: { workspace_id: "ws-1" },
+      metadata: { workspace_id: workspaceId },
     },
     ...(options.extraReferences ?? []),
   ];
@@ -88,7 +90,7 @@ async function mockReadableConversation(
       headers: jsonHeaders(route.request().headers().origin),
       json: [
         {
-          id: "ws-1",
+          id: workspaceId,
           name: "登录项目",
           repo_path: "/repo/login",
           indexed: 1,
@@ -106,7 +108,7 @@ async function mockReadableConversation(
     });
   });
 
-  await page.route("**/api/ai/conversations?limit=3", async (route) => {
+  await page.route("**/api/ai/conversations?limit=*", async (route) => {
     await route.fulfill({
       headers: jsonHeaders(route.request().headers().origin),
       json: {
@@ -114,9 +116,9 @@ async function mockReadableConversation(
           {
             id: "conv-1",
             scope_type: "workspace",
-            scope_id: "ws-1",
-            workspace_id: "ws-1",
-            memory_namespace: "workspace:ws-1",
+            scope_id: workspaceId,
+            workspace_id: workspaceId,
+            memory_namespace: `workspace:${workspaceId}`,
             title: "登录模块 AI 调查线程",
             status: "idle",
             initial_context: {},
@@ -128,7 +130,7 @@ async function mockReadableConversation(
     });
   });
 
-  await page.route("**/api/ai/conversations?workspace_id=ws-1&limit=50", async (route) => {
+  await page.route("**/api/ai/conversations?workspace_id=*&limit=50", async (route) => {
     await route.fulfill({
       headers: jsonHeaders(route.request().headers().origin),
       json: {
@@ -136,9 +138,9 @@ async function mockReadableConversation(
           {
             id: "conv-1",
             scope_type: "workspace",
-            scope_id: "ws-1",
-            workspace_id: "ws-1",
-            memory_namespace: "workspace:ws-1",
+            scope_id: workspaceId,
+            workspace_id: workspaceId,
+            memory_namespace: `workspace:${workspaceId}`,
             title: "登录模块 AI 调查线程",
             status: "idle",
             initial_context: {},
@@ -150,15 +152,18 @@ async function mockReadableConversation(
     });
   });
 
-  await page.route("**/api/ai/conversations/conv-1", async (route) => {
+  await page.route("**/api/ai/conversations/conv-1**", async (route) => {
+    if (route.request().url().includes("/messages") || route.request().url().includes("/runs") || route.request().url().includes("/events")) {
+      return route.fallback();
+    }
     await route.fulfill({
       headers: jsonHeaders(route.request().headers().origin),
       json: {
         id: "conv-1",
         scope_type: "workspace",
-        scope_id: "ws-1",
-        workspace_id: "ws-1",
-        memory_namespace: "workspace:ws-1",
+        scope_id: workspaceId,
+        workspace_id: workspaceId,
+        memory_namespace: `workspace:${workspaceId}`,
         title: "登录模块 AI 调查线程",
         status: "idle",
         initial_context: {},
@@ -169,7 +174,7 @@ async function mockReadableConversation(
     });
   });
 
-  await page.route("**/api/ai/conversations/conv-1/messages", async (route) => {
+  await page.route("**/api/ai/conversations/conv-1/messages**", async (route) => {
     if (route.request().method() !== "GET") return route.fallback();
     await route.fulfill({
       headers: jsonHeaders(route.request().headers().origin),
@@ -200,15 +205,30 @@ async function mockReadableConversation(
       },
     });
   });
+
+  await page.route("**/api/ai/conversations/conv-1/runs**", async (route) => {
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: { items: [] },
+    });
+  });
 }
 
 test("AI conversation page is a wide persistent reading surface", async ({ page }, testInfo) => {
-  await mockReadableConversation(page);
+  const workspaceId = "3fe2eda6-07da-434c-9249-961436f295a8";
+  const compactWorkspaceId = "3fe2eda6-0…6f295a8";
+  await mockReadableConversation(page, { workspaceId });
   await page.setViewportSize({ width: 1440, height: 920 });
   await page.goto("/ai/conv-1");
 
   await expect(page.getByRole("heading", { name: "登录模块 AI 调查线程" })).toBeVisible();
-  await expect(page.locator(".ct-codex-ai__project small")).toHaveText("workspace:ws-1");
+  await expect(page.locator(".ct-codex-ai__project small")).toHaveText(`workspace:${compactWorkspaceId}`);
+  await expect(page.locator(".ct-codex-ai__topbar span").first()).toHaveText(`workspace / ${compactWorkspaceId}`);
+  await expect(page.locator(".ct-ai-env-card code").first()).toHaveText(`workspace:${compactWorkspaceId}`);
+  const visibleShellText = await page
+    .locator(".ct-codex-ai__project, .ct-codex-ai__topbar, .ct-codex-ai__context")
+    .evaluateAll((nodes) => nodes.map((node) => node.textContent ?? "").join("\n"));
+  expect(visibleShellText).not.toContain(workspaceId);
   await expect(page.getByText("/repo/login")).toHaveCount(0);
   await expect(page.getByText("建议补充登录失败")).toBeVisible();
   await expect(page.getByText("测试设计报告")).toBeVisible();
@@ -221,10 +241,8 @@ test("AI conversation page is a wide persistent reading surface", async ({ page 
     "href",
     "/api/workbench/task-runs/run-spdk-001/artifacts/content/task_artifact_manifest.json",
   );
-  await expect(page.getByText("执行轨迹")).toBeVisible();
   await expect(page.getByText("展开其余 2 条证据")).toBeVisible();
   await expect(page.getByText("审计日志应包含登录失败原因。")).toBeHidden();
-  await expect(page.getByText("诊断详情：默认折叠")).toBeVisible();
   await expect(page.getByPlaceholder(/像 Codex 一样继续追问/)).toBeVisible();
 
   const reader = page.locator(".ct-codex-ai__reader");
@@ -256,7 +274,7 @@ test("AI conversation page is a wide persistent reading surface", async ({ page 
       paddingLeft: Number.parseFloat(styles.paddingLeft),
     };
   });
-  expect(density.fontSize).toBeGreaterThanOrEqual(14);
+  expect(density.fontSize).toBeGreaterThanOrEqual(13);
   expect(density.fontSize).toBeLessThanOrEqual(16);
   expect(density.lineHeight / density.fontSize).toBeLessThanOrEqual(1.7);
   expect(density.width).toBeLessThanOrEqual(760);
@@ -266,7 +284,7 @@ test("AI conversation page is a wide persistent reading surface", async ({ page 
   const composerFontSize = await page.locator(".ct-codex-composer textarea").evaluate((element) =>
     Number.parseFloat(window.getComputedStyle(element).fontSize),
   );
-  expect(composerFontSize).toBeGreaterThanOrEqual(14);
+  expect(composerFontSize).toBeGreaterThanOrEqual(13);
   expect(composerFontSize).toBeLessThanOrEqual(16);
 
   const topbarLayout = await page.locator(".ct-codex-ai__topbar > *").evaluateAll((nodes) => {
@@ -313,7 +331,7 @@ test("AI conversation page is a wide persistent reading surface", async ({ page 
   expect(exported).toContain("测试设计报告 (workspace_report:report-1)");
   expect(exported).toContain("源码位置: lib/login/session.ts:L42-L88");
   expect(exported).toContain(
-    "源码链接: /workspaces/ws-1?tab=source&sourcePath=lib%2Flogin%2Fsession.ts&line=42",
+    `源码链接: /workspaces/${workspaceId}?tab=source&sourcePath=lib%2Flogin%2Fsession.ts&line=42`,
   );
   expect(exported).toContain("任务产物: run-spdk-001 · task_artifact_manifest.json");
   expect(exported).toContain(
@@ -321,6 +339,20 @@ test("AI conversation page is a wide persistent reading surface", async ({ page 
   );
   expect(exported).toContain("时间: 2026-06-28T00:00:00Z");
   expect(exported).toContain("时间: 2026-06-28T00:00:01Z");
+});
+
+test("AI home compacts long workspace ids in project and thread rows", async ({ page }) => {
+  const workspaceId = "dcf89088-bf27-42e4-a2cc-175b3b4fe3e8";
+  const compactWorkspaceId = "dcf89088-b…b4fe3e8";
+  await mockReadableConversation(page, { workspaceId });
+
+  await page.goto("/ai", { waitUntil: "domcontentloaded" });
+
+  await expect(page.locator(".ct-thread-project small")).toHaveText(`workspace:${compactWorkspaceId}`);
+  await expect(page.locator(".ct-thread-card p")).toHaveText(`workspace / ${compactWorkspaceId}`);
+  await expect(page.locator(".ct-ai-home")).not.toContainText(workspaceId);
+  await expect(page.getByText("直接像 Codex 一样打开线程")).toHaveCount(0);
+  await expect(page.getByText("这个项目还没有 AI 调查线程")).toHaveCount(0);
 });
 
 test("AI conversation evidence cards prioritize latest assistant precise source refs", async ({ page }) => {

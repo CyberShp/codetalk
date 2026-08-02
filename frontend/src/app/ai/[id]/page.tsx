@@ -27,6 +27,7 @@ import {
   User,
 } from "lucide-react";
 import { api, currentApiBase } from "@/lib/api";
+import { compactMachineToken } from "@/lib/display-text";
 import type { AgentRuntime, AIContextReference, AIConversation, AIConversationRun, AIMessage, AIRunEvent, WorkbenchTaskArtifact, Workspace } from "@/lib/types";
 import MarkdownRenderer from "@/components/ui/MarkdownRenderer";
 
@@ -327,8 +328,24 @@ function threadWorkspaceId(thread: AIConversation | null): string {
 
 function publicWorkspaceLabel(workspace: Workspace | null, thread: AIConversation | null): string {
   const id = workspace?.id ?? threadWorkspaceId(thread);
-  if (id && id !== "global") return `workspace:${id}`;
-  return thread?.memory_namespace ?? "global";
+  if (id && id !== "global") return `workspace:${compactMachineToken(id, 18)}`;
+  return compactMachineToken(thread?.memory_namespace ?? "global", 22);
+}
+
+function publicScopeLabel(thread: AIConversation | null): string {
+  if (!thread) return "global";
+  if (thread.scope_type === "workspace" || thread.workspace_id) {
+    return `workspace / ${compactMachineToken(threadWorkspaceId(thread), 18)}`;
+  }
+  return `${thread.scope_type} / ${compactMachineToken(thread.scope_id, 18)}`;
+}
+
+function publicMemoryNamespace(value: string | null | undefined): string {
+  const text = String(value ?? "global");
+  if (text.startsWith("workspace:")) {
+    return `workspace:${compactMachineToken(text.slice("workspace:".length), 18)}`;
+  }
+  return compactMachineToken(text, 22);
 }
 
 function uniqueReferences(messages: AIMessage[]): AIContextReference[] {
@@ -1525,7 +1542,7 @@ export default function AIThreadPage() {
         <div className="ct-codex-ai__project">
           <span>当前项目</span>
           <strong>{workspace?.name ?? "未绑定项目"}</strong>
-          <small>{publicWorkspaceLabel(workspace, conversation)}</small>
+          <small title={workspace?.id ?? conversation?.memory_namespace ?? undefined}>{publicWorkspaceLabel(workspace, conversation)}</small>
         </div>
         <div className="ct-codex-ai__rail-group">
           <div className="ct-codex-ai__rail-label">
@@ -1642,7 +1659,7 @@ export default function AIThreadPage() {
         <div className="ct-codex-ai__chrome">
           <header className="ct-codex-ai__topbar">
           <div>
-            <span>{conversation?.scope_type} / {conversation?.scope_id}</span>
+            <span title={`${conversation?.scope_type ?? "global"} / ${conversation?.scope_id ?? "global"}`}>{publicScopeLabel(conversation)}</span>
             <h1>{conversation?.title ?? "AI 调查线程"}</h1>
           </div>
           <select
@@ -2017,7 +2034,7 @@ export default function AIThreadPage() {
             </div>
             <div>
               <span>记忆命名空间</span>
-              <code>{conversation?.memory_namespace ?? "global"}</code>
+              <code title={conversation?.memory_namespace ?? "global"}>{publicMemoryNamespace(conversation?.memory_namespace)}</code>
             </div>
           </div>
         </section>

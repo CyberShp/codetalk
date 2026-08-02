@@ -60,3 +60,9 @@
 - Periodically summarize goals, hypotheses, rejected assumptions, and open decisions. Label inference as inference.
 - When corrected, revise the model and downstream recommendation instead of echoing the correction or adding unrequested architecture.
 - Preserve productive disagreement. The goal is a better CodeTalk product, not conversational consensus.
+
+### Product UI Discipline
+
+- Before implementing or materially redesigning a frontend product screen, read `docs/PRODUCT_UI_RULES.md`.
+- Do the product-UI brief first: page purpose, primary user task, information hierarchy, removed elements, deferred elements, navigation split, and progressive disclosure points.
+- After implementation, inspect browser screenshots at desktop and mobile sizes and remove unnecessary UI before calling the screen done.
