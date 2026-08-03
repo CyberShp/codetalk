@@ -1,34 +1,45 @@
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 path = ROOT / "backend/app/services/workbench_task_run.py"
-lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-tokens = {"intranet_allowed_hosts", "intranet_allowed_cidrs"}
-removed: list[str] = []
-result: list[str] = []
+text = path.read_text(encoding="utf-8")
 
-for index, line in enumerate(lines, start=1):
-    matched = [token for token in tokens if token in line]
-    if not matched:
-        result.append(line)
-        continue
-    if len(matched) != 1:
-        raise RuntimeError(f"ambiguous legacy policy line {index}: {line.rstrip()}")
-    token = matched[0]
-    if re.fullmatch(rf"\s*[\"']{re.escape(token)}[\"']\s*,?\s*\n?", line):
-        removed.append(f"{index}:{line.rstrip()}")
-        continue
-    context = "".join(lines[max(0, index - 4): min(len(lines), index + 3)])
-    raise RuntimeError(
-        f"legacy policy token is not a standalone collection item at line {index}:\n{context}"
-    )
+replacements = (
+    (
+        "from app.services.network_policy import IntranetNetworkPolicy\n",
+        "",
+        "Workbench policy import",
+    ),
+    (
+        '''        network_policy = IntranetNetworkPolicy(\n            policy_id=settings.intranet_network_policy_id,\n            allowed_hosts=set(settings.intranet_allowed_hosts),\n            allowed_cidrs=set(settings.intranet_allowed_cidrs),\n        ).snapshot()\n''',
+        "",
+        "Workbench policy snapshot construction",
+    ),
+    (
+        '            "network_policy": network_policy,\n',
+        "",
+        "Workbench task bundle policy field",
+    ),
+)
 
-if len(removed) != 2:
-    raise RuntimeError(f"expected to remove two legacy policy keys, removed={removed}")
+for old, new, label in replacements:
+    count = text.count(old)
+    if count != 1:
+        raise RuntimeError(f"{label}: expected one exact match, got {count}")
+    text = text.replace(old, new, 1)
 
-path.write_text("".join(result), encoding="utf-8")
-print("removed legacy Workbench policy snapshot keys:")
-print("\n".join(removed))
+for token in (
+    "IntranetNetworkPolicy",
+    "intranet_network_policy_id",
+    "intranet_allowed_hosts",
+    "intranet_allowed_cidrs",
+    '"network_policy": network_policy',
+):
+    if token in text:
+        raise RuntimeError(f"Workbench legacy policy token remains: {token}")
+
+path.write_text(text, encoding="utf-8")
+Path(__file__).unlink(missing_ok=True)
+print("removed Workbench network-policy import, snapshot construction, and task-bundle field")
