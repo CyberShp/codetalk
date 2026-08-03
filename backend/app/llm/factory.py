@@ -10,7 +10,6 @@ import aiosqlite
 from app.config import settings
 from app.llm.anthropic import AnthropicClient
 from app.llm.base import BaseLLMClient
-from app.llm.endpoint import normalize_openai_compat_base_url
 from app.llm.openai_compat import OpenAICompatClient
 
 logger = logging.getLogger(__name__)
@@ -52,14 +51,6 @@ def _resolve_proxy(
     return None, ssl_cert_path, True
 
 
-def _model_request_url(api_type: str, base_url: str) -> str:
-    """Return the exact inference route used by the selected provider client."""
-    normalized = str(base_url or "").rstrip("/")
-    if api_type == "anthropic":
-        return f"{normalized}/v1/messages"
-    return f"{normalize_openai_compat_base_url(normalized)}/v1/chat/completions"
-
-
 def _create_runtime_llm_client(
     *,
     api_type: str,
@@ -68,12 +59,7 @@ def _create_runtime_llm_client(
     model: str,
     general: dict[str, str],
 ) -> BaseLLMClient:
-    """Create an LLM client after authorizing its actual model request route.
-
-    The settings probe calls this same function, while the provider repeats the
-    same narrow check immediately before transport.  A saved model URL records
-    user intent; only this deployment-level policy approves egress.
-    """
+    """Create an LLM client using the model and General Settings transport."""
     if api_type not in {"anthropic", "openai_compat"}:
         raise ValueError(f"未知的 api_type: {api_type}")
 

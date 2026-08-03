@@ -289,13 +289,6 @@ class Settings(BaseSettings):
         return self
 
     @property
-    def effective_network_mode(self) -> Literal["developer", "intranet", "strict_compliance"]:
-        """Resolve the new deployment mode without rewriting legacy settings."""
-        if self.network_mode is not None:
-            return self.network_mode
-        return "intranet" if self.intranet_network_mode else "developer"
-
-    @property
     def cors_origins_list(self) -> list[str]:
         origins = [o.strip() for o in self.cors_origins.split(",") if o.strip()]
         dev_origins = [

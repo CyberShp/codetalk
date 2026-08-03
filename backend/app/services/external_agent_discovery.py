@@ -31,7 +31,6 @@ from app.services.agent_sandbox import (
     filtered_agent_environment,
     prepare_agent_sandbox,
 )
-from app.services.runtime_environment import AgentNetworkContext, resolve_agent_network_context
 
 AgentStatus = Literal[
     "ok",
@@ -891,20 +890,6 @@ def _agent_process_env(
     *,
     artifact_dir: str | Path | None = None,
 ) -> dict[str, str]:
-    env, _network_context = _agent_process_env_with_network_context(
-        provider,
-        repo_path,
-        artifact_dir=artifact_dir,
-    )
-    return env
-
-
-def _agent_process_env_with_network_context(
-    provider: str,
-    repo_path: str | Path,
-    *,
-    artifact_dir: str | Path | None = None,
-) -> tuple[dict[str, str], AgentNetworkContext]:
     env = filtered_agent_environment(external_agent_provider_env_hints(provider))
     env["CODETALK_AGENT_READONLY"] = "1"
     env["CODETALK_REPO_PATH"] = str(Path(repo_path).resolve())
@@ -926,31 +911,20 @@ def _agent_process_env_with_network_context(
             discovered = _existing_ccr_config_path()
             if discovered:
                 env["CCR_CONFIG_PATH"] = discovered
-    network_context = resolve_agent_network_context(
-        requires_network=True,
-        environment=env,
-    )
-    return dict(network_context.sanitized_environment), network_context
+    return env
 
 
 def _sandbox_external_agent_argv(
     process_argv: list[str],
     *,
     env: dict[str, str],
-    network_context: AgentNetworkContext,
     cwd: str | Path,
 ) -> tuple[list[str], dict[str, object]]:
-    if not network_context.allowed:
-        raise AgentSandboxError(
-            f"Agent 网络策略拒绝：{network_context.reason}。{network_context.remediation}"
-        )
     artifact_dir = Path(env["CODETALK_AGENT_ARTIFACT_DIR"])
     launch = prepare_agent_sandbox(
         runtime={
             "sandbox_mode": settings.external_agent_sandbox_mode,
-            "network_context": network_context,
             "requires_network": True,
-            "intranet_require_os_sandbox": network_context.requires_os_network_isolation,
             "sandbox_write_paths": settings.external_agent_sandbox_write_paths,
             "sandbox_command": process_argv[0] if process_argv else "",
         },
@@ -2955,7 +2929,7 @@ async def _probe_external_agent_startup(
             argv,
             prompt,
         )
-        env, network_context = _agent_process_env_with_network_context(
+        env = _agent_process_env(
             provider, cwd, artifact_dir=artifact_dir
         )
         for transport_index, (
@@ -2978,7 +2952,6 @@ async def _probe_external_agent_startup(
                 process_argv, sandbox_audit = _sandbox_external_agent_argv(
                     process_argv,
                     env=env,
-                    network_context=network_context,
                     cwd=cwd,
                 )
                 transport_attempt["sandbox"] = sandbox_audit
@@ -3213,7 +3186,7 @@ async def _run_provider(
             argv,
             prompt,
         )
-        env, network_context = _agent_process_env_with_network_context(
+        env = _agent_process_env(
             provider,
             request.repo_path,
             artifact_dir=artifact_dir,
@@ -3241,7 +3214,6 @@ async def _run_provider(
                 process_argv, sandbox_audit = _sandbox_external_agent_argv(
                     process_argv,
                     env=env,
-                    network_context=network_context,
                     cwd=request.repo_path,
                 )
                 transport_attempt["sandbox"] = sandbox_audit

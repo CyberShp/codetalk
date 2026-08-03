@@ -18,7 +18,6 @@ from urllib.parse import urlparse
 import httpx
 
 from app.config import settings
-from app.services.runtime_environment import NetworkEgressBlocked, require_runtime_url
 
 logger = logging.getLogger(__name__)
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -537,10 +536,6 @@ class ProcessManager:
         need_fallback = False
         last_error = ""
         try:
-            # A managed-tool health URL is still an outbound request.  Keep
-            # the shared health client from becoming an exemption to the
-            # deployment-owned tool admission policy.
-            require_runtime_url(health_url)
             resp = await self.http_client.get(health_url)
             if resp.status_code < 300:
                 mp.status = "running"
@@ -550,12 +545,6 @@ class ProcessManager:
             # 404/405 on /api/info even when the service is running.
             need_fallback = True
             last_error = f"Health check HTTP {resp.status_code}"
-        except NetworkEgressBlocked as exc:
-            # Policy denial is not a transient service-health failure.  In
-            # particular, never let an unrelated fallback endpoint mask an
-            # unapproved primary URL as a healthy managed service.
-            mp.last_error = str(exc)
-            return {**mp.to_dict(), "healthy": False}
         except httpx.ConnectError:
             # Service is genuinely unreachable — no fallback
             if mp.status == "running":
@@ -568,7 +557,6 @@ class ProcessManager:
 
         if need_fallback and fallback_url:
             try:
-                require_runtime_url(fallback_url)
                 resp = await self.http_client.post(fallback_url, json={})
                 if resp.status_code < 500:
                     mp.status = "running"

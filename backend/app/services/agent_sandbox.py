@@ -511,7 +511,6 @@ def prepare_agent_sandbox(
     if mode not in {"auto", "required", "off"}:
         raise AgentSandboxError(f"未知 Agent 隔离模式：{mode}")
     platform = str(platform_name or sys.platform).lower()
-    network_context = runtime.get("network_context")
     requires_network = bool(runtime.get("requires_network", True))
     artifact_dir = artifact_dir.resolve()
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -543,7 +542,6 @@ def prepare_agent_sandbox(
         "runtime_state_paths": [str(path) for path in runtime_state_paths],
         "write_paths": [str(path) for path in write_paths],
         "network": "outbound_allowed" if requires_network else "not_requested",
-        "network_policy": network_context.snapshot() if network_context is not None else None,
         "subprocess": "allowed_and_inherited",
         "environment": "allowlisted_parent_plus_runtime_explicit",
     }

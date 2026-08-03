@@ -37,7 +37,6 @@ from app.services.agent_sandbox import (
     prepare_isolated_runtime_tmp as _prepare_isolated_runtime_tmp,
     prepare_agent_sandbox,
 )
-from app.services.runtime_environment import resolve_agent_network_context
 from app.services.harness_facade import normalize_provider_event
 from app.services.agent_runtimes import resolve_agent_runtime_environment
 from app.services.agent_invocation_contract import (
@@ -64,10 +63,6 @@ def _now() -> str:
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
-
-
-def _harness_network_policy_error(context: Any) -> str:
-    return f"Agent 网络策略拒绝：{context.reason}。{context.remediation}"
 
 
 def _json_sha256(payload: Any) -> str:
@@ -1247,14 +1242,6 @@ class AgentRunHarness:
             artifact_dir=self.artifact_dir,
         )
         env.update(env_hints)
-        network_context = resolve_agent_network_context(
-            requires_network=bool(run_payload.get("requires_network", True)),
-            environment=env,
-        )
-        self._write_json("network_policy.json", network_context.snapshot())
-        if not network_context.allowed:
-            raise RuntimeError(_harness_network_policy_error(network_context))
-        env = dict(network_context.sanitized_environment)
         env = _prefer_native_macos_git_path(env)
         env = _prepend_vetted_analysis_tool_paths(env)
         env["CODETALK_AGENT_ARTIFACT_DIR"] = str(self.artifact_dir.resolve())
@@ -1262,11 +1249,7 @@ class AgentRunHarness:
             sandbox = prepare_agent_sandbox(
                 runtime={
                     "sandbox_mode": settings.external_agent_sandbox_mode,
-                    "network_context": network_context,
                     "requires_network": bool(run_payload.get("requires_network", True)),
-                    "intranet_require_os_sandbox": bool(
-                        network_context.requires_os_network_isolation
-                    ),
                     "sandbox_read_paths": [
                         str(path) for path in _task_run_read_roots(self.artifact_dir)
                     ] + [str(path) for path in codex_runtime_read_targets],
@@ -1294,7 +1277,6 @@ class AgentRunHarness:
             execution_input["prompt_transport"] = prompt_transport
             execution_input["prompt_transport_reason"] = prompt_transport_reason
             execution_input["sandbox_status"] = sandbox.status
-            execution_input["network_policy"] = network_context.snapshot()
             self._write_json("execution_input.json", execution_input)
         self._write_json(
             "runtime_events.jsonl",
@@ -1304,7 +1286,6 @@ class AgentRunHarness:
                 "turn_id": turn_id,
                 "process_command": process_command,
                 "sandbox_status": sandbox.status,
-                "network_policy": network_context.snapshot(),
                 "created_at": _now(),
             },
             append_jsonl=True,

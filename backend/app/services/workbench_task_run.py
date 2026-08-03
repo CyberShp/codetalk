@@ -898,7 +898,6 @@ class WorkbenchTaskRunPreparer:
         if is_v3_contract:
             _write_json(artifact_dir / "compiled_definition.json", workflow_snapshot)
         _write_json(artifact_dir / "execution_profile.json", execution_profile)
-        _write_json(artifact_dir / "network_policy.json", network_policy)
         if not is_v3_contract:
             _write_json(artifact_dir / "stage_specs.json", stage_specs)
             _write_json(artifact_dir / "artifact_contract_v3.json", artifact_contract_v3)
@@ -5093,7 +5092,6 @@ def build_run_snapshot_v3(
         "input_snapshot": "input_snapshot.json",
         "input_consumption": "input_consumption_snapshot.json",
         "execution_profile": "execution_profile.json",
-        "network_policy": "network_policy.json",
         "workflow_contract": "workflow_contract.json",
         "provider_capability": "provider_snapshot.json",
         "provider_readiness": "provider_readiness.json",
