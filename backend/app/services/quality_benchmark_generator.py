@@ -91,6 +91,7 @@ def generate_quality_benchmark_artifacts(
     )
     network_targets = _configured_network_targets(approved_network_targets)
     expected_task_run_id: str | None = None
+    workbench: Any | None = None
     try:
         _require_before_deadline(deadline)
         validate_truth_isolation(
@@ -175,6 +176,12 @@ def generate_quality_benchmark_artifacts(
             output, expected_task_run_id=expected_task_run_id
         ):
             return output
+        failure_audit: dict[str, Any] | None = None
+        if workbench is not None:
+            try:
+                failure_audit = _sanitized_workbench_audit(workbench)
+            except (OSError, TypeError, ValueError):
+                failure_audit = None
         _remove_tree(staging)
         failure_code, status = _failure_classification(exc)
         _publish_failure_evidence(
@@ -183,10 +190,12 @@ def generate_quality_benchmark_artifacts(
             mode=mode,
             model=model,
             codetalk_revision=codetalk_revision,
+            source_tree=source_tree,
             elapsed_seconds=round(time.monotonic() - started, 3),
             timeout_seconds=effective_timeout,
             status=status,
             failure_code=failure_code,
+            workbench_audit=failure_audit,
         )
         prefix = (
             "CodeTalk benchmark exceeded its absolute deadline"
@@ -873,10 +882,12 @@ def _publish_failure_evidence(
     mode: str,
     model: str,
     codetalk_revision: str,
+    source_tree: str | None,
     elapsed_seconds: float,
     timeout_seconds: int,
     status: str,
     failure_code: str,
+    workbench_audit: Mapping[str, Any] | None = None,
 ) -> None:
     failure_staging = Path(
         tempfile.mkdtemp(dir=output.parent, prefix=f".{output.name}.failure.")
@@ -892,11 +903,17 @@ def _publish_failure_evidence(
                 "mode": mode,
                 "model": model,
                 "codetalk_revision": codetalk_revision,
+                "source_tree": source_tree,
                 "elapsed_seconds": elapsed_seconds,
                 "timeout_seconds": timeout_seconds,
                 "truth_inputs": [],
             },
         )
+        if workbench_audit is not None:
+            _write_json(
+                failure_staging / "workbench_audit.json",
+                dict(workbench_audit),
+            )
         _write_json(
             failure_staging / "artifact_hash_manifest.json",
             _artifact_hash_manifest(failure_staging),

@@ -1263,6 +1263,37 @@ def test_generator_preserves_terminal_workbench_status_matrix(
     _verify_artifact_hash_manifest(output)
 
 
+def test_quality_blocked_failure_retains_sanitized_workbench_audit(
+    tmp_path, monkeypatch
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "storage.c").write_text("one\ntwo\n", encoding="utf-8")
+    result = replace(_fake_workbench_result(tmp_path), status="quality_blocked")
+    monkeypatch.setattr(
+        "app.services.quality_benchmark_generator.execute_quality_benchmark_workbench",
+        lambda **_kwargs: result,
+    )
+    output = tmp_path / "blocked-with-audit"
+
+    with pytest.raises(RuntimeError, match="immutable failure evidence"):
+        generate_quality_benchmark_artifacts(
+            case_id="blocked-audit-case",
+            source_dir=source,
+            output_dir=output,
+            model="test-model",
+            mode="rapid",
+            timeout_seconds=10,
+            codetalk_revision="test-revision",
+            truth_paths=_truth_paths(tmp_path),
+        )
+
+    audit = json.loads((output / "workbench_audit.json").read_text())
+    assert audit["task_run_id"] == result.task_run_id
+    assert audit["workbench_status"] == "quality_blocked"
+    _verify_artifact_hash_manifest(output)
+
+
 def test_generator_exports_only_sanitized_workbench_audit_not_runtime_credentials(
     tmp_path, monkeypatch
 ) -> None:
@@ -1369,9 +1400,10 @@ def test_generator_all_terminal_failures_publish_the_same_redacted_evidence_cont
         "failure_code",
         "case_id",
         "mode",
-        "model",
-        "codetalk_revision",
-        "elapsed_seconds",
+            "model",
+            "codetalk_revision",
+            "source_tree",
+            "elapsed_seconds",
         "timeout_seconds",
         "truth_inputs",
     }

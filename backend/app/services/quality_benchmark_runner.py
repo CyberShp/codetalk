@@ -983,6 +983,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         select_all=bool(args.all),
     )
     multiple = len(case_paths) > 1
+    blocked_cases: list[str] = []
     for case_path in case_paths:
         case_started = time.monotonic()
         case_deadline = case_started + _quality_generation_timeout(str(args.mode))
@@ -1000,22 +1001,30 @@ def main(argv: Sequence[str] | None = None) -> int:
                 registry=registry,
                 corpus_root=Path(args.source_root),
             )
-            generate_quality_benchmark_artifacts(
-                case_id=case_id,
-                source_dir=source_dir.path,
-                output_dir=case_run_root,
-                model=str(args.model),
-                mode=str(args.mode),
-                timeout_seconds=max(
-                    1, int(max(0.0, case_deadline - time.monotonic()))
-                ),
-                codetalk_revision=_current_codetalk_revision(),
-                source_tree=source_dir.expected_tree,
-                truth_paths=_quality_case_truth_paths(case_path, registry=registry),
-                analysis_target=str(
-                    case_payload.get("analysis_target") or case_id
-                ),
-            )
+            try:
+                generate_quality_benchmark_artifacts(
+                    case_id=case_id,
+                    source_dir=source_dir.path,
+                    output_dir=case_run_root,
+                    model=str(args.model),
+                    mode=str(args.mode),
+                    timeout_seconds=max(
+                        1, int(max(0.0, case_deadline - time.monotonic()))
+                    ),
+                    codetalk_revision=_current_codetalk_revision(),
+                    source_tree=source_dir.expected_tree,
+                    truth_paths=_quality_case_truth_paths(case_path, registry=registry),
+                    analysis_target=str(
+                        case_payload.get("analysis_target") or case_id
+                    ),
+                )
+            except RuntimeError:
+                failure_path = case_run_root / "generation_failure.json"
+                if not failure_path.is_file():
+                    raise
+                blocked_cases.append(case_id)
+                print(failure_path, file=sys.stderr)
+                continue
         output_root = Path(args.output) / case_id if multiple else Path(args.output)
         result = run_quality_benchmark_case(
             case_path=case_path,
@@ -1045,7 +1054,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 deadline_monotonic=case_deadline,
             )
         print(result.manifest_path)
-    return 0
+    return 2 if blocked_cases else 0
 
 
 def _quality_generation_timeout(mode: str) -> int:

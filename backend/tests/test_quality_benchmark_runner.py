@@ -2948,6 +2948,75 @@ def test_cli_multi_case_fresh_and_explicit_replay_keep_roots_separate(
     assert projection_roots == [artifact_root / "case-1", artifact_root / "case-2"]
 
 
+def test_cli_multi_case_continues_after_immutable_generation_failure(
+    tmp_path, monkeypatch
+) -> None:
+    module = _runner()
+    case_paths = []
+    for case_id in ("case-failed", "case-completed"):
+        case_path = tmp_path / f"{case_id}.json"
+        case_path.write_text(
+            json.dumps({"case_id": case_id, "project_id": f"project-{case_id}"})
+        )
+        case_paths.append(case_path)
+    source_root = tmp_path / "sources"
+    source_root.mkdir()
+    output = tmp_path / "batch"
+    evaluated: list[str] = []
+
+    monkeypatch.setattr(module, "load_quality_registry", lambda _: _Registry())
+    monkeypatch.setattr(module, "_select_case_paths", lambda **_: case_paths)
+    monkeypatch.setattr(
+        module,
+        "resolve_quality_project",
+        lambda *_args, **_kwargs: type(
+            "Project", (), {"path": source_root, "expected_tree": "d" * 40}
+        )(),
+    )
+    monkeypatch.setattr(module, "_quality_case_truth_paths", lambda *_args, **_kwargs: ())
+
+    def fake_generate(**kwargs):
+        root = Path(kwargs["output_dir"])
+        case_id = str(kwargs["case_id"])
+        if case_id == "case-failed":
+            root.mkdir(parents=True)
+            (root / "generation_failure.json").write_text(
+                json.dumps({"case_id": case_id, "status": "quality_blocked"})
+            )
+            raise RuntimeError("immutable failure evidence")
+        (root / "first_pass").mkdir(parents=True)
+        (root / "final_after_auto_repair").mkdir()
+        (root / "repair_summary.json").write_text(
+            '{"attempt_count":0,"elapsed_seconds":1,"terminal_block_reason":null}'
+        )
+        (root / "versions.json").write_text(
+            '{"model":"gpt-5.6-sol","codetalk":"c","evaluator":"e"}'
+        )
+
+    def fake_run(**kwargs):
+        evaluated.append(str(kwargs["run_ref"]))
+        root = Path(kwargs["output_dir"])
+        return module.BenchmarkRunResult(
+            root / module.REPORT_FILENAME,
+            root / module.MANIFEST_FILENAME,
+            "a" * 64,
+        )
+
+    monkeypatch.setattr(module, "generate_quality_benchmark_artifacts", fake_generate)
+    monkeypatch.setattr(module, "_benchmark_execution_manifest", lambda _root: {})
+    monkeypatch.setattr(module, "run_quality_benchmark_case", fake_run)
+
+    assert module.main(
+        ["--all", "--source-root", str(source_root), "--output", str(output)]
+    ) == 2
+    assert evaluated == ["case-completed"]
+    assert (
+        Path(f"{output}.run-artifacts")
+        / "case-failed"
+        / "generation_failure.json"
+    ).is_file()
+
+
 @pytest.mark.parametrize(
     "repair_summary",
     [
