@@ -356,8 +356,6 @@ def _build_and_publish_success(
             "attempt_count": int(workbench.repair_attempt_count),
             "elapsed_seconds": round(time.monotonic() - started_monotonic, 3),
             "terminal_block_reason": workbench.terminal_block_reason,
-            "first_provenance": dict(getattr(workbench, "first_provenance", {}) or {}),
-            "final_provenance": dict(getattr(workbench, "final_provenance", {}) or {}),
         },
     )
     _write_json(
@@ -784,13 +782,13 @@ def _workbench_status_failure(status: str) -> _GenerationFailure:
 def _artifact_hash_manifest(staging: Path) -> dict[str, Any]:
     artifacts: dict[str, dict[str, Any]] = {}
     for path in sorted(staging.rglob("*")):
+        relative = path.relative_to(staging).as_posix()
         if (
             not path.is_file()
             or path.is_symlink()
-            or path.name == "artifact_hash_manifest.json"
+            or relative == "artifact_hash_manifest.json"
         ):
             continue
-        relative = path.relative_to(staging).as_posix()
         data = path.read_bytes()
         artifacts[relative] = {
             "sha256": hashlib.sha256(data).hexdigest(),

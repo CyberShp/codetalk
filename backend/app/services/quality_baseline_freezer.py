@@ -387,12 +387,29 @@ def _validate_generator_evidence(
         generator / "artifact_hash_manifest.json", "generator artifact hash manifest"
     )
     artifacts = _mapping(hash_manifest.get("artifacts"), "generator artifact hashes")
-    actual_files = {
-        path.relative_to(generator).as_posix(): path
-        for root_name in GENERATOR_REQUIRED_DIRECTORIES
-        for path in (generator / root_name).rglob("*")
-        if path.is_file()
-    }
+    manifest_ref = generation.get("artifact_hash_manifest")
+    legacy_root = generation.get("artifact_root_sha256")
+    current_contract = manifest_ref is not None
+    legacy_contract = legacy_root is not None
+    if current_contract == legacy_contract:
+        raise BaselineError("generator artifact anchor contract is ambiguous")
+    if current_contract:
+        if manifest_ref != "artifact_hash_manifest.json":
+            raise BaselineError("generator artifact manifest reference is invalid")
+        actual_files = {
+            path.relative_to(generator).as_posix(): path
+            for path in generator.rglob("*")
+            if path.is_file()
+            and path.relative_to(generator).as_posix()
+            != "artifact_hash_manifest.json"
+        }
+    else:
+        actual_files = {
+            path.relative_to(generator).as_posix(): path
+            for root_name in GENERATOR_REQUIRED_DIRECTORIES
+            for path in (generator / root_name).rglob("*")
+            if path.is_file()
+        }
     if set(actual_files) != set(artifacts):
         raise BaselineError("generator artifact set does not match hash manifest")
     retained: dict[str, dict[str, Any]] = {}
@@ -409,8 +426,11 @@ def _validate_generator_evidence(
     root_digest = hashlib.sha256(canonical).hexdigest()
     if hash_manifest.get("root_sha256") != root_digest:
         raise BaselineError("generator artifact root hash mismatch")
-    if generation.get("artifact_root_sha256") != root_digest:
-        raise BaselineError("generation manifest does not anchor generator artifacts")
+    if current_contract:
+        if execution.get("generator_artifact_root_sha256") != root_digest:
+            raise BaselineError("evaluation artifact root authority mismatch")
+    elif legacy_root != root_digest:
+        raise BaselineError("legacy generator artifact root mismatch")
 
     human_path = evaluation.directory / HUMAN_REPORT_FILENAME
     if hashlib.sha256(human_path.read_bytes()).hexdigest() != evaluation.manifest.get(

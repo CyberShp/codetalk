@@ -23,6 +23,7 @@ import pytest
 from jsonschema import Draft202012Validator
 
 from app.services.quality_benchmark_generator import (
+    _artifact_hash_manifest,
     _generator_output_schema,
     _materialize_candidate,
     _verify_artifact_hash_manifest,
@@ -398,12 +399,28 @@ def test_generator_executes_through_workbench_and_publishes_content_hash_manifes
     assert generation["runtime"] == "codetalk-workbench"
     assert generation["task_run_id"] == "task_run_test"
     assert generation["work_sufficiency"]["status"] == "sufficient"
+    assert json.loads((output / "repair_summary.json").read_text()) == {
+        "attempt_count": 0,
+        "elapsed_seconds": pytest.approx(generation["elapsed_seconds"], abs=0.01),
+        "terminal_block_reason": None,
+    }
     assert (output / "first_pass" / "claim_ledger.json").read_bytes() == (
         output / "final_after_auto_repair" / "claim_ledger.json"
     ).read_bytes()
     _verify_artifact_hash_manifest(output)
     for path in [output, *output.rglob("*")]:
         assert path.stat().st_mode & 0o222 == 0
+
+
+def test_generator_hash_manifest_includes_nested_same_name_file(tmp_path) -> None:
+    root = tmp_path / "generator"
+    nested = root / "first_pass" / "artifact_hash_manifest.json"
+    nested.parent.mkdir(parents=True)
+    nested.write_text('{"candidate":"not-control-metadata"}', encoding="utf-8")
+
+    manifest = _artifact_hash_manifest(root)
+
+    assert "first_pass/artifact_hash_manifest.json" in manifest["artifacts"]
 
 
 def test_generator_rejects_truth_leak_before_workbench_invocation(

@@ -83,12 +83,54 @@ def _write_generator(root: Path, run: Path) -> Path:
         json.dumps(manifest["versions"], sort_keys=True, separators=(",", ":"))
         + "\n"
     )
+    execution = manifest["execution"]
+    (generator / "generation_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "quality-benchmark-generation-v1",
+                "case_id": manifest["case_id"],
+                "mode": execution["profile"],
+                "model": manifest["versions"]["model"],
+                "codetalk_revision": manifest["versions"]["codetalk"],
+                "elapsed_seconds": execution["wall_clock_seconds"],
+                "artifact_hash_manifest": "artifact_hash_manifest.json",
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
+    (generator / "workbench_audit.json").write_text(
+        json.dumps({"schema_version": "quality-benchmark-workbench-audit-v1"})
+        + "\n"
+    )
+    root_sha = _rewrite_generator_hash_manifest(generator)
+    manifest["execution"]["generator_artifact_root_sha256"] = root_sha
+    (run / "quality_evaluation_manifest.json").write_text(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n"
+    )
+    return generator
+
+
+def _rewrite_generator_hash_manifest(
+    generator: Path, *, legacy: bool = False
+) -> str:
     artifacts: dict[str, dict[str, object]] = {}
-    for path in sorted([*first.rglob("*"), *final.rglob("*")]):
-        if not path.is_file():
+    paths = (
+        [
+            path
+            for root_name in ("first_pass", "final_after_auto_repair")
+            for path in (generator / root_name).rglob("*")
+        ]
+        if legacy
+        else list(generator.rglob("*"))
+    )
+    for path in sorted(paths):
+        relative = path.relative_to(generator).as_posix()
+        if not path.is_file() or relative == "artifact_hash_manifest.json":
             continue
         data = path.read_bytes()
-        artifacts[path.relative_to(generator).as_posix()] = {
+        artifacts[relative] = {
             "sha256": hashlib.sha256(data).hexdigest(),
             "size_bytes": len(data),
         }
@@ -108,28 +150,7 @@ def _write_generator(root: Path, run: Path) -> Path:
         )
         + "\n"
     )
-    execution = manifest["execution"]
-    (generator / "generation_manifest.json").write_text(
-        json.dumps(
-            {
-                "schema_version": "quality-benchmark-generation-v1",
-                "case_id": manifest["case_id"],
-                "mode": execution["profile"],
-                "model": manifest["versions"]["model"],
-                "codetalk_revision": manifest["versions"]["codetalk"],
-                "elapsed_seconds": execution["wall_clock_seconds"],
-                "artifact_root_sha256": root_sha,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        + "\n"
-    )
-    (generator / "workbench_audit.json").write_text(
-        json.dumps({"schema_version": "quality-benchmark-workbench-audit-v1"})
-        + "\n"
-    )
-    return generator
+    return root_sha
 
 
 def _generators(root: Path, runs: list[Path]) -> list[Path]:
@@ -261,6 +282,88 @@ def test_freezer_publishes_complete_read_only_self_contained_bundle(
     if os.name != "nt":
         assert all(path.stat().st_mode & 0o222 == 0 for path in output.rglob("*"))
         assert output.stat().st_mode & 0o222 == 0
+
+
+def test_freezer_rejects_generator_candidate_tamper(tmp_path: Path) -> None:
+    fixture = _evidence_fixture(tmp_path)
+    generator = Path(fixture["generators"][0])
+    (generator / "first_pass" / "candidate.json").write_text("tampered\n")
+
+    with pytest.raises(BaselineError, match="generator artifact hash mismatch"):
+        _freeze(fixture, tmp_path / "tampered")
+
+
+def test_freezer_rejects_recomputed_generator_manifest_without_evaluation_anchor(
+    tmp_path: Path,
+) -> None:
+    fixture = _evidence_fixture(tmp_path)
+    generator = Path(fixture["generators"][0])
+    (generator / "first_pass" / "candidate.json").write_text("tampered\n")
+    _rewrite_generator_hash_manifest(generator)
+
+    with pytest.raises(BaselineError, match="evaluation artifact root authority mismatch"):
+        _freeze(fixture, tmp_path / "recomputed")
+
+
+def test_freezer_rejects_unmanifested_nested_same_name_file(tmp_path: Path) -> None:
+    fixture = _evidence_fixture(tmp_path)
+    generator = Path(fixture["generators"][0])
+    (generator / "first_pass" / "artifact_hash_manifest.json").write_text(
+        '{"candidate":"unmanifested"}\n'
+    )
+
+    with pytest.raises(BaselineError, match="generator artifact set"):
+        _freeze(fixture, tmp_path / "nested-control-name")
+
+
+def test_freezer_rejects_current_evaluation_anchor_mismatch(tmp_path: Path) -> None:
+    fixture = _evidence_fixture(tmp_path)
+    run = Path(fixture["runs"][0])
+    manifest_path = run / "quality_evaluation_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["execution"]["generator_artifact_root_sha256"] = "0" * 64
+    manifest_path.write_text(json.dumps(manifest) + "\n")
+
+    with pytest.raises(BaselineError, match="evaluation artifact root authority mismatch"):
+        _freeze(fixture, tmp_path / "wrong-authority")
+
+
+@pytest.mark.parametrize("valid", [True, False], ids=("valid", "invalid-root"))
+def test_freezer_validates_non_circular_legacy_generator_anchor(
+    tmp_path: Path, valid: bool
+) -> None:
+    fixture = _evidence_fixture(tmp_path)
+    generator = Path(fixture["generators"][0])
+    root_sha = _rewrite_generator_hash_manifest(generator, legacy=True)
+    generation_path = generator / "generation_manifest.json"
+    generation = json.loads(generation_path.read_text())
+    generation.pop("artifact_hash_manifest")
+    generation["artifact_root_sha256"] = root_sha if valid else "0" * 64
+    generation_path.write_text(json.dumps(generation) + "\n")
+
+    if valid:
+        assert _freeze(fixture, tmp_path / "legacy-valid").is_dir()
+    else:
+        with pytest.raises(BaselineError, match="legacy generator artifact root mismatch"):
+            _freeze(fixture, tmp_path / "legacy-invalid")
+
+
+@pytest.mark.parametrize("anchor_mode", ["both", "neither"])
+def test_freezer_rejects_ambiguous_generator_anchor_contract(
+    tmp_path: Path, anchor_mode: str
+) -> None:
+    fixture = _evidence_fixture(tmp_path)
+    generator = Path(fixture["generators"][0])
+    generation_path = generator / "generation_manifest.json"
+    generation = json.loads(generation_path.read_text())
+    if anchor_mode == "both":
+        generation["artifact_root_sha256"] = "0" * 64
+    else:
+        generation.pop("artifact_hash_manifest")
+    generation_path.write_text(json.dumps(generation) + "\n")
+
+    with pytest.raises(BaselineError, match="anchor contract is ambiguous"):
+        _freeze(fixture, tmp_path / f"anchor-{anchor_mode}")
 
 
 def test_bundle_remains_replayable_after_external_evidence_is_deleted(

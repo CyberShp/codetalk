@@ -293,3 +293,202 @@ PYTHONPATH=. .venv/bin/python -m pytest -q \
 3. Committed regressions now cover both the valid provenance-bearing path and representative real CLI failures: **confirmed**.
 
 No further modification is required for this focused change. `baseline_status: pending` remains a separate F012 release gate.
+
+## Formal Baseline Second-chain Focused Review
+
+### Latest Verdict
+
+**REJECT.** The runner root selection and generator repair-summary split are correct, but the baseline freezer does not yet provide a fail-closed all-file integrity anchor. Two independent tamper probes were accepted, and the advertised legacy root-anchor path rejects the legacy artifact layout before reaching its anchor check. This verdict supersedes the preceding focused ACCEPT for the current formal-baseline diff.
+
+### Scope
+
+- `backend/app/services/quality_benchmark_runner.py`
+- `backend/app/services/quality_benchmark_generator.py`
+- `backend/app/services/quality_baseline_freezer.py`
+- Their three corresponding test files.
+
+R4 did not modify implementation or tests.
+
+### Automated Evidence
+
+```text
+PYTHONPATH=. .venv/bin/python -m pytest -q \
+  tests/test_quality_benchmark_runner.py \
+  tests/test_quality_benchmark_generator.py \
+  tests/test_quality_baseline_freezer.py
+
+93 passed in 15.18s
+```
+
+The green suite is useful but does not exercise the tamper cases below.
+
+### Confirmed Positive Behavior
+
+#### Fresh single, fresh multi, and explicit replay roots
+
+- Fresh single generation writes directly to `<output>.run-artifacts`, and evaluation reads that same immutable generator root.
+- Fresh multi generation writes to `<output>.run-artifacts/<case_id>` and evaluation writes to `<output>/<case_id>`.
+- Fresh generation never calls `_publish_task_run_projection`, so it does not try to mutate the generated read-only evidence root.
+- Explicit single replay continues to support either a direct root containing `first_pass` or a case child root.
+- Explicit multi replay reads `<run-artifacts>/<case_id>` and publishes the redacted public projection into each explicit task-run root.
+- An independent production-`main()` two-case probe confirmed both fresh and replay layouts, with zero fresh projections and two explicit replay projections.
+
+The committed diff adds a fresh-single regression but no fresh-multi or explicit-multi regression. The code paths worked in the independent probe; this remains a coverage gap rather than a confirmed path defect.
+
+#### Strict evaluator repair summary and provenance retention
+
+- Published `repair_summary.json` now contains exactly `attempt_count`, `elapsed_seconds`, and `terminal_block_reason`, matching the strict evaluator contract.
+- `first_provenance` and `final_provenance` remain in `workbench_audit.json`, which is included in the generator hash manifest when present.
+- The runner's strict projection remains fail-closed, and no hidden-truth field was added to the public projection or evaluator summary.
+
+No immutability or truth-redaction regression was confirmed in these runner/generator changes.
+
+### Findings
+
+#### P1-1: a nested file named `artifact_hash_manifest.json` bypasses the generator file set
+
+`quality_baseline_freezer.py:390-394` excludes every file whose basename is `artifact_hash_manifest.json`. Only the root control file should be excluded. A file at `first_pass/artifact_hash_manifest.json` is copied into the staged generator, omitted from `actual_files`, absent from the hashed descriptor set, and retained in the final read-only baseline.
+
+Independent probe:
+
+```text
+added: first_pass/artifact_hash_manifest.json
+listed in root hash manifest: false
+freeze result: accepted
+unmanifested file retained in baseline: true
+```
+
+This directly contradicts the all-file manifest requirement.
+
+#### P1-2: the current filename reference is not an immutable root anchor
+
+For current artifacts, `generation_manifest.json` only records `artifact_hash_manifest.json` by filename. The freezer verifies internal hash-manifest consistency but has no independent expected digest for that manifest or its `root_sha256`. An actor able to alter generator evidence can alter a candidate and recompute the descriptors/root; all current checks then pass.
+
+Independent probe:
+
+```text
+modified: first_pass/candidate.json
+recomputed: every artifact descriptor and root_sha256
+generation anchor: "artifact_hash_manifest.json"
+freeze result: accepted
+tampered candidate retained in final baseline: true
+```
+
+A control probe that modified `workbench_audit.json` without recomputing the manifest correctly failed with `generator artifact hash mismatch`. The defect is therefore specifically the missing independent anchor, not the per-file comparison.
+
+#### P1-3: the legacy root-anchor branch does not accept the legacy artifact layout
+
+The legacy format hashes the first/final artifact trees and stores that root in `generation_manifest.artifact_root_sha256`. The new all-file set comparison runs first and requires top-level audit/manifests to appear in the hash descriptor set. A reconstructed valid legacy input failed with `generator artifact set does not match hash manifest`, so the fallback at lines 411-414 was never reached.
+
+If instead the all-file set includes `generation_manifest.json`, embedding that same set's root digest inside `generation_manifest.json` creates a circular digest dependency. The current diff and tests provide no constructible successful legacy case and no valid/invalid legacy-anchor regression.
+
+### Test Coverage Assessment
+
+The corresponding tests are insufficient for the integrity claims:
+
+- No test mutates a hashed generator file and asserts freeze rejection.
+- No test mutates a file and recomputes the hash manifest while asserting rejection by an independent anchor.
+- No test adds an unlisted nested same-basename control file.
+- No test proves a valid legacy bundle is accepted and a wrong legacy root is rejected.
+- No committed test covers fresh multi-case root selection or explicit multi-case replay projection.
+
+### Necessary Modifications
+
+1. Exclude only the root `artifact_hash_manifest.json` by exact relative path; every nested file, including a same-basename file, must appear in the descriptor set or cause rejection.
+2. Bind the current generator root or hash-manifest digest to an independent immutable authority, such as the evaluation manifest produced for that run. A filename reference alone is not an integrity anchor.
+3. Define a non-circular legacy contract. If legacy compatibility is required, validate its historical file set and root anchor explicitly; otherwise remove the unreachable fallback and reject legacy input clearly.
+4. Add fail-closed tests for ordinary tamper, tamper plus recomputed manifest, extra/unlisted files, nested same-basename files, current anchor mismatch, and valid/invalid legacy anchors.
+5. Add fresh multi and explicit multi replay regressions so the root/projection fix is protected across every stated CLI mode.
+
+R4 remains blocking for this diff. `baseline_status: pending` is also still an independent release blocker.
+
+## Formal Baseline Second-chain Final Re-review
+
+### Final Verdict
+
+**ACCEPT.** The three prior P1 findings are closed by the current implementation, committed regressions, and independent tamper probes. This verdict supersedes the immediately preceding formal-baseline REJECT. No release-blocking immutability or truth-redaction finding remains in this focused scope.
+
+### Automated Evidence
+
+```text
+PYTHONPATH=. .venv/bin/python -m pytest -q \
+  tests/test_quality_benchmark_runner.py \
+  tests/test_quality_benchmark_generator.py \
+  tests/test_quality_baseline_freezer.py
+
+104 passed in 17.34s
+```
+
+The focused changed-path selection, including the supplemental mutual-exclusion coverage, expanded to twelve pytest cases and passed:
+
+```text
+generator nested same-name inclusion: passed
+fresh single root: passed
+fresh multi plus explicit replay roots: passed
+evaluation manifest generator-root binding: passed
+ordinary generator tamper rejection: passed
+recomputed generator manifest rejection: passed
+unmanifested nested same-name rejection: passed
+current evaluation anchor mismatch rejection: passed
+legacy valid anchor acceptance: passed
+legacy invalid anchor rejection: passed
+current and legacy anchors both present rejection: passed
+neither current nor legacy anchor present rejection: passed
+
+12 passed
+```
+
+### Independent Contract Matrix
+
+R4 constructed each contract directly through the production freezer:
+
+```text
+current valid: accepted
+legacy valid: accepted
+candidate tamper plus recomputed generator manifest: rejected
+  evaluation artifact root authority mismatch
+nested first_pass/artifact_hash_manifest.json: rejected
+  generator artifact set does not match hash manifest
+legacy invalid root: rejected
+current and legacy anchors both present: rejected
+neither current nor legacy anchor present: rejected
+```
+
+### Finding Closure
+
+#### Closed P1-1: nested same-basename file bypass
+
+Both generator and freezer now exclude only the exact root-relative `artifact_hash_manifest.json`. A nested file with the same basename is a normal artifact: the generator includes it, and the freezer rejects it if it is absent from the descriptor set. The independent bypass probe that previously succeeded now fails closed.
+
+#### Closed P1-2: current contract lacks an independent root authority
+
+`_benchmark_execution_manifest()` reads and validates the generator root SHA-256 and persists it in `quality_evaluation_manifest.execution.generator_artifact_root_sha256`. The freezer compares its independently recomputed generator root against that evaluation authority. Modifying a candidate and recomputing the generator-side manifest now fails with `evaluation artifact root authority mismatch`.
+
+The authority remains outside the generator evidence tree, avoiding the circular digest problem identified in the prior review.
+
+#### Closed P1-3: legacy root anchor is unusable
+
+Current and legacy contracts are explicit and mutually exclusive. Current evidence hashes every generator file except the root control manifest and uses the evaluation authority. Legacy evidence hashes only `first_pass` and `final_after_auto_repair` and validates `generation_manifest.artifact_root_sha256`. Valid legacy evidence freezes successfully; an invalid root, both contracts, or neither contract fails closed.
+
+### Path And Privacy Regression Check
+
+- Fresh single and multi generation keep immutable roots separate from evaluation output.
+- Public task-run projection occurs only for explicit `--run-artifacts` replay, including multi-case replay.
+- `repair_summary.json` remains the strict three-field evaluator contract.
+- Repair provenance remains in the hashed `workbench_audit.json` rather than crossing the evaluator/public truth-redaction boundary.
+- No hidden-truth field or mutable public projection was introduced into fresh generator evidence.
+
+### Contract Matrix Coverage
+
+The supplemental parameterized regression now commits both remaining mutual-exclusion states through production `_freeze()`:
+
+```text
+test_freezer_rejects_ambiguous_generator_anchor_contract[both]: passed
+test_freezer_rejects_ambiguous_generator_anchor_contract[neither]: passed
+
+2 passed in 1.48s
+```
+
+Current valid, current invalid/recomputed, legacy valid, legacy invalid, both, and neither are now all represented in the committed freezer suite. No residual test gap remains for the reviewed anchor matrix.
+
+R4 no longer blocks this formal-baseline diff. `baseline_status: pending` remains a separate release gate until the formal baseline itself is completed and frozen.

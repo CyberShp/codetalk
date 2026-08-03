@@ -778,11 +778,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         case_deadline = case_started + _quality_generation_timeout(str(args.mode))
         case_payload = _mapping(_read_json(case_path), "quality benchmark case")
         case_id = str(case_payload.get("case_id") or "")
-        case_run_root = (
-            run_artifacts / case_id
-            if multiple or not (run_artifacts / "first_pass").is_dir()
-            else run_artifacts
-        )
+        case_run_root = run_artifacts
+        if multiple or (
+            args.run_artifacts and not (run_artifacts / "first_pass").is_dir()
+        ):
+            case_run_root = run_artifacts / case_id
         if not args.run_artifacts:
             project_id = str(case_payload.get("project_id") or "")
             source_dir = resolve_quality_project(
@@ -824,11 +824,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             started_monotonic=case_started,
             deadline_monotonic=case_deadline,
         )
-        _publish_task_run_projection(
-            report_path=result.report_path,
-            task_run_dir=case_run_root,
-            deadline_monotonic=case_deadline,
-        )
+        if args.run_artifacts:
+            _publish_task_run_projection(
+                report_path=result.report_path,
+                task_run_dir=case_run_root,
+                deadline_monotonic=case_deadline,
+            )
         print(result.manifest_path)
     return 0
 
@@ -877,6 +878,13 @@ def _benchmark_execution_manifest(case_run_root: Path) -> dict[str, Any] | None:
     workbench_status = str(payload.get("workbench_status") or "").strip().lower()
     if workbench_status not in {"completed", "completed_empty", "needs_review"}:
         raise ValueError("generation manifest contains a non-deliverable Workbench status")
+    artifact_manifest = _mapping(
+        _read_json(case_run_root / "artifact_hash_manifest.json"),
+        "generator artifact hash manifest",
+    )
+    artifact_root_sha256 = str(artifact_manifest.get("root_sha256") or "")
+    if not re.fullmatch(r"[0-9a-f]{64}", artifact_root_sha256):
+        raise ValueError("generator artifact hash manifest requires root_sha256")
     return {
         "profile": str(payload.get("mode") or "rapid"),
         "generation_wall_clock_seconds": float(elapsed),
@@ -884,6 +892,7 @@ def _benchmark_execution_manifest(case_run_root: Path) -> dict[str, Any] | None:
         "workbench_status": workbench_status,
         "work_sufficiency": str(work_sufficiency.get("status") or "pending_audit"),
         "work_sufficiency_diagnostic": dict(work_sufficiency),
+        "generator_artifact_root_sha256": artifact_root_sha256,
     }
 
 

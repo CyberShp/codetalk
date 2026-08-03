@@ -1384,6 +1384,158 @@ def test_cli_case_selector_executes_runner_and_publishes_public_task_report(
     assert calls[1]["task_run_dir"] == run_artifacts
 
 
+def test_cli_generated_single_case_uses_direct_immutable_generator_root(
+    tmp_path, monkeypatch
+) -> None:
+    module = _runner()
+    case_path = tmp_path / "case.json"
+    case_path.write_text('{"case_id":"case-1","project_id":"project-1"}')
+    source_root = tmp_path / "sources"
+    source_root.mkdir()
+    output = tmp_path / "evaluation"
+    generated_roots = []
+
+    monkeypatch.setattr(module, "load_quality_registry", lambda _: _Registry())
+    monkeypatch.setattr(module, "_select_case_paths", lambda **_: [case_path])
+    monkeypatch.setattr(
+        module,
+        "resolve_quality_project",
+        lambda *_args, **_kwargs: type("Project", (), {"path": source_root})(),
+    )
+    monkeypatch.setattr(module, "_quality_case_truth_paths", lambda *_args, **_kwargs: ())
+
+    def fake_generate(**kwargs):
+        root = Path(kwargs["output_dir"])
+        generated_roots.append(root)
+        (root / "first_pass").mkdir(parents=True)
+        (root / "final_after_auto_repair").mkdir()
+        (root / "repair_summary.json").write_text(
+            '{"attempt_count":0,"elapsed_seconds":1,"terminal_block_reason":null}',
+            encoding="utf-8",
+        )
+        (root / "versions.json").write_text(
+            '{"model":"gpt-5.6-sol","codetalk":"c","evaluator":"e"}',
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(module, "generate_quality_benchmark_artifacts", fake_generate)
+    monkeypatch.setattr(
+        module,
+        "_benchmark_execution_manifest",
+        lambda _root: {"status": "completed"},
+    )
+    monkeypatch.setattr(
+        module,
+        "run_quality_benchmark_case",
+        lambda **_kwargs: module.BenchmarkRunResult(
+            output / module.REPORT_FILENAME,
+            output / module.MANIFEST_FILENAME,
+            "a" * 64,
+        ),
+    )
+
+    def unexpected_projection(**_kwargs):
+        pytest.fail("generated immutable evidence must not receive a public projection")
+
+    monkeypatch.setattr(module, "_publish_task_run_projection", unexpected_projection)
+
+    assert module.main(
+        [
+            "--case",
+            str(case_path),
+            "--source-root",
+            str(source_root),
+            "--output",
+            str(output),
+        ]
+    ) == 0
+    assert generated_roots == [Path(f"{output}.run-artifacts")]
+
+
+def test_cli_multi_case_fresh_and_explicit_replay_keep_roots_separate(
+    tmp_path, monkeypatch
+) -> None:
+    module = _runner()
+    case_paths = []
+    for case_id in ("case-1", "case-2"):
+        case_path = tmp_path / f"{case_id}.json"
+        case_path.write_text(
+            json.dumps({"case_id": case_id, "project_id": f"project-{case_id}"})
+        )
+        case_paths.append(case_path)
+    source_root = tmp_path / "sources"
+    source_root.mkdir()
+    generated_roots = []
+    evaluation_roots = []
+    projection_roots = []
+
+    monkeypatch.setattr(module, "load_quality_registry", lambda _: _Registry())
+    monkeypatch.setattr(module, "_select_case_paths", lambda **_: case_paths)
+    monkeypatch.setattr(
+        module,
+        "resolve_quality_project",
+        lambda *_args, **_kwargs: type("Project", (), {"path": source_root})(),
+    )
+    monkeypatch.setattr(module, "_quality_case_truth_paths", lambda *_args, **_kwargs: ())
+
+    def fake_generate(**kwargs):
+        root = Path(kwargs["output_dir"])
+        generated_roots.append(root)
+        (root / "first_pass").mkdir(parents=True)
+        (root / "final_after_auto_repair").mkdir()
+        (root / "repair_summary.json").write_text(
+            '{"attempt_count":0,"elapsed_seconds":1,"terminal_block_reason":null}'
+        )
+        (root / "versions.json").write_text(
+            '{"model":"gpt-5.6-sol","codetalk":"c","evaluator":"e"}'
+        )
+
+    def fake_run(**kwargs):
+        root = Path(kwargs["output_dir"])
+        evaluation_roots.append(root)
+        return module.BenchmarkRunResult(
+            root / module.REPORT_FILENAME,
+            root / module.MANIFEST_FILENAME,
+            "a" * 64,
+        )
+
+    monkeypatch.setattr(module, "generate_quality_benchmark_artifacts", fake_generate)
+    monkeypatch.setattr(module, "_benchmark_execution_manifest", lambda _root: {})
+    monkeypatch.setattr(module, "run_quality_benchmark_case", fake_run)
+    monkeypatch.setattr(
+        module,
+        "_publish_task_run_projection",
+        lambda **kwargs: projection_roots.append(Path(kwargs["task_run_dir"])),
+    )
+
+    fresh_output = tmp_path / "fresh"
+    assert module.main(
+        ["--all", "--source-root", str(source_root), "--output", str(fresh_output)]
+    ) == 0
+    artifact_root = Path(f"{fresh_output}.run-artifacts")
+    assert generated_roots == [artifact_root / "case-1", artifact_root / "case-2"]
+    assert evaluation_roots == [fresh_output / "case-1", fresh_output / "case-2"]
+    assert projection_roots == []
+
+    generated_roots.clear()
+    evaluation_roots.clear()
+    replay_output = tmp_path / "replay"
+    assert module.main(
+        [
+            "--all",
+            "--source-root",
+            str(source_root),
+            "--run-artifacts",
+            str(artifact_root),
+            "--output",
+            str(replay_output),
+        ]
+    ) == 0
+    assert generated_roots == []
+    assert evaluation_roots == [replay_output / "case-1", replay_output / "case-2"]
+    assert projection_roots == [artifact_root / "case-1", artifact_root / "case-2"]
+
+
 @pytest.mark.parametrize(
     "repair_summary",
     [
@@ -1507,6 +1659,32 @@ def test_execution_manifest_rejects_non_deliverable_workbench_status(
 
     with pytest.raises(ValueError, match="non-deliverable Workbench status"):
         module._benchmark_execution_manifest(run_root)
+
+
+def test_execution_manifest_binds_generator_artifact_root(tmp_path) -> None:
+    module = _runner()
+    run_root = tmp_path / "generator"
+    run_root.mkdir()
+    (run_root / "generation_manifest.json").write_text(
+        json.dumps(
+            {
+                "mode": "rapid",
+                "elapsed_seconds": 20.0,
+                "cache_reused": False,
+                "workbench_status": "completed",
+                "work_sufficiency": {"status": "sufficient"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_root / "artifact_hash_manifest.json").write_text(
+        json.dumps({"root_sha256": "a" * 64}), encoding="utf-8"
+    )
+
+    execution = module._benchmark_execution_manifest(run_root)
+
+    assert execution is not None
+    assert execution["generator_artifact_root_sha256"] == "a" * 64
 
 
 def test_task_run_projection_is_contract_valid_and_erases_truth_derived_ids(
