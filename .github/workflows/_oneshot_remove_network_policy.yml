@@ -1,0 +1,48 @@
+name: One-shot CodeTalk runtime cleanup
+
+on:
+  push:
+    branches:
+      - UI-promotion
+    paths:
+      - .github/codetalk-fix.trigger
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: UI-promotion
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Apply migration
+        run: python scripts/_oneshot_remove_network_policy.py
+
+      - name: Validate Python syntax
+        run: python -m compileall -q backend/app backend/tests/test_general_settings_transport.py backend/tests/test_agent_prompt_file_transport.py
+
+      - name: Validate removed runtime policy surface
+        shell: bash
+        run: |
+          if grep -RInE 'approved_ca_bundle_path|approved_proxy_config_id|deployment_egress_policy_id|network_policy_v2_enabled|intranet_allowed_hosts|intranet_allowed_cidrs|/api/settings/network-policy|DeploymentNetworkPolicy' backend/app frontend/src; then
+            echo 'obsolete network policy surface remains'
+            exit 1
+          fi
+          test ! -e backend/app/services/network_policy.py
+
+      - name: Commit migration result
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "remove network policy and fix Windows Agent transport"
+          git push origin HEAD:UI-promotion
