@@ -224,6 +224,96 @@ def test_runner_writes_report_and_reproducibility_manifest_atomically(tmp_path, 
         )
 
 
+def test_runner_reuses_evaluation_for_byte_identical_unrepaired_snapshots(
+    tmp_path, monkeypatch
+) -> None:
+    module = _runner()
+    evaluated = []
+
+    def evaluate(**kwargs):
+        evaluated.append(kwargs["snapshot_label"])
+        return _snapshot(
+            depth=AxisStatus.PASS if len(evaluated) == 1 else AxisStatus.FAIL
+        )
+
+    monkeypatch.setattr(module, "evaluate_artifact_snapshot", evaluate)
+    case_path = _case_tree(tmp_path)
+    first = tmp_path / "first"
+    final = tmp_path / "final"
+    first.mkdir()
+    final.mkdir()
+    for root in (first, final):
+        (root / "claim_ledger.json").write_text('{"claims": []}', encoding="utf-8")
+        (root / "quality_depth_candidate.json").write_text("{}", encoding="utf-8")
+
+    result = module.run_quality_benchmark_case(
+        case_path=case_path,
+        registry=_Registry(),
+        first_pass_artifacts=first,
+        final_artifacts=final,
+        output_dir=tmp_path / "output",
+        run_ref="run-identical",
+        repair_summary={
+            "attempt_count": 0,
+            "elapsed_seconds": 1,
+            "terminal_block_reason": None,
+        },
+        versions={"model": "fixture", "codetalk": "deadbeef", "evaluator": "v1"},
+    )
+
+    report = json.loads(result.report_path.read_text(encoding="utf-8"))
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert evaluated == ["first_pass"]
+    assert report["first_pass"] == report["final_after_auto_repair"]
+    assert manifest["snapshot_evaluation"]["final_after_auto_repair"]["strategy"] == (
+        "reused_first_pass"
+    )
+
+
+def test_runner_evaluates_changed_repaired_snapshot_independently(
+    tmp_path, monkeypatch
+) -> None:
+    module = _runner()
+    snapshots = [_snapshot(depth=AxisStatus.FAIL), _snapshot()]
+    evaluated = []
+
+    def evaluate(**kwargs):
+        evaluated.append(kwargs["snapshot_label"])
+        return snapshots.pop(0)
+
+    monkeypatch.setattr(module, "evaluate_artifact_snapshot", evaluate)
+    case_path = _case_tree(tmp_path)
+    first = tmp_path / "first"
+    final = tmp_path / "final"
+    first.mkdir()
+    final.mkdir()
+    (first / "claim_ledger.json").write_text('{"claims": []}', encoding="utf-8")
+    (final / "claim_ledger.json").write_text(
+        '{"claims": [{"claim_id": "repaired"}]}', encoding="utf-8"
+    )
+
+    result = module.run_quality_benchmark_case(
+        case_path=case_path,
+        registry=_Registry(),
+        first_pass_artifacts=first,
+        final_artifacts=final,
+        output_dir=tmp_path / "output",
+        run_ref="run-repaired",
+        repair_summary={
+            "attempt_count": 1,
+            "elapsed_seconds": 2,
+            "terminal_block_reason": None,
+        },
+        versions={"model": "fixture", "codetalk": "deadbeef", "evaluator": "v1"},
+    )
+
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert evaluated == ["first_pass", "final_after_auto_repair"]
+    assert manifest["snapshot_evaluation"]["final_after_auto_repair"]["strategy"] == (
+        "independent_evaluation"
+    )
+
+
 def test_runner_rejects_same_output_as_input_or_missing_version_metadata(tmp_path) -> None:
     module = _runner()
     case_path = _case_tree(tmp_path)

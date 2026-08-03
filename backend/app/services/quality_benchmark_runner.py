@@ -543,6 +543,7 @@ def run_quality_benchmark_case(
     if semantic_verdict_adapter is None and batch_judge is None:
         batch_judge = BehaviorClaimBatchSemanticJudge(judge_model=judge_model)
 
+    first_input_sha256 = _artifact_snapshot_input_sha256(first_root)
     first = evaluate_artifact_snapshot(
         case_path=case_path,
         registry=registry,
@@ -559,22 +560,30 @@ def run_quality_benchmark_case(
         execution_audit_sink=execution_audits,
         snapshot_label="first_pass",
     )
-    final = evaluate_artifact_snapshot(
-        case_path=case_path,
-        registry=registry,
-        artifacts_dir=final_root,
-        semantic_verdict_adapter=semantic_verdict_adapter,
-        source_dir=source_dir,
-        generator_model=effective_generator_model,
-        judge_model=judge_model,
-        mode=mode,
-        deadline_monotonic=deadline,
-        semantic_judge=batch_judge,
-        semantic_audit_sink=semantic_audits,
-        execution_command_allowlist=execution_command_allowlist,
-        execution_audit_sink=execution_audits,
-        snapshot_label="final_after_auto_repair",
+    stable_first_input_sha256 = _artifact_snapshot_input_sha256(first_root)
+    final_input_sha256 = _artifact_snapshot_input_sha256(final_root)
+    reused_first_evaluation = (
+        first_input_sha256 == stable_first_input_sha256 == final_input_sha256
     )
+    if reused_first_evaluation:
+        final = first
+    else:
+        final = evaluate_artifact_snapshot(
+            case_path=case_path,
+            registry=registry,
+            artifacts_dir=final_root,
+            semantic_verdict_adapter=semantic_verdict_adapter,
+            source_dir=source_dir,
+            generator_model=effective_generator_model,
+            judge_model=judge_model,
+            mode=mode,
+            deadline_monotonic=deadline,
+            semantic_judge=batch_judge,
+            semantic_audit_sink=semantic_audits,
+            execution_command_allowlist=execution_command_allowlist,
+            execution_audit_sink=execution_audits,
+            snapshot_label="final_after_auto_repair",
+        )
     limitations = list(
         dict.fromkeys(
             str(limitation)
@@ -653,6 +662,16 @@ def run_quality_benchmark_case(
             "executable": Path(sys.executable).name,
         },
         "execution": execution_payload,
+        "snapshot_evaluation": {
+            "final_after_auto_repair": {
+                "strategy": (
+                    "reused_first_pass"
+                    if reused_first_evaluation
+                    else "independent_evaluation"
+                ),
+                "artifact_input_sha256": final_input_sha256,
+            }
+        },
         "semantic_judges": semantic_audits,
         "depth_execution_oracles": execution_audits,
         "report_sha256": report_digest,
@@ -1041,6 +1060,22 @@ def _read_first_json(root: Path, names: Sequence[str]) -> Any:
         if path.is_file():
             return _read_json(path)
     raise ValueError(f"missing required artifact: {' or '.join(names)}")
+
+
+def _artifact_snapshot_input_sha256(root: Path) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            raise ValueError(f"artifact snapshot contains a symlink: {path}")
+        if not path.is_file():
+            continue
+        relative = path.relative_to(root).as_posix().encode("utf-8")
+        payload = path.read_bytes()
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(len(payload).to_bytes(8, "big"))
+        digest.update(payload)
+    return digest.hexdigest()
 
 
 def _mapping(value: Any, label: str) -> dict[str, Any]:
