@@ -1,17 +1,17 @@
 name: One-shot CodeTalk runtime cleanup
 
 on:
-  push:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
     branches:
       - UI-promotion
-    paths:
-      - .github/codetalk-fix.trigger
 
 permissions:
   contents: write
 
 jobs:
   migrate:
+    if: github.event.pull_request.head.ref == 'agent/run-codetalk-cleanup'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
