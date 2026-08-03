@@ -2,11 +2,12 @@
   "schema_version": "quality-benchmark-case-v1",
   "case_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001",
   "project_id": "lmcache",
-  "truth_package_version": "1",
+  "analysis_target": "LMCache local CPU backend pinned-memory put/get, eviction, and recovery lifecycle.",
+  "truth_package_version": "2",
   "tier": "S",
   "truth_package": {
     "gold_claims": {"path": "gold_claims.json", "sha256": "422ab94fb851e827959d35e5a2808c5c8aee2997be44fee07d7fa7f9df04723f"},
-    "coverage_universe": {"path": "coverage_universe.json", "sha256": "1b07d1460658c22fed6bda16e82de306b0e4e1f29492dcb5bc5f798eed92b5b1"},
+    "coverage_universe": {"path": "coverage_universe.json", "sha256": "b7d0666710ae1e3083bf784fcb9635c6d099b7117db3ac67075e7f697cfecfb4"},
     "critical_chains": {"path": "critical_chains.json", "sha256": "cdd0e696dcd022dbd75364e3ba5884127c6513e62bb3e3e708da64b2c4d9fbcb"},
     "execution_oracles": {"path": "execution_oracles.json", "sha256": "03a6645d87cd6500ebcbf6311de0e07c2edef26310355bc5fb90f65621bbe7f4"}
   },

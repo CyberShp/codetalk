@@ -6,6 +6,7 @@
       "dimension": "entrypoints",
       "critical": true,
       "applicability": "required",
+      "statement": "submit_put_task inserts a new key synchronously under cpu_lock, get_blocking returns a lock-protected caller reference, and batched_allocate allocates directly or enters grouped eviction when capacity is exhausted.",
       "evidence_refs": [
         "source://lmcache/v1/storage_backend/local_cpu_backend.py#submit_put_task:L150-L187",
         "source://lmcache/v1/storage_backend/local_cpu_backend.py#get_blocking:L211-L223",
@@ -17,6 +18,7 @@
       "dimension": "flows",
       "critical": true,
       "applicability": "required",
+      "statement": "The tests trace put, get, and remove reference-count changes and show a full pinned group blocking allocation until unpin permits eviction and allocator recovery.",
       "evidence_refs": [
         "test://tests/v1/storage_backend/test_local_cpu_backend.py#put_get_refcount_flow:L529-L547",
         "test://tests/v1/storage_backend/test_local_cpu_backend.py#pinned_recovery_flow:L557-L606"
@@ -27,6 +29,7 @@
       "dimension": "branches",
       "critical": true,
       "applicability": "required",
+      "statement": "Grouped eviction skips any candidate whose layer is absent or not evictable, but can evict a different fully evictable group while retaining a pinned group.",
       "evidence_refs": [
         "source://lmcache/v1/storage_backend/local_cpu_backend.py#complete_group_branch:L797-L837",
         "test://tests/v1/storage_backend/test_local_cpu_backend.py#safe_group_branch:L608-L660"
@@ -37,6 +40,7 @@
       "dimension": "states",
       "critical": true,
       "applicability": "required",
+      "statement": "A put increments the object's reference count, adds it to hot_cache, and updates policy; pinning keeps all layer keys resident, while unpinning allows their eviction on the next allocation.",
       "evidence_refs": [
         "source://lmcache/v1/storage_backend/local_cpu_backend.py#hot_cache_and_refcount:L162-L170",
         "test://tests/v1/storage_backend/test_local_cpu_backend.py#state_observations:L579-L602"
@@ -47,6 +51,7 @@
       "dimension": "resources",
       "critical": true,
       "applicability": "required",
+      "statement": "batched_allocate first requests a complete batch, frees only a complete evictable layer group, retries allocation, and the recovery test verifies allocator accounting with memcheck.",
       "evidence_refs": [
         "source://lmcache/v1/storage_backend/local_cpu_backend.py#allocator_acquire_and_free:L770-L822",
         "test://tests/v1/storage_backend/test_local_cpu_backend.py#allocator_memcheck:L557-L606"
@@ -57,6 +62,7 @@
       "dimension": "boundaries",
       "critical": true,
       "applicability": "required",
+      "statement": "Grouped eviction treats batch_size as the layer-group width and refuses partial eviction; a capacity-sized pinned group therefore makes a non-busy-loop allocation return None without removing its keys.",
       "evidence_refs": [
         "source://lmcache/v1/storage_backend/local_cpu_backend.py#batch_layer_group_boundary:L793-L813",
         "test://tests/v1/storage_backend/test_local_cpu_backend.py#capacity_boundary:L557-L590"
@@ -67,6 +73,7 @@
       "dimension": "concurrency",
       "critical": true,
       "applicability": "required",
+      "statement": "get_blocking increments the caller's reference while holding cpu_lock so eviction cannot win first, and candidate validation, hot-cache removal, and allocator free occur within the same CPU critical section.",
       "evidence_refs": [
         "source://lmcache/v1/storage_backend/local_cpu_backend.py#caller_ref_ownership:L215-L223",
         "source://lmcache/v1/storage_backend/local_cpu_backend.py#cpu_lock_eviction:L788-L821"
@@ -77,6 +84,7 @@
       "dimension": "errors",
       "critical": true,
       "applicability": "required",
+      "statement": "When no complete evictable group is available, batched_allocate records an eviction failure and returns None if busy looping is disabled; after unpin, the same allocation succeeds and removes the old group.",
       "evidence_refs": [
         "source://lmcache/v1/storage_backend/local_cpu_backend.py#no_candidate_nonbusy_failure:L827-L837",
         "test://tests/v1/storage_backend/test_local_cpu_backend.py#failure_then_recovery:L579-L602"
@@ -88,6 +96,7 @@
       "critical": true,
       "applicability": "required",
       "description": "Under the CPU lock, a new put increments the MemoryObj reference count, inserts the key into hot_cache, and updates the cache policy.",
+      "statement": "For a previously absent key, submit_put_task increments the MemoryObj reference count, stores it in hot_cache, and records the put in the cache policy while holding cpu_lock.",
       "evidence_refs": [
         "source://lmcache/v1/storage_backend/local_cpu_backend.py#L162-L170"
       ]

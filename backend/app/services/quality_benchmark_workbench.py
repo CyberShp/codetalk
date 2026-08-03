@@ -14,12 +14,13 @@ from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from app.config import settings
 from app.services.agent_sandbox import benchmark_agent_sandbox
+from app.services.workbench_artifact_manifest import write_task_artifact_manifest
 from app.services.workbench_task_run import WorkbenchTaskRunPreparer
-from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner, _preview_bytes
 from app.services.workflow_dsl import WorkflowStore
 
 _BENCHMARK_CODEX_PROVIDER = "agent-runtime:default-codex"
@@ -72,6 +73,10 @@ class BenchmarkWorkbenchError(RuntimeError):
     """A benchmark TaskRun failed before a candidate could be exported."""
 
 
+class BenchmarkWorkbenchQualityBlocked(BenchmarkWorkbenchError):
+    """A bounded evaluator-owned repair was exhausted without a safe result."""
+
+
 def execute_quality_benchmark_workbench(
     *,
     case_id: str,
@@ -83,6 +88,7 @@ def execute_quality_benchmark_workbench(
     prompt: str,
     output_schema: Mapping[str, Any],
     approved_network_targets: tuple[str, ...] = (),
+    prepublication_gate: Callable[[Path], dict[str, Any]] | None = None,
 ) -> BenchmarkWorkbenchResult:
     """Prepare and execute one benchmark as an ordinary Workbench TaskRun."""
 
@@ -198,6 +204,19 @@ def execute_quality_benchmark_workbench(
             prepared.task_run_id,
             timeout_sec=max(1, int(_require_remaining(deadline_monotonic))),
         )
+        response_path = agent_artifact / "benchmark_response.json"
+        if not response_path.is_file():
+            raise BenchmarkWorkbenchError("workbench candidate artifact is unavailable")
+        if prepublication_gate is not None:
+            _run_evaluator_owned_prepublication_repair(
+                runner=runner,
+                task_run=runner.store.load(prepared.task_run_id),
+                step_results=list(getattr(execution, "step_results", ()) or ()),
+                response_path=response_path,
+                task_artifact=task_artifact,
+                gate=prepublication_gate,
+                deadline_monotonic=deadline_monotonic,
+            )
 
     _require_remaining(deadline_monotonic)
     task_artifact = Path(prepared.artifact_dir).resolve()
@@ -220,9 +239,6 @@ def execute_quality_benchmark_workbench(
     _write_runtime_evidence(
         task_artifact / "benchmark_runtime.json", runtime_evidence
     )
-    response_path = agent_artifact / "benchmark_response.json"
-    if not response_path.is_file():
-        raise BenchmarkWorkbenchError("workbench candidate artifact is unavailable")
     repair_summary = _load_repair_summary(task_artifact, agent_artifact)
     repair_attempt_count = int(repair_summary.get("attempt_count") or 0)
     final_provenance = _validated_final_provenance(
@@ -271,6 +287,169 @@ def execute_quality_benchmark_workbench(
             sorted(getattr(sandbox_security, "credential_fingerprints", ()))
         ),
     )
+
+
+def _run_evaluator_owned_prepublication_repair(
+    *,
+    runner: Any,
+    task_run: Any,
+    step_results: list[dict[str, Any]],
+    response_path: Path,
+    task_artifact: Path,
+    gate: Callable[[Path], dict[str, Any]],
+    deadline_monotonic: float,
+) -> dict[str, Any]:
+    """Reuse the existing bounded Workbench repair for a public-safe gate."""
+
+    _require_remaining(deadline_monotonic)
+    audit = _validated_prepublication_audit(gate(response_path))
+    if audit["status"] == "completed":
+        return {"attempt_count": 0, "successful_attempt_count": 0}
+    original_bytes = response_path.read_bytes()
+    outputs_path = task_artifact / "workflow_outputs.json"
+    original_outputs = outputs_path.read_bytes()
+    execution_path = task_artifact / "workflow_execution.json"
+    manifest_path = task_artifact / "task_artifact_manifest.json"
+    try:
+        original_execution = execution_path.read_bytes()
+        original_manifest = manifest_path.read_bytes()
+    except OSError as exc:
+        raise BenchmarkWorkbenchError(
+            "workbench repair control artifacts are unavailable"
+        ) from exc
+    summary_path = task_artifact / "quality_repair_summary.json"
+    original_summary = summary_path.read_bytes() if summary_path.is_file() else None
+    persisted_summary = _read_mapping(summary_path)
+    existing_summary = {
+        **_load_repair_summary(task_artifact, response_path.parent),
+        **persisted_summary,
+    }
+    existing_attempts = max(0, int(existing_summary.get("attempt_count") or 0))
+    existing_successes = max(
+        0,
+        int(
+            existing_summary.get("successful_attempt_count")
+            or existing_summary.get("attempt_count")
+            or 0
+        ),
+    )
+    attempt_number = existing_attempts + 1
+    try:
+        repair = runner._attempt_external_agent_quality_repair(
+            task_run=task_run,
+            step_results=step_results,
+            audit=audit,
+            deadline_monotonic=deadline_monotonic,
+            attempt_number=attempt_number,
+        )
+        if not repair.get("attempted") or not repair.get("candidate_ready"):
+            raise BenchmarkWorkbenchQualityBlocked(
+                "evaluator-owned benchmark repair could not be executed"
+            )
+        _require_remaining(deadline_monotonic)
+        final_audit = _validated_prepublication_audit(gate(response_path))
+        if final_audit["status"] != "completed":
+            raise BenchmarkWorkbenchQualityBlocked(
+                "evaluator-owned benchmark repair did not clear the diagnostic"
+            )
+        final_bytes = response_path.read_bytes()
+        if final_bytes == original_bytes:
+            raise BenchmarkWorkbenchQualityBlocked(
+                "evaluator-owned benchmark repair did not change the candidate"
+            )
+        _rewrite_workflow_output(
+            outputs_path,
+            artifact="benchmark_response.json",
+            data=final_bytes,
+        )
+        _rewrite_workflow_output(
+            execution_path,
+            artifact="benchmark_response.json",
+            data=final_bytes,
+        )
+        summary = {
+            **existing_summary,
+            "attempt_count": attempt_number,
+            "successful_attempt_count": existing_successes + 1,
+            "terminal_block_reason": None,
+            "evaluator_prepublication_gate": {
+                "status_before": "needs_rework",
+                "status_after": "completed",
+            },
+        }
+        _write_runtime_evidence(summary_path, summary)
+        write_task_artifact_manifest(
+            task_artifact,
+            task_run_id=str(getattr(task_run, "task_run_id", "") or ""),
+        )
+        return summary
+    except BaseException as exc:
+        response_path.write_bytes(original_bytes)
+        outputs_path.write_bytes(original_outputs)
+        execution_path.write_bytes(original_execution)
+        if original_summary is None:
+            summary_path.unlink(missing_ok=True)
+        else:
+            summary_path.write_bytes(original_summary)
+        manifest_path.write_bytes(original_manifest)
+        if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+            raise
+        if isinstance(exc, BenchmarkWorkbenchQualityBlocked):
+            raise
+        raise BenchmarkWorkbenchQualityBlocked(
+            "evaluator-owned benchmark repair failed and was rolled back"
+        ) from exc
+
+
+def _validated_prepublication_audit(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise BenchmarkWorkbenchError("evaluator-owned benchmark gate is invalid")
+    status = str(value.get("status") or "").strip()
+    raw_issues = value.get("issues") or []
+    if status == "completed" and not raw_issues:
+        return {"status": "completed", "issues": []}
+    if status != "needs_rework" or not isinstance(raw_issues, list) or not raw_issues:
+        raise BenchmarkWorkbenchError("evaluator-owned benchmark gate is invalid")
+    issues: list[dict[str, Any]] = []
+    for raw_issue in raw_issues:
+        if not isinstance(raw_issue, Mapping):
+            raise BenchmarkWorkbenchError("evaluator-owned benchmark gate is invalid")
+        issue = {
+            "code": str(raw_issue.get("code") or "").strip(),
+            "artifact": str(raw_issue.get("artifact") or "").strip(),
+            "field": str(raw_issue.get("field") or "").strip(),
+            "row_id": str(raw_issue.get("row_id") or "").strip(),
+            "operation": str(raw_issue.get("operation") or "").strip(),
+            "repairable": raw_issue.get("repairable") is True,
+        }
+        if issue != {
+            "code": "compound_claim_requires_split",
+            "artifact": "benchmark_response.json",
+            "field": "claims",
+            "row_id": issue["row_id"],
+            "operation": "split_candidate_statement",
+            "repairable": True,
+        } or not issue["row_id"]:
+            raise BenchmarkWorkbenchError("evaluator-owned benchmark gate is invalid")
+        issues.append(issue)
+    return {"status": "needs_rework", "deliverable": False, "issues": issues}
+
+
+def _rewrite_workflow_output(path: Path, *, artifact: str, data: bytes) -> None:
+    payload = _read_mapping(path)
+    outputs = payload.get("outputs")
+    if not isinstance(outputs, list):
+        raise BenchmarkWorkbenchError("validated workflow output contract is unavailable")
+    matched = 0
+    for output in outputs:
+        if isinstance(output, dict) and str(output.get("artifact") or "") == artifact:
+            output["sha256"] = hashlib.sha256(data).hexdigest()
+            output["size_bytes"] = len(data)
+            output["preview"] = _preview_bytes(data)
+            matched += 1
+    if matched != 1:
+        raise BenchmarkWorkbenchError("validated benchmark output is unavailable")
+    _write_runtime_evidence(path, payload)
 
 
 @contextmanager

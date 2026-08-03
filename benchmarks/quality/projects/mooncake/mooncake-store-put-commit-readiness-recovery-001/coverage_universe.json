@@ -6,6 +6,7 @@
       "dimension": "entrypoints",
       "critical": true,
       "applicability": "required",
+      "statement": "PutStart validates and allocates pending object metadata, PutEnd completes selected replicas only for the recorded client, and GetReplicaList returns only readable replicas or a readiness or absence error.",
       "evidence_refs": [
         "source://mooncake-store/src/master_service.cpp#PutStart:L3566-L3753",
         "source://mooncake-store/src/master_service.cpp#PutEnd:L3756-L3793",
@@ -17,6 +18,7 @@
       "dimension": "flows",
       "critical": true,
       "applicability": "required",
+      "statement": "The tests exercise PutStart creating a PROCESSING replica, pre-commit read and remove rejection, wrong-owner rejection, owner PutEnd completion, successful removal, and post-remove absence.",
       "evidence_refs": [
         "test://mooncake-store/tests/master_service_test.cpp#PutStartEndFlow:L1689-L1740",
         "test://mooncake-store/tests/master_service_test.cpp#RemoveObject:L2511-L2540"
@@ -27,6 +29,7 @@
       "dimension": "branches",
       "critical": true,
       "applicability": "required",
+      "statement": "GetReplicaList returns OBJECT_NOT_FOUND when metadata is absent or all replicas are removed and REPLICA_IS_NOT_READY when no replica is readable; PutEnd separately rejects missing metadata and a non-owner before selecting replicas to complete.",
       "evidence_refs": [
         "source://mooncake-store/src/master_service.cpp#readable_replica_branch:L2998-L3050",
         "source://mooncake-store/src/master_service.cpp#client_owner_branch:L3763-L3793"
@@ -37,6 +40,7 @@
       "dimension": "states",
       "critical": true,
       "applicability": "required",
+      "statement": "Owner PutEnd changes selected replicas to COMPLETE; removal erases object metadata and associated per-key state, after which the lifecycle tests observe the key as absent.",
       "evidence_refs": [
         "source://mooncake-store/src/master_service.cpp#replica_mark_complete:L3775-L3793",
         "source://mooncake-store/src/master_service.cpp#metadata_release:L1887-L1954",
@@ -50,6 +54,7 @@
       "dimension": "resources",
       "critical": true,
       "applicability": "required",
+      "statement": "PutStart reserves quota, allocates replicas, and creates metadata recording client and tenant ownership; removal releases replica accounting, quota, per-key tasks, metadata, and group membership.",
       "evidence_refs": [
         "source://mooncake-store/src/master_service.cpp#allocate_insert_metadata:L3335-L3563",
         "source://mooncake-store/src/master_service.cpp#metadata_owner_created:L3548-L3561",
@@ -63,6 +68,7 @@
       "dimension": "boundaries",
       "critical": true,
       "applicability": "required",
+      "statement": "The lifecycle boundary is observable as PROCESSING before PutEnd, COMPLETE and readable after owner PutEnd, and OBJECT_NOT_FOUND after Remove.",
       "evidence_refs": [
         "test://mooncake-store/tests/master_service_test.cpp#precommit_boundary:L1709-L1716",
         "test://mooncake-store/tests/master_service_test.cpp#postcommit_boundary:L1730-L1740",
@@ -74,6 +80,7 @@
       "dimension": "concurrency",
       "critical": true,
       "applicability": "required",
+      "statement": "PutEnd holds the snapshot shared lock and obtains writable metadata access before checking ownership; the test proves that a distinct client cannot complete the owner's pending put.",
       "evidence_refs": [
         "source://mooncake-store/src/master_service.cpp#snapshot_and_metadata_lock:L3760-L3768",
         "test://mooncake-store/tests/master_service_test.cpp#distinct_client_setup:L1692-L1694",
@@ -85,6 +92,7 @@
       "dimension": "errors",
       "critical": true,
       "applicability": "required",
+      "statement": "The lifecycle distinguishes absent objects, unreadable PROCESSING replicas, and wrong-client completion as OBJECT_NOT_FOUND, REPLICA_IS_NOT_READY, and ILLEGAL_CLIENT respectively, and verifies absence again after removal.",
       "evidence_refs": [
         "source://mooncake-store/src/master_service.cpp#replica_not_ready:L2998-L3050",
         "source://mooncake-store/src/master_service.cpp#illegal_client:L3768-L3773",
@@ -99,6 +107,7 @@
       "critical": true,
       "applicability": "required",
       "description": "PutEnd rejects a non-owner and otherwise marks every selected valid replica complete.",
+      "statement": "PutEnd returns ILLEGAL_CLIENT for a caller other than metadata.client_id and otherwise marks every replica selected by the requested replica type and valid-handle predicate complete.",
       "evidence_refs": [
         "source://mooncake-store/src/master_service.cpp#L3768-L3793"
       ]

@@ -149,14 +149,21 @@ class _SemanticJudgmentRecorder:
     ) -> SemanticVerdict:
         candidate_statement = _axis_candidate_statement(axis, candidate)
         oracle_statement = _axis_oracle_statement(axis, truth, binding)
-        evidence_refs = _axis_oracle_evidence_refs(axis, truth, binding)
-        if not candidate_statement or not oracle_statement or not evidence_refs:
+        observed_evidence_refs = _axis_candidate_evidence_refs(candidate)
+        required_evidence_refs = _axis_oracle_evidence_refs(axis, truth, binding)
+        if (
+            not candidate_statement
+            or not oracle_statement
+            or not observed_evidence_refs
+            or not required_evidence_refs
+        ):
             return "insufficient"
         judgment_id = _semantic_judgment_id(
             axis=axis,
             candidate_statement=candidate_statement,
             oracle_statement=oracle_statement,
-            evidence_refs=evidence_refs,
+            observed_evidence_refs=observed_evidence_refs,
+            required_evidence_refs=required_evidence_refs,
         )
         self._judgments.setdefault(
             judgment_id,
@@ -165,7 +172,8 @@ class _SemanticJudgmentRecorder:
                 axis=axis,
                 candidate_statement=candidate_statement,
                 oracle_statement=oracle_statement,
-                evidence_refs=evidence_refs,
+                observed_evidence_refs=observed_evidence_refs,
+                required_evidence_refs=required_evidence_refs,
             ),
         )
         return "insufficient"
@@ -185,15 +193,22 @@ class _ResolvedBatchSemanticVerdictAdapter(_SemanticJudgmentRecorder):
     ) -> SemanticVerdict:
         candidate_statement = _axis_candidate_statement(axis, candidate)
         oracle_statement = _axis_oracle_statement(axis, truth, binding)
-        evidence_refs = _axis_oracle_evidence_refs(axis, truth, binding)
-        if not candidate_statement or not oracle_statement or not evidence_refs:
+        observed_evidence_refs = _axis_candidate_evidence_refs(candidate)
+        required_evidence_refs = _axis_oracle_evidence_refs(axis, truth, binding)
+        if (
+            not candidate_statement
+            or not oracle_statement
+            or not observed_evidence_refs
+            or not required_evidence_refs
+        ):
             return "insufficient"
         return self._verdicts.get(
             _semantic_judgment_id(
                 axis=axis,
                 candidate_statement=candidate_statement,
                 oracle_statement=oracle_statement,
-                evidence_refs=evidence_refs,
+                observed_evidence_refs=observed_evidence_refs,
+                required_evidence_refs=required_evidence_refs,
             ),
             "insufficient",
         )
@@ -314,10 +329,12 @@ def evaluate_artifact_snapshot(
     adapter = semantic_verdict_adapter
     if adapter is None:
         recorder = _SemanticJudgmentRecorder()
+        semantic_diagnostics: list[dict[str, Any]] = []
         _align_claim_semantics_from_evidence(
             _mapping(claim_ledger, "claim_ledger"),
             _items(gold_claims),
             semantic_verdict_adapter=recorder,
+            semantic_diagnostic_sink=semantic_diagnostics,
         )
         _align_breadth_evidence_refs(
             coverage_universe,
@@ -357,6 +374,14 @@ def evaluate_artifact_snapshot(
             semantic_audit_sink.append(
                 {
                     **dict(result.metadata),
+                    **_semantic_axis_audit_metadata(
+                        judgments=recorder.judgments,
+                        result_status=str(
+                            result.metadata.get("status") or "unavailable"
+                        ),
+                        diagnostics=semantic_diagnostics,
+                    ),
+                    "diagnostics": semantic_diagnostics,
                     "limitations": list(result.limitations),
                 }
             )
@@ -402,6 +427,37 @@ def evaluate_artifact_snapshot(
             "catalog": catalog,
         },
     )
+
+
+def _semantic_axis_audit_metadata(
+    *,
+    judgments: Sequence[SemanticJudgment],
+    result_status: str,
+    diagnostics: Sequence[Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    axes = ("accuracy", "breadth", "depth")
+    candidate_count_by_axis = {
+        axis: sum(1 for item in judgments if item.axis == axis) for axis in axes
+    }
+    repair_status_by_axis = {
+        axis: (
+            "required"
+            if any(
+                item.get("axis") == axis and item.get("repairable") is True
+                for item in diagnostics
+            )
+            else "not_required"
+        )
+        for axis in axes
+    }
+    return {
+        "candidate_count_by_axis": candidate_count_by_axis,
+        "status_by_axis": {
+            axis: str(result_status) if count > 0 else "no_candidates"
+            for axis, count in candidate_count_by_axis.items()
+        },
+        "repair_status_by_axis": repair_status_by_axis,
+    }
 
 
 def _run_evaluator_owned_depth_oracle(
@@ -820,6 +876,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
                 codetalk_revision=_current_codetalk_revision(),
                 truth_paths=_quality_case_truth_paths(case_path, registry=registry),
+                analysis_target=str(
+                    case_payload.get("analysis_target") or case_id
+                ),
+                prepublication_gate=_benchmark_compound_claim_gate(
+                    case_path=case_path,
+                    registry=registry,
+                ),
             )
         output_root = Path(args.output) / case_id if multiple else Path(args.output)
         result = run_quality_benchmark_case(
@@ -855,6 +918,43 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _quality_generation_timeout(mode: str) -> int:
     return 5400 if mode == "deep" else 900
+
+
+def _benchmark_compound_claim_gate(
+    *, case_path: Path, registry: QualityBenchmarkRegistry
+) -> Any:
+    case_file = case_path.resolve()
+    case = load_quality_case(case_file, registry=registry)
+    gold_claims = _items(
+        _read_json(case_file.parent / case.truth_package.gold_claims.path)
+    )
+
+    def gate(response_path: Path) -> dict[str, Any]:
+        response = _mapping(_read_json(response_path), "benchmark response")
+        diagnostics: list[dict[str, Any]] = []
+        _align_claim_semantics_from_evidence(
+            {"claims": response.get("claims") or []},
+            gold_claims,
+            semantic_diagnostic_sink=diagnostics,
+        )
+        issues = [
+            {
+                "code": "compound_claim_requires_split",
+                "artifact": "benchmark_response.json",
+                "field": "claims",
+                "row_id": str(item.get("candidate_id") or ""),
+                "operation": "split_candidate_statement",
+                "repairable": True,
+            }
+            for item in diagnostics
+            if item.get("code") == "compound_claim_requires_split"
+        ]
+        return {
+            "status": "needs_rework" if issues else "completed",
+            "issues": issues,
+        }
+
+    return gate
 
 
 def _evaluation_repair_summary(value: Any) -> dict[str, Any]:
@@ -1127,20 +1227,44 @@ def _evidence_match_key(value: Any) -> tuple[Any, ...] | None:
     return None
 
 
+def _bounded_evidence_match(
+    observed: tuple[Any, ...], required: tuple[Any, ...]
+) -> bool:
+    if observed[0] != "range" or required[0] != "range":
+        return observed == required
+    _, observed_path, observed_start, observed_end = observed
+    _, required_path, required_start, required_end = required
+    if observed_path != required_path:
+        return False
+    observed_length = observed_end - observed_start + 1
+    required_length = required_end - required_start + 1
+    if observed_start <= required_start and observed_end >= required_end:
+        return (
+            observed_length <= required_length * 2
+            and observed_length - required_length <= 20
+        )
+    if required_start <= observed_start and required_end >= observed_end:
+        return observed_length * 2 >= required_length
+    return False
+
+
+def _required_evidence_satisfied(
+    required: set[tuple[Any, ...]], observed: set[tuple[Any, ...]]
+) -> bool:
+    return bool(required) and all(
+        any(_bounded_evidence_match(candidate, obligation) for candidate in observed)
+        for obligation in required
+    )
+
+
 def _align_claim_semantics_from_evidence(
     claim_ledger: Mapping[str, Any],
     gold_claims: Sequence[Mapping[str, Any]],
     *,
     semantic_verdict_adapter: EvaluatorOwnedSemanticVerdictAdapter | None = None,
+    semantic_diagnostic_sink: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     adapter = semantic_verdict_adapter or _DEFAULT_SEMANTIC_VERDICT_ADAPTER
-    gold_by_ref: dict[tuple[str, int, int], list[Mapping[str, Any]]] = {}
-    for gold in gold_claims:
-        semantic_key = str(gold.get("semantic_key") or "").strip()
-        for raw_ref in gold.get("evidence_refs") or []:
-            normalized = _normalized_evidence_ref(raw_ref)
-            if normalized and semantic_key:
-                gold_by_ref.setdefault(normalized, []).append(gold)
     aligned = json.loads(json.dumps(claim_ledger))
     for claim in aligned.get("claims") or []:
         if not isinstance(claim, dict):
@@ -1155,20 +1279,43 @@ def _align_claim_semantics_from_evidence(
         }
         matches = {
             str(gold.get("semantic_key") or ""): gold
-            for normalized in candidate_refs
-            for gold in gold_by_ref.get(normalized, [])
+            for gold in gold_claims
             if str(gold.get("semantic_key") or "")
             and _claim_evidence_requirement_satisfied(gold, candidate_refs)
         }
-        exclusive_matches = {
-            str(owners[0].get("semantic_key") or ""): owners[0]
-            for normalized in candidate_refs
-            for owners in [gold_by_ref.get(normalized, [])]
-            if len({str(owner.get("semantic_key") or "") for owner in owners}) == 1
-            and owners
-            and _claim_evidence_requirement_satisfied(owners[0], candidate_refs)
-        }
+        exclusive_matches: dict[str, Mapping[str, Any]] = {}
+        for candidate_ref in candidate_refs:
+            observed_key = ("range", *candidate_ref)
+            owners = {
+                str(gold.get("semantic_key") or ""): gold
+                for gold in gold_claims
+                if str(gold.get("semantic_key") or "")
+                and any(
+                    _bounded_evidence_match(observed_key, required_key)
+                    for raw_ref in gold.get("evidence_refs") or []
+                    for required_key in [_evidence_match_key(raw_ref)]
+                    if required_key is not None
+                )
+            }
+            if len(owners) == 1:
+                semantic_key, owner = next(iter(owners.items()))
+                if semantic_key in matches:
+                    exclusive_matches[semantic_key] = owner
         if len(exclusive_matches) > 1:
+            if semantic_diagnostic_sink is not None:
+                semantic_diagnostic_sink.append(
+                    {
+                        "axis": "accuracy",
+                        "code": "compound_claim_requires_split",
+                        "candidate_id": str(claim.get("claim_id") or ""),
+                        "matched_obligation_count": len(exclusive_matches),
+                        "repairable": True,
+                        "repair": {
+                            "artifact": "claim_ledger.json",
+                            "operation": "split_candidate_statement",
+                        },
+                    }
+                )
             continue
         candidates = exclusive_matches or matches
         verdicts = [
@@ -1211,7 +1358,10 @@ def _claim_evidence_requirement_satisfied(
         policy.get("mode") or "all"
     ).strip().lower()
     if mode == "all":
-        return gold_refs.issubset(candidate_refs)
+        return _required_evidence_satisfied(
+            {("range", *item) for item in gold_refs},
+            {("range", *item) for item in candidate_refs},
+        )
     if mode != "groups" or not isinstance(policy, Mapping):
         return False
     raw_groups = policy.get("groups")
@@ -1230,7 +1380,15 @@ def _claim_evidence_requirement_satisfied(
         if not group:
             return False
         groups.append(group)
-    return all(group.intersection(candidate_refs) for group in groups)
+    observed = {("range", *item) for item in candidate_refs}
+    return all(
+        any(
+            _bounded_evidence_match(candidate, ("range", *obligation))
+            for candidate in observed
+            for obligation in group
+        )
+        for group in groups
+    )
 
 
 _STRICT_NEGATIONS = frozenset({"cannot", "never", "no", "not", "without"})
@@ -1333,9 +1491,7 @@ def _axis_oracle_statement(
                 return f"{explicit} [{endpoints}]"
         return explicit
     if axis == "breadth":
-        dimension = str(payload.get("dimension") or "coverage").strip()
-        item_id = str(payload.get("item_id") or "").strip().rsplit(":", 1)[-1]
-        return f"Cover the source-backed {dimension} obligation {item_id}.".strip()
+        return ""
     if axis == "depth":
         fields = [
             str(payload.get(key) or "").strip()
@@ -1379,6 +1535,20 @@ def _axis_oracle_evidence_refs(
     return tuple(dict.fromkeys(value for value in values if value))
 
 
+def _axis_candidate_evidence_refs(candidate: Mapping[str, Any]) -> tuple[str, ...]:
+    values: list[str] = []
+    for raw_ref in candidate.get("evidence_refs") or []:
+        if isinstance(raw_ref, str) and raw_ref.strip():
+            values.append(raw_ref.strip())
+            continue
+        normalized = _normalized_evidence_ref(raw_ref)
+        if normalized is None:
+            continue
+        path, start_line, end_line = normalized
+        values.append(f"source://{path}#L{start_line}-L{end_line}")
+    return tuple(dict.fromkeys(values))
+
+
 def _depth_binding_sequence(binding: Any) -> tuple[Any, ...]:
     if isinstance(binding, (tuple, list)):
         return tuple(binding)
@@ -1390,13 +1560,15 @@ def _semantic_judgment_id(
     axis: str,
     candidate_statement: str,
     oracle_statement: str,
-    evidence_refs: Sequence[str],
+    observed_evidence_refs: Sequence[str],
+    required_evidence_refs: Sequence[str],
 ) -> str:
     payload = {
         "axis": axis,
         "candidate_statement": candidate_statement,
         "oracle_statement": oracle_statement,
-        "evidence_refs": sorted(set(evidence_refs)),
+        "observed_evidence_refs": sorted(set(observed_evidence_refs)),
+        "required_evidence_refs": sorted(set(required_evidence_refs)),
     }
     digest = hashlib.sha256(
         json.dumps(
@@ -1484,15 +1656,7 @@ def _align_breadth_evidence_refs(
     semantic_verdict_adapter: EvaluatorOwnedSemanticVerdictAdapter | None = None,
 ) -> tuple[Any, ...]:
     adapter = semantic_verdict_adapter or _DEFAULT_SEMANTIC_VERDICT_ADAPTER
-    truth_by_ref: dict[tuple[Any, ...], list[Mapping[str, Any]]] = {}
     universe_items = _items(universe)
-    for item in universe_items:
-        if not isinstance(item, Mapping):
-            continue
-        for raw_ref in item.get("evidence_refs") or []:
-            match_key = _evidence_match_key(raw_ref)
-            if match_key is not None:
-                truth_by_ref.setdefault(match_key, []).append(item)
 
     def align(value: Any) -> Any:
         copied = json.loads(json.dumps(value))
@@ -1531,37 +1695,18 @@ def _align_breadth_evidence_refs(
                         for match_key in [_evidence_match_key(ref)]
                         if match_key is not None
                     }
-                    matches = {
+                    candidates = {
                         str(item.get("item_id") or ""): item
-                        for ref in refs
-                        for match_key in [_evidence_match_key(ref)]
-                        if match_key is not None
-                        for item in truth_by_ref.get(match_key, [])
+                        for item in universe_items
+                        if isinstance(item, Mapping)
                         if str(item.get("item_id") or "")
-                    }
-                    unique_matches = {
-                        str(owners[0].get("item_id") or ""): owners[0]
-                        for ref in refs
-                        for match_key in [_evidence_match_key(ref)]
-                        if match_key is not None
-                        for owners in [truth_by_ref.get(match_key, [])]
-                        if len(
-                            {
-                                str(owner.get("item_id") or "")
-                                for owner in owners
-                                if str(owner.get("item_id") or "")
-                            }
-                        )
-                        == 1
-                        and owners
-                    }
-                    candidates = unique_matches or matches
-                    supported = [
-                        item
-                        for item in candidates.values()
                         if _breadth_evidence_requirement_satisfied(
                             item, observed_keys
                         )
+                    }
+                    supported = [
+                        item
+                        for item in candidates.values()
                         if _validated_semantic_verdict(
                             adapter.breadth_verdict(candidate=current, truth=item)
                         )
@@ -1571,17 +1716,10 @@ def _align_breadth_evidence_refs(
                     # obligation. Ambiguous or unjudged evidence is removed so
                     # a plain path/range cannot be consumed by the evaluator.
                     if len(supported) == 1:
-                        supported_refs = {
-                            match_key: str(raw_ref)
-                            for raw_ref in supported[0].get("evidence_refs") or []
-                            for match_key in [_evidence_match_key(raw_ref)]
-                            if match_key is not None
-                        }
                         current["evidence_refs"] = [
-                            supported_refs[match_key]
-                            for ref in refs
-                            for match_key in [_evidence_match_key(ref)]
-                            if match_key in supported_refs
+                            str(raw_ref)
+                            for raw_ref in supported[0].get("evidence_refs") or []
+                            if _evidence_match_key(raw_ref) is not None
                         ]
                     else:
                         current["evidence_refs"] = []
@@ -1606,7 +1744,7 @@ def _breadth_evidence_requirement_satisfied(
         for match_key in [_evidence_match_key(raw_ref)]
         if match_key is not None
     }
-    return bool(required) and required.issubset(observed_keys)
+    return _required_evidence_satisfied(required, observed_keys)
 
 
 def _align_depth_candidate_from_evidence(
@@ -1684,7 +1822,7 @@ def _align_depth_candidate_from_evidence(
                     for match_key in [_evidence_match_key(binding.evidence_ref)]
                     if match_key is not None
                 }
-                if required_refs and required_refs.issubset(observed_refs):
+                if _required_evidence_satisfied(required_refs, observed_refs):
                     potential[key] = tuple(bindings)
             supported = []
             for key, bindings in potential.items():

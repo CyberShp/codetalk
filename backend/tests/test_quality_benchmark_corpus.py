@@ -17,6 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 REGISTRY_PATH = REPO_ROOT / "benchmarks/quality/registry.json"
 REGISTRY_SCHEMA_PATH = REPO_ROOT / "benchmarks/quality/schemas/registry.schema.json"
 CASE_SCHEMA_PATH = REPO_ROOT / "benchmarks/quality/schemas/case.schema.json"
+COVERAGE_SCHEMA_PATH = REPO_ROOT / "benchmarks/quality/schemas/coverage_universe.schema.json"
 
 EXPECTED_PROJECTS = {
     "spdk": {
@@ -283,7 +284,17 @@ def _depth_truth_contents() -> dict[str, Any]:
     ).hexdigest()
     return {
         "gold_claims.json": [{"claim_id": "claim-1"}],
-        "coverage_universe.json": [{"item_id": "coverage-1"}],
+        "coverage_universe.json": {
+            "case_id": case_id,
+            "items": [{
+                "item_id": "coverage-1",
+                "dimension": "flows",
+                "critical": True,
+                "applicability": "required",
+                "statement": "The synthetic flow reaches its source-backed outcome.",
+                "evidence_refs": ["source://storage.c#L1-L1"],
+            }],
+        },
         "critical_chains.json": {
             "case_id": case_id,
             "evidence_catalog_sha256": catalog_digest,
@@ -630,6 +641,42 @@ def test_case_rejects_depth_package_without_execution_plan(tmp_path: Path) -> No
         )
 
 
+def test_truth_version_two_requires_public_analysis_target_in_model_and_schema(
+    tmp_path: Path,
+) -> None:
+    corpus = _corpus()
+    payload = _case_payload(tmp_path)
+    payload["truth_package_version"] = "2"
+    payload.pop("analysis_target", None)
+
+    with pytest.raises(ValueError, match="analysis_target"):
+        corpus.QualityBenchmarkCase.model_validate(payload)
+
+    schema = json.loads(CASE_SCHEMA_PATH.read_text(encoding="utf-8"))
+    errors = list(Draft202012Validator(schema).iter_errors(payload))
+    assert any("analysis_target" in error.message for error in errors)
+
+
+def test_case_loader_and_coverage_schema_reject_missing_semantic_statement(
+    tmp_path: Path,
+) -> None:
+    corpus = _corpus()
+    _, registry_path, _ = _valid_fixture(tmp_path)
+    payload = _case_payload(tmp_path)
+    coverage = copy.deepcopy(TRUTH_CONTENTS["coverage_universe.json"])
+    del coverage["items"][0]["statement"]
+    _rewrite_truth(tmp_path, payload, "coverage_universe", coverage)
+
+    with pytest.raises(corpus.QualityCorpusError, match="statement"):
+        corpus.load_quality_case(
+            _write_json(tmp_path / "case.json", payload),
+            registry=corpus.load_quality_registry(registry_path),
+        )
+
+    schema = json.loads(COVERAGE_SCHEMA_PATH.read_text(encoding="utf-8"))
+    assert list(Draft202012Validator(schema).iter_errors(coverage))
+
+
 @pytest.mark.parametrize(
     ("field", "value", "match"),
     [
@@ -806,11 +853,14 @@ def test_committed_schemas_are_draft_2020_12_and_generated_in_sync() -> None:
     corpus = _corpus()
     registry_schema = json.loads(REGISTRY_SCHEMA_PATH.read_text(encoding="utf-8"))
     case_schema = json.loads(CASE_SCHEMA_PATH.read_text(encoding="utf-8"))
+    coverage_schema = json.loads(COVERAGE_SCHEMA_PATH.read_text(encoding="utf-8"))
 
     Draft202012Validator.check_schema(registry_schema)
     Draft202012Validator.check_schema(case_schema)
+    Draft202012Validator.check_schema(coverage_schema)
     assert registry_schema == corpus.quality_registry_json_schema()
     assert case_schema == corpus.quality_case_json_schema()
+    assert coverage_schema == corpus.quality_coverage_universe_json_schema()
 
 
 def test_json_schemas_reject_short_hash_unknown_tier_and_truth_traversal(

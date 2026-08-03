@@ -36,12 +36,21 @@ def _universe(
             "dimension": dimension,
             "critical": critical,
             "applicability": "required",
+            "statement": f"The source behavior covers {dimension} for {item_id}.",
             "evidence_refs": [f"truth://{item_id}"],
             "applicability_evidence_refs": [],
         }
         for item_id, dimension, critical in CORE_ITEMS
     ]
-    items.extend(extra_items or [])
+    items.extend(
+        {
+            "statement": (
+                f"The source behavior covers {item['dimension']} for {item['item_id']}."
+            ),
+            **item,
+        }
+        for item in (extra_items or [])
+    )
     return {
         "schema_version": "quality-breadth-universe-v1",
         "items": items,
@@ -121,6 +130,20 @@ def test_complete_independent_universe_returns_contract_axis_result() -> None:
         MetricName.SCENARIO_REALIZATION: (8, 8, ()),
         MetricName.DISPOSITION_COMPLETENESS: (8, 8, ()),
     }
+
+
+def test_coverage_universe_requires_and_retains_semantic_statement() -> None:
+    from app.services.quality_breadth_evaluator import _parse_universe
+
+    universe = _universe()
+    universe["items"][0].pop("statement")  # type: ignore[index, union-attr]
+
+    with pytest.raises(ValueError, match="statement"):
+        _parse_universe(universe)
+
+    valid = _universe()
+    parsed = _parse_universe(valid)
+    assert parsed[0].statement == valid["items"][0]["statement"]  # type: ignore[index]
 
 
 def test_generated_candidates_cannot_define_or_expand_the_denominator() -> None:

@@ -24,6 +24,7 @@ from jsonschema import Draft202012Validator
 
 from app.services.quality_benchmark_generator import (
     _artifact_hash_manifest,
+    _generator_prompt,
     _generator_output_schema,
     _materialize_candidate,
     _verify_artifact_hash_manifest,
@@ -33,6 +34,21 @@ from app.services.quality_benchmark_workbench import BenchmarkWorkbenchResult
 from app.services.workbench_workflow_runner import (
     _apply_benchmark_work_sufficiency,
 )
+
+
+def test_generator_prompt_uses_explicit_public_analysis_target() -> None:
+    prompt = _generator_prompt(
+        case_id="bmcweb-redfish-reset-action-info-001",
+        mode="rapid",
+        analysis_target=(
+            "Redfish ComputerSystem.Reset ActionInfo host-transition behavior; "
+            "exclude Manager.Reset."
+        ),
+    )
+
+    assert "ComputerSystem.Reset ActionInfo host-transition behavior" in prompt
+    assert "exclude Manager.Reset" in prompt
+    assert "gold_claims" not in prompt
 
 
 def _truth_paths(tmp_path: Path) -> tuple[Path, ...]:
@@ -1470,3 +1486,472 @@ def test_workbench_first_and_final_use_validated_repair_provenance(
     assert result.first_provenance["event"] == "quality_repair_started"
     assert result.final_provenance["attempt"] == 1
     assert result.final_provenance["event"] == "workflow_output_validated"
+
+
+def _materialize_prepublication_controls(task_artifact: Path) -> None:
+    from app.services.workbench_artifact_manifest import write_task_artifact_manifest
+
+    outputs = json.loads(
+        (task_artifact / "workflow_outputs.json").read_text(encoding="utf-8")
+    )
+    execution = {"task_run_id": "task-1", **outputs}
+    (task_artifact / "workflow_execution.json").write_text(
+        json.dumps(execution), encoding="utf-8"
+    )
+    write_task_artifact_manifest(task_artifact, task_run_id="task-1")
+
+
+def test_evaluator_prepublication_gate_reuses_repair_then_reaudits(
+    tmp_path: Path,
+) -> None:
+    from app.services.quality_benchmark_workbench import (
+        _run_evaluator_owned_prepublication_repair,
+    )
+
+    task_artifact = tmp_path / "task"
+    agent_artifact = task_artifact / "agent_runs" / "analyze"
+    agent_artifact.mkdir(parents=True)
+    response_path = agent_artifact / "benchmark_response.json"
+    compound = _candidate_response()
+    compound["claims"][0]["claim"] = "queue request and resume it"
+    response_path.write_text(json.dumps(compound), encoding="utf-8")
+    original_bytes = response_path.read_bytes()
+    workflow_payload = {
+        "task_run_id": "task-1",
+        "status": "completed",
+        "outputs": [{
+            "id": "benchmark_response",
+            "artifact": "benchmark_response.json",
+            "status": "ok",
+            "sha256": hashlib.sha256(original_bytes).hexdigest(),
+            "size_bytes": len(original_bytes),
+            "preview": original_bytes.decode("utf-8"),
+        }],
+    }
+    (task_artifact / "workflow_outputs.json").write_text(
+        json.dumps(workflow_payload), encoding="utf-8"
+    )
+    _materialize_prepublication_controls(task_artifact)
+    gate_calls = []
+
+    def evaluator_gate(path: Path) -> dict:
+        candidate = json.loads(path.read_text(encoding="utf-8"))
+        gate_calls.append(candidate["claims"][0]["claim"])
+        if " and " in candidate["claims"][0]["claim"]:
+            return {
+                "status": "needs_rework",
+                "issues": [{
+                    "code": "compound_claim_requires_split",
+                    "artifact": "benchmark_response.json",
+                    "field": "claims",
+                    "row_id": "C1",
+                    "operation": "split_candidate_statement",
+                    "repairable": True,
+                }],
+            }
+        return {"status": "completed", "issues": []}
+
+    class FakeRunner:
+        def __init__(self) -> None:
+            self.repair_calls = []
+
+        def _attempt_external_agent_quality_repair(self, **kwargs):
+            self.repair_calls.append(kwargs)
+            repaired = _candidate_response()
+            repaired["claims"][0]["claim"] = "queue request"
+            response_path.write_text(json.dumps(repaired), encoding="utf-8")
+            return {
+                "attempted": True,
+                "candidate_ready": True,
+                "snapshot": {"benchmark_response.json": original_bytes},
+            }
+
+    runner = FakeRunner()
+    result = _run_evaluator_owned_prepublication_repair(
+        runner=runner,
+        task_run=SimpleNamespace(task_run_id="task-1"),
+        step_results=[{"step_id": "analyze", "type": "agent_task"}],
+        response_path=response_path,
+        task_artifact=task_artifact,
+        gate=evaluator_gate,
+        deadline_monotonic=time.monotonic() + 10,
+    )
+
+    assert gate_calls == ["queue request and resume it", "queue request"]
+    assert len(runner.repair_calls) == 1
+    assert runner.repair_calls[0]["audit"]["issues"][0] == {
+        "code": "compound_claim_requires_split",
+        "artifact": "benchmark_response.json",
+        "field": "claims",
+        "row_id": "C1",
+        "operation": "split_candidate_statement",
+        "repairable": True,
+    }
+    assert result["attempt_count"] == 1
+    assert result["successful_attempt_count"] == 1
+    outputs = json.loads((task_artifact / "workflow_outputs.json").read_text())
+    final_bytes = response_path.read_bytes()
+    final_sha256 = hashlib.sha256(final_bytes).hexdigest()
+    assert outputs["outputs"][0]["sha256"] == final_sha256
+    assert outputs["outputs"][0]["size_bytes"] == len(final_bytes)
+    execution = json.loads((task_artifact / "workflow_execution.json").read_text())
+    assert execution["outputs"][0]["sha256"] == final_sha256
+    assert execution["outputs"][0]["size_bytes"] == len(final_bytes)
+    summary = json.loads((task_artifact / "quality_repair_summary.json").read_text())
+    assert summary["successful_attempt_count"] == 1
+    manifest = json.loads(
+        (task_artifact / "task_artifact_manifest.json").read_text(encoding="utf-8")
+    )
+    manifest_by_path = {
+        item["relative_path"]: item for item in manifest["artifacts"]
+    }
+    for path in (
+        "agent_runs/analyze/benchmark_response.json",
+        "workflow_outputs.json",
+        "workflow_execution.json",
+        "quality_repair_summary.json",
+    ):
+        artifact_bytes = (task_artifact / path).read_bytes()
+        assert manifest_by_path[path]["sha256"] == hashlib.sha256(
+            artifact_bytes
+        ).hexdigest()
+        assert manifest_by_path[path]["size_bytes"] == len(artifact_bytes)
+
+
+def test_evaluator_prepublication_gate_restores_candidate_when_repair_still_fails(
+    tmp_path: Path,
+) -> None:
+    from app.services.quality_benchmark_workbench import (
+        BenchmarkWorkbenchError,
+        _run_evaluator_owned_prepublication_repair,
+    )
+
+    task_artifact = tmp_path / "task"
+    response_path = task_artifact / "agent_runs" / "analyze" / "benchmark_response.json"
+    response_path.parent.mkdir(parents=True)
+    response_path.write_text('{"claims":[{"claim":"a and b"}]}', encoding="utf-8")
+    original_bytes = response_path.read_bytes()
+    (task_artifact / "workflow_outputs.json").write_text(
+        '{"status":"completed","outputs":[]}', encoding="utf-8"
+    )
+    _materialize_prepublication_controls(task_artifact)
+
+    class FakeRunner:
+        def _attempt_external_agent_quality_repair(self, **_kwargs):
+            response_path.write_text('{"claims":[{"claim":"still a and b"}]}', encoding="utf-8")
+            return {
+                "attempted": True,
+                "candidate_ready": True,
+                "snapshot": {"benchmark_response.json": original_bytes},
+            }
+
+    gate = lambda _path: {
+        "status": "needs_rework",
+        "issues": [{
+            "code": "compound_claim_requires_split",
+            "artifact": "benchmark_response.json",
+            "field": "claims",
+            "row_id": "C1",
+            "operation": "split_candidate_statement",
+            "repairable": True,
+        }],
+    }
+    with pytest.raises(BenchmarkWorkbenchError, match="did not clear"):
+        _run_evaluator_owned_prepublication_repair(
+            runner=FakeRunner(),
+            task_run=SimpleNamespace(task_run_id="task-1"),
+            step_results=[],
+            response_path=response_path,
+            task_artifact=task_artifact,
+            gate=gate,
+            deadline_monotonic=time.monotonic() + 10,
+        )
+
+    assert response_path.read_bytes() == original_bytes
+
+
+def test_evaluator_prepublication_gate_accumulates_existing_repair_attempt(
+    tmp_path: Path,
+) -> None:
+    from app.services.quality_benchmark_workbench import (
+        _run_evaluator_owned_prepublication_repair,
+    )
+
+    task_artifact = tmp_path / "task"
+    response_path = task_artifact / "agent_runs" / "analyze" / "benchmark_response.json"
+    response_path.parent.mkdir(parents=True)
+    response_path.write_text('{"claims":[{"claim":"a and b"}]}', encoding="utf-8")
+    original = response_path.read_bytes()
+    (task_artifact / "workflow_outputs.json").write_text(
+        json.dumps({
+            "status": "completed",
+            "outputs": [{
+                "id": "benchmark_response",
+                "artifact": "benchmark_response.json",
+                "status": "ok",
+                "sha256": hashlib.sha256(original).hexdigest(),
+            }],
+        }), encoding="utf-8"
+    )
+    (task_artifact / "quality_repair_summary.json").write_text(
+        '{"attempt_count":1,"successful_attempt_count":1}', encoding="utf-8"
+    )
+    _materialize_prepublication_controls(task_artifact)
+    calls = []
+
+    class FakeRunner:
+        def _attempt_external_agent_quality_repair(self, **kwargs):
+            calls.append(kwargs)
+            response_path.write_text('{"claims":[{"claim":"a"}]}', encoding="utf-8")
+            return {"attempted": True, "candidate_ready": True}
+
+    def gate(path: Path) -> dict:
+        compound = " and " in path.read_text(encoding="utf-8")
+        return {
+            "status": "needs_rework" if compound else "completed",
+            "issues": ([{
+                "code": "compound_claim_requires_split",
+                "artifact": "benchmark_response.json",
+                "field": "claims",
+                "row_id": "C1",
+                "operation": "split_candidate_statement",
+                "repairable": True,
+            }] if compound else []),
+        }
+
+    result = _run_evaluator_owned_prepublication_repair(
+        runner=FakeRunner(),
+        task_run=SimpleNamespace(task_run_id="task-1"),
+        step_results=[],
+        response_path=response_path,
+        task_artifact=task_artifact,
+        gate=gate,
+        deadline_monotonic=time.monotonic() + 10,
+    )
+
+    assert calls[0]["attempt_number"] == 2
+    assert result["attempt_count"] == 2
+    assert result["successful_attempt_count"] == 2
+
+
+def test_evaluator_prepublication_gate_accumulates_audit_only_existing_repair(
+    tmp_path: Path,
+) -> None:
+    from app.services.quality_benchmark_workbench import (
+        _run_evaluator_owned_prepublication_repair,
+    )
+
+    task_artifact = tmp_path / "task"
+    response_path = task_artifact / "agent_runs" / "analyze" / "benchmark_response.json"
+    response_path.parent.mkdir(parents=True)
+    response_path.write_text('{"claims":[{"claim":"a and b"}]}', encoding="utf-8")
+    original = response_path.read_bytes()
+    (task_artifact / "workflow_outputs.json").write_text(
+        json.dumps({
+            "status": "completed",
+            "outputs": [{
+                "id": "benchmark_response",
+                "artifact": "benchmark_response.json",
+                "status": "ok",
+                "sha256": hashlib.sha256(original).hexdigest(),
+            }],
+        }), encoding="utf-8"
+    )
+    (task_artifact / "test_activity_quality_audit.json").write_text(
+        json.dumps({
+            "status": "completed",
+            "external_agent_quality_repair": {
+                "attempted": True,
+                "accepted": True,
+            },
+        }),
+        encoding="utf-8",
+    )
+    _materialize_prepublication_controls(task_artifact)
+    calls = []
+
+    class FakeRunner:
+        def _attempt_external_agent_quality_repair(self, **kwargs):
+            calls.append(kwargs)
+            response_path.write_text('{"claims":[{"claim":"a"}]}', encoding="utf-8")
+            return {"attempted": True, "candidate_ready": True}
+
+    def gate(path: Path) -> dict:
+        compound = " and " in path.read_text(encoding="utf-8")
+        return {
+            "status": "needs_rework" if compound else "completed",
+            "issues": ([{
+                "code": "compound_claim_requires_split",
+                "artifact": "benchmark_response.json",
+                "field": "claims",
+                "row_id": "C1",
+                "operation": "split_candidate_statement",
+                "repairable": True,
+            }] if compound else []),
+        }
+
+    result = _run_evaluator_owned_prepublication_repair(
+        runner=FakeRunner(),
+        task_run=SimpleNamespace(task_run_id="task-1"),
+        step_results=[],
+        response_path=response_path,
+        task_artifact=task_artifact,
+        gate=gate,
+        deadline_monotonic=time.monotonic() + 10,
+    )
+
+    assert calls[0]["attempt_number"] == 2
+    assert result["attempt_count"] == 2
+    assert result["successful_attempt_count"] == 2
+
+
+def test_evaluator_prepublication_gate_rolls_back_when_second_gate_raises(
+    tmp_path: Path,
+) -> None:
+    from app.services.quality_benchmark_workbench import (
+        BenchmarkWorkbenchQualityBlocked,
+        _run_evaluator_owned_prepublication_repair,
+    )
+
+    task_artifact = tmp_path / "task"
+    response_path = task_artifact / "agent_runs" / "analyze" / "benchmark_response.json"
+    response_path.parent.mkdir(parents=True)
+    response_path.write_text('{"claims":[{"claim":"a and b"}]}', encoding="utf-8")
+    original_response = response_path.read_bytes()
+    outputs_path = task_artifact / "workflow_outputs.json"
+    outputs_path.write_text('{"status":"completed","outputs":[]}', encoding="utf-8")
+    _materialize_prepublication_controls(task_artifact)
+    original_outputs = outputs_path.read_bytes()
+    execution_path = task_artifact / "workflow_execution.json"
+    original_execution = execution_path.read_bytes()
+    manifest_path = task_artifact / "task_artifact_manifest.json"
+    original_manifest = manifest_path.read_bytes()
+    calls = 0
+
+    class FakeRunner:
+        def _attempt_external_agent_quality_repair(self, **_kwargs):
+            response_path.write_text('{"claims":[{"claim":"a"}]}', encoding="utf-8")
+            return {"attempted": True, "candidate_ready": True}
+
+    def gate(_path: Path) -> dict:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("judge unavailable")
+        return {
+            "status": "needs_rework",
+            "issues": [{
+                "code": "compound_claim_requires_split",
+                "artifact": "benchmark_response.json",
+                "field": "claims",
+                "row_id": "C1",
+                "operation": "split_candidate_statement",
+                "repairable": True,
+            }],
+        }
+
+    with pytest.raises(
+        BenchmarkWorkbenchQualityBlocked, match="failed and was rolled back"
+    ):
+        _run_evaluator_owned_prepublication_repair(
+            runner=FakeRunner(),
+            task_run=SimpleNamespace(task_run_id="task-1"),
+            step_results=[],
+            response_path=response_path,
+            task_artifact=task_artifact,
+            gate=gate,
+            deadline_monotonic=time.monotonic() + 10,
+        )
+
+    assert response_path.read_bytes() == original_response
+    assert outputs_path.read_bytes() == original_outputs
+    assert execution_path.read_bytes() == original_execution
+    assert manifest_path.read_bytes() == original_manifest
+    assert not (task_artifact / "quality_repair_summary.json").exists()
+
+
+def test_evaluator_prepublication_gate_rolls_back_when_manifest_refresh_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.services.quality_benchmark_workbench as workbench_module
+
+    task_artifact = tmp_path / "task"
+    response_path = task_artifact / "agent_runs" / "analyze" / "benchmark_response.json"
+    response_path.parent.mkdir(parents=True)
+    response_path.write_text('{"claims":[{"claim":"a and b"}]}', encoding="utf-8")
+    response_before = response_path.read_bytes()
+    outputs_path = task_artifact / "workflow_outputs.json"
+    outputs_path.write_text(
+        json.dumps({
+            "status": "completed",
+            "outputs": [{
+                "id": "benchmark_response",
+                "artifact": "benchmark_response.json",
+                "status": "ok",
+                "sha256": hashlib.sha256(response_before).hexdigest(),
+            }],
+        }),
+        encoding="utf-8",
+    )
+    _materialize_prepublication_controls(task_artifact)
+    execution_path = task_artifact / "workflow_execution.json"
+    manifest_path = task_artifact / "task_artifact_manifest.json"
+    controls_before = {
+        path: path.read_bytes()
+        for path in (outputs_path, execution_path, manifest_path)
+    }
+
+    class FakeRunner:
+        def _attempt_external_agent_quality_repair(self, **_kwargs):
+            response_path.write_text('{"claims":[{"claim":"a"}]}', encoding="utf-8")
+            return {"attempted": True, "candidate_ready": True}
+
+    def gate(path: Path) -> dict:
+        compound = " and " in path.read_text(encoding="utf-8")
+        return {
+            "status": "needs_rework" if compound else "completed",
+            "issues": ([{
+                "code": "compound_claim_requires_split",
+                "artifact": "benchmark_response.json",
+                "field": "claims",
+                "row_id": "C1",
+                "operation": "split_candidate_statement",
+                "repairable": True,
+            }] if compound else []),
+        }
+
+    monkeypatch.setattr(
+        workbench_module,
+        "write_task_artifact_manifest",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+    with pytest.raises(
+        workbench_module.BenchmarkWorkbenchQualityBlocked,
+        match="failed and was rolled back",
+    ):
+        workbench_module._run_evaluator_owned_prepublication_repair(
+            runner=FakeRunner(),
+            task_run=SimpleNamespace(task_run_id="task-1"),
+            step_results=[],
+            response_path=response_path,
+            task_artifact=task_artifact,
+            gate=gate,
+            deadline_monotonic=time.monotonic() + 10,
+        )
+
+    assert response_path.read_bytes() == response_before
+    for path, original in controls_before.items():
+        assert path.read_bytes() == original
+    assert not (task_artifact / "quality_repair_summary.json").exists()
+
+
+def test_evaluator_repair_exhaustion_is_classified_as_quality_blocked() -> None:
+    from app.services.quality_benchmark_generator import _failure_classification
+    from app.services.quality_benchmark_workbench import (
+        BenchmarkWorkbenchQualityBlocked,
+    )
+
+    assert _failure_classification(
+        BenchmarkWorkbenchQualityBlocked("compound repair exhausted")
+    ) == ("evaluator_repair_exhausted", "quality_blocked")

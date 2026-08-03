@@ -113,7 +113,21 @@ def _case_tree(tmp_path: Path) -> Path:
     descriptors = {}
     for field, filename, payload in (
         ("gold_claims", "gold_claims.json", [{"gold_id": "G-1"}]),
-        ("coverage_universe", "coverage_universe.json", [{"item_id": "U-1"}]),
+        (
+            "coverage_universe",
+            "coverage_universe.json",
+            {
+                "case_id": "case-1",
+                "items": [{
+                    "item_id": "U-1",
+                    "dimension": "flows",
+                    "critical": True,
+                    "applicability": "required",
+                    "statement": "The synthetic flow reaches recovery.",
+                    "evidence_refs": ["source://fixture.c#L1-L1"],
+                }],
+            },
+        ),
         ("critical_chains", "critical_chains.json", truth),
         (
             "execution_oracles",
@@ -417,6 +431,7 @@ def test_real_snapshot_default_path_runs_batch_judge_for_all_three_axes(tmp_path
     catalog = DepthEvidenceCatalog.model_validate(catalog_payload)
     truth["evidence_catalog_sha256"] = depth_evidence_catalog_sha256(catalog)
     universe = _universe()
+    universe["case_id"] = "case-1"
     descriptors = {}
     for field, filename, payload in (
         (
@@ -536,6 +551,15 @@ def test_real_snapshot_default_path_runs_batch_judge_for_all_three_axes(tmp_path
         judgment.axis for judgment in semantic_judge.calls[0]["judgments"]
     } == {"accuracy", "breadth", "depth"}
     assert audit_sink[0]["judge"]["model"] == "fixture-independent-judge"
+    assert all(
+        audit_sink[0]["candidate_count_by_axis"][axis] > 0
+        for axis in ("accuracy", "breadth", "depth")
+    )
+    assert audit_sink[0]["status_by_axis"] == {
+        "accuracy": "completed",
+        "breadth": "completed",
+        "depth": "completed",
+    }
 
 
 def test_cli_selectors_are_mutually_exclusive() -> None:
@@ -704,6 +728,85 @@ def test_evaluator_aligns_public_source_evidence_without_leaking_truth_ids() -> 
     assert aligned["claims"][0]["l2_status"] == "supports"
     assert "hidden-gold" not in json.dumps(aligned)
     assert ledger["claims"][0]["semantic_key"] == "generator-wording"
+
+
+@pytest.mark.parametrize(
+    ("gold_range", "candidate_range"),
+    [
+        ((3162, 3182), (3171, 3182)),
+        ((2143, 2157), (2142, 2157)),
+    ],
+)
+def test_accuracy_prefilter_accepts_bounded_bidirectional_range_containment(
+    gold_range, candidate_range
+) -> None:
+    module = _runner()
+    gold = [{
+        "gold_id": "hidden-gold",
+        "semantic_key": "canonical.semantic.key",
+        "claim": "The reset is queued and later resumed.",
+        "evidence_refs": [
+            "source://module/bdev/nvme/bdev_nvme.c#"
+            f"L{gold_range[0]}-L{gold_range[1]}"
+        ],
+    }]
+    ledger = {
+        "claims": [{
+            "claim_id": "public-claim",
+            "claim": "The reset is queued and later resumed.",
+            "semantic_key": "generator-wording",
+            "evidence_refs": [{
+                "path": "module/bdev/nvme/bdev_nvme.c",
+                "start_line": candidate_range[0],
+                "end_line": candidate_range[1],
+            }],
+        }],
+    }
+
+    aligned = module._align_claim_semantics_from_evidence(
+        ledger,
+        gold,
+        semantic_verdict_adapter=_IndependentAcceptingVerdictAdapter(),
+    )
+
+    assert aligned["claims"][0]["semantic_key"] == "canonical.semantic.key"
+    assert aligned["claims"][0]["l2_status"] == "supports"
+
+
+@pytest.mark.parametrize("candidate_range", [(3178, 3182), (3155, 3175)])
+def test_accuracy_prefilter_rejects_tiny_containment_and_partial_overlap(
+    candidate_range,
+) -> None:
+    module = _runner()
+    gold = [{
+        "gold_id": "hidden-gold",
+        "semantic_key": "canonical.semantic.key",
+        "claim": "The reset is queued when the controller is busy.",
+        "evidence_refs": [
+            "source://module/bdev/nvme/bdev_nvme.c#L3162-L3182"
+        ],
+    }]
+    ledger = {
+        "claims": [{
+            "claim_id": "public-claim",
+            "claim": "The reset is queued when the controller is busy.",
+            "semantic_key": "generator-wording",
+            "evidence_refs": [{
+                "path": "module/bdev/nvme/bdev_nvme.c",
+                "start_line": candidate_range[0],
+                "end_line": candidate_range[1],
+            }],
+        }],
+    }
+
+    aligned = module._align_claim_semantics_from_evidence(
+        ledger,
+        gold,
+        semantic_verdict_adapter=_IndependentAcceptingVerdictAdapter(),
+    )
+
+    assert aligned["claims"][0]["semantic_key"] == "generator-wording"
+    assert aligned["claims"][0]["l2_status"] == "insufficient"
 
 
 def test_evaluator_rejects_a_contradiction_even_when_it_cites_the_exact_gold_range() -> None:
@@ -899,10 +1002,91 @@ def test_accuracy_rejects_candidate_that_cites_unique_evidence_for_two_claims() 
         }],
     }
 
-    aligned = module._align_claim_semantics_from_evidence(ledger, gold)
+    diagnostics = []
+    aligned = module._align_claim_semantics_from_evidence(
+        ledger,
+        gold,
+        semantic_diagnostic_sink=diagnostics,
+    )
 
     assert aligned["claims"][0]["semantic_key"] == "generator-wording"
     assert aligned["claims"][0]["l2_status"] == "insufficient"
+    assert diagnostics == [{
+        "axis": "accuracy",
+        "code": "compound_claim_requires_split",
+        "candidate_id": "public-ambiguous",
+        "matched_obligation_count": 2,
+        "repairable": True,
+        "repair": {
+            "artifact": "claim_ledger.json",
+            "operation": "split_candidate_statement",
+        },
+    }]
+    assert "hidden-owner" not in json.dumps(diagnostics)
+    assert "mooncake.owner.commit" not in json.dumps(diagnostics)
+
+
+def test_accuracy_judgment_retains_candidate_range_separately_from_truth_range() -> None:
+    module = _runner()
+    recorder = module._SemanticJudgmentRecorder()
+    candidate = {
+        "claim_id": "public-half-range",
+        "claim": "A busy reset appends the request to pending_resets.",
+        "evidence_refs": [{
+            "path": "module/bdev/nvme/bdev_nvme.c",
+            "start_line": 3162,
+            "end_line": 3172,
+        }],
+    }
+    truth = {
+        "semantic_key": "spdk.concurrent_reset.pending_queue",
+        "statement": "A busy reset appends the request to pending_resets.",
+        "evidence_refs": [
+            "source://module/bdev/nvme/bdev_nvme.c#L3162-L3182"
+        ],
+    }
+
+    recorder.claim_verdict(candidate=candidate, truth=truth)
+
+    assert len(recorder.judgments) == 1
+    judgment = recorder.judgments[0]
+    assert judgment.observed_evidence_refs == (
+        "source://module/bdev/nvme/bdev_nvme.c#L3162-L3172",
+    )
+    assert judgment.required_evidence_refs == (
+        "source://module/bdev/nvme/bdev_nvme.c#L3162-L3182",
+    )
+
+
+def test_axis_audit_separates_no_candidates_from_required_compound_repair() -> None:
+    module = _runner()
+
+    metadata = module._semantic_axis_audit_metadata(
+        judgments=(),
+        result_status="completed",
+        diagnostics=[{
+            "axis": "accuracy",
+            "code": "compound_claim_requires_split",
+            "candidate_id": "public-compound",
+            "repairable": True,
+        }],
+    )
+
+    assert metadata["candidate_count_by_axis"] == {
+        "accuracy": 0,
+        "breadth": 0,
+        "depth": 0,
+    }
+    assert metadata["status_by_axis"] == {
+        "accuracy": "no_candidates",
+        "breadth": "no_candidates",
+        "depth": "no_candidates",
+    }
+    assert metadata["repair_status_by_axis"] == {
+        "accuracy": "required",
+        "breadth": "not_required",
+        "depth": "not_required",
+    }
 
 
 @pytest.mark.parametrize(
@@ -1031,6 +1215,33 @@ def test_evaluator_aligns_public_breadth_refs_only_after_independent_semantic_ve
         "source://lib/storage.c#branch:L30-L35"
     ]
     assert "hidden-universe-item" not in json.dumps(aligned)
+
+
+def test_breadth_prefilter_accepts_bounded_range_containment() -> None:
+    module = _runner()
+    universe = {
+        "items": [{
+            "item_id": "hidden-universe-item",
+            "evidence_refs": ["source://lib/storage.c#branch:L30-L35"],
+        }],
+    }
+    candidates = {
+        "items": [{
+            "candidate_id": "public-candidate",
+            "narrative": "The branch reaches recovery.",
+            "evidence_refs": ["source://lib/storage.c#L31-L35"],
+        }],
+    }
+
+    (aligned,) = module._align_breadth_evidence_refs(
+        universe,
+        candidates,
+        semantic_verdict_adapter=_IndependentAcceptingVerdictAdapter(),
+    )
+
+    assert aligned["items"][0]["evidence_refs"] == [
+        "source://lib/storage.c#branch:L30-L35"
+    ]
 
 
 def test_breadth_prefers_unique_evidence_before_judging_shared_ranges() -> None:
@@ -1179,6 +1390,48 @@ def test_evaluator_aligns_public_depth_observations_after_independent_semantic_v
     assert "public-node" not in json.dumps(aligned)
 
 
+def test_depth_prefilter_accepts_bounded_range_containment() -> None:
+    module = _runner()
+    catalog = module.DepthEvidenceCatalog.model_validate({
+        "case_id": "case",
+        "bindings": [{
+            "evidence_ref": "source://lib/storage.c#L40-L45:node-hidden",
+            "chain_id": "hidden-chain",
+            "category": "node",
+            "obligation_id": "hidden-node",
+        }],
+    })
+    truth = {
+        "chains": [{
+            "chain_id": "hidden-chain",
+            "nodes": [{"node_id": "hidden-node"}],
+            "edges": [],
+            "disconfirming_checks": [],
+        }],
+    }
+    candidate = {
+        "chains": [{
+            "chain_id": "public-chain",
+            "nodes": [{
+                "node_id": "public-node",
+                "status": "closed",
+                "evidence_refs": ["source://lib/storage.c#L41-L45"],
+            }],
+            "edges": [],
+            "disconfirming_checks": [],
+        }],
+    }
+
+    aligned = module._align_depth_candidate_from_evidence(
+        truth,
+        candidate,
+        catalog,
+        semantic_verdict_adapter=_IndependentAcceptingVerdictAdapter(),
+    )
+
+    assert aligned["chains"][0]["nodes"][0]["node_id"] == "hidden-node"
+
+
 def test_depth_edge_semantic_oracle_includes_statement_and_typed_endpoints() -> None:
     module = _runner()
     edge = {
@@ -1193,6 +1446,18 @@ def test_depth_edge_semantic_oracle_includes_statement_and_typed_endpoints() -> 
     assert "A failed state mutation propagates the operation error." in oracle
     assert "source_node_id=state-mutation" in oracle
     assert "target_node_id=error-propagation" in oracle
+
+
+def test_breadth_semantic_oracle_requires_an_explicit_statement() -> None:
+    module = _runner()
+
+    oracle = module._axis_oracle_statement(
+        "breadth",
+        {"item_id": "hidden-branch", "dimension": "branches"},
+        None,
+    )
+
+    assert oracle == ""
 
 
 def test_depth_obligation_can_require_multiple_individually_valid_ranges() -> None:
@@ -1479,11 +1744,15 @@ def test_cli_generated_single_case_uses_direct_immutable_generator_root(
 ) -> None:
     module = _runner()
     case_path = tmp_path / "case.json"
-    case_path.write_text('{"case_id":"case-1","project_id":"project-1"}')
+    case_path.write_text(
+        '{"case_id":"case-1","project_id":"project-1",'
+        '"analysis_target":"Public reset target"}'
+    )
     source_root = tmp_path / "sources"
     source_root.mkdir()
     output = tmp_path / "evaluation"
     generated_roots = []
+    generated_targets = []
 
     monkeypatch.setattr(module, "load_quality_registry", lambda _: _Registry())
     monkeypatch.setattr(module, "_select_case_paths", lambda **_: [case_path])
@@ -1493,10 +1762,16 @@ def test_cli_generated_single_case_uses_direct_immutable_generator_root(
         lambda *_args, **_kwargs: type("Project", (), {"path": source_root})(),
     )
     monkeypatch.setattr(module, "_quality_case_truth_paths", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(
+        module,
+        "_benchmark_compound_claim_gate",
+        lambda **_kwargs: (lambda _path: {"status": "completed", "issues": []}),
+    )
 
     def fake_generate(**kwargs):
         root = Path(kwargs["output_dir"])
         generated_roots.append(root)
+        generated_targets.append(kwargs.get("analysis_target"))
         (root / "first_pass").mkdir(parents=True)
         (root / "final_after_auto_repair").mkdir()
         (root / "repair_summary.json").write_text(
@@ -1540,6 +1815,7 @@ def test_cli_generated_single_case_uses_direct_immutable_generator_root(
         ]
     ) == 0
     assert generated_roots == [Path(f"{output}.run-artifacts")]
+    assert generated_targets == ["Public reset target"]
 
 
 def test_cli_multi_case_fresh_and_explicit_replay_keep_roots_separate(
@@ -1567,6 +1843,11 @@ def test_cli_multi_case_fresh_and_explicit_replay_keep_roots_separate(
         lambda *_args, **_kwargs: type("Project", (), {"path": source_root})(),
     )
     monkeypatch.setattr(module, "_quality_case_truth_paths", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(
+        module,
+        "_benchmark_compound_claim_gate",
+        lambda **_kwargs: (lambda _path: {"status": "completed", "issues": []}),
+    )
 
     def fake_generate(**kwargs):
         root = Path(kwargs["output_dir"])

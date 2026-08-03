@@ -2,7 +2,8 @@
   "schema_version": "quality-benchmark-case-v1",
   "case_id": "femu-bbssd-out-of-range-write-001",
   "project_id": "femu",
-  "truth_package_version": "1",
+  "analysis_target": "FEMU BlackBox SSD out-of-range write validation and error handling.",
+  "truth_package_version": "2",
   "tier": "S",
   "truth_package": {
     "gold_claims": {
@@ -11,7 +12,7 @@
     },
     "coverage_universe": {
       "path": "coverage_universe.json",
-      "sha256": "5a1587c594df358dea3dc52e0149f98ffa89004a03cafbd85a74897c2e43a675"
+      "sha256": "6a4914794f355c5d4a049b554b0ef3f7b2efd62aeab1e73f677285590bfe0e96"
     },
     "critical_chains": {
       "path": "critical_chains.json",

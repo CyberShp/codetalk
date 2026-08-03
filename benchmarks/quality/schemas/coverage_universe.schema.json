@@ -1,0 +1,124 @@
+{
+  "$defs": {
+    "CoverageTruthItem": {
+      "additionalProperties": false,
+      "properties": {
+        "applicability": {
+          "enum": [
+            "required",
+            "conditional"
+          ],
+          "title": "Applicability",
+          "type": "string"
+        },
+        "applicability_evidence_refs": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Applicability Evidence Refs",
+          "type": "array"
+        },
+        "critical": {
+          "title": "Critical",
+          "type": "boolean"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "dimension": {
+          "enum": [
+            "entrypoints",
+            "flows",
+            "branches",
+            "states",
+            "resources",
+            "boundaries",
+            "concurrency",
+            "errors",
+            "protocol",
+            "historical",
+            "mutation"
+          ],
+          "title": "Dimension",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "item_id": {
+          "minLength": 1,
+          "title": "Item Id",
+          "type": "string"
+        },
+        "statement": {
+          "minLength": 1,
+          "title": "Statement",
+          "type": "string"
+        }
+      },
+      "required": [
+        "item_id",
+        "dimension",
+        "critical",
+        "applicability",
+        "statement",
+        "evidence_refs"
+      ],
+      "title": "CoverageTruthItem",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "case_id": {
+      "minLength": 1,
+      "title": "Case Id",
+      "type": "string"
+    },
+    "items": {
+      "items": {
+        "$ref": "#/$defs/CoverageTruthItem"
+      },
+      "minItems": 1,
+      "title": "Items",
+      "type": "array"
+    },
+    "schema_version": {
+      "anyOf": [
+        {
+          "const": "quality-breadth-universe-v1",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Schema Version"
+    }
+  },
+  "required": [
+    "case_id",
+    "items"
+  ],
+  "title": "CoverageUniverseTruth",
+  "type": "object"
+}

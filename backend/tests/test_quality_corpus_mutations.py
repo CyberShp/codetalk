@@ -85,6 +85,21 @@ def test_all_twelve_pinned_projects_have_a_hash_verified_tier_s_case() -> None:
     assert len(cases) == len(EXPECTED_PROJECT_IDS)
 
 
+def test_all_registered_cases_expose_a_public_analysis_target_at_truth_version_two() -> None:
+    registry = load_quality_registry(REGISTRY_PATH)
+    case_paths = sorted(PROJECTS_ROOT.glob("*/*/case.json"))
+    cases = [load_quality_case(path, registry=registry) for path in case_paths]
+
+    assert registry.truth_package_version == "2"
+    assert all(case.truth_package_version == "2" for case in cases)
+    assert all(str(case.analysis_target).strip() for case in cases)
+    for case_path in case_paths:
+        universe = json.loads(
+            (case_path.parent / "coverage_universe.json").read_text(encoding="utf-8")
+        )
+        assert all(str(item.get("statement") or "").strip() for item in universe["items"])
+
+
 @pytest.mark.parametrize("project_id", sorted(EXPECTED_PROJECT_IDS))
 def test_all_twelve_depth_truth_packages_have_judgeable_statements_and_endpoints(
     project_id: str,
@@ -141,7 +156,8 @@ def test_all_twelve_depth_semantic_requests_materialize_against_pinned_source(
                     str(truth_item.get("statement") or "").strip()
                     or f"The source closes {key[1]} obligation {key[2]}."
                 ),
-                evidence_refs=tuple(refs),
+                observed_evidence_refs=tuple(refs),
+                required_evidence_refs=tuple(refs),
             )
         )
 
@@ -442,7 +458,9 @@ def _write_dynamic_candidate(
     breadth_candidates = []
     breadth_scenarios = []
     for index, item in enumerate(universe["items"], start=1):
-        statement = str(item.get("description") or "").strip() or (
+        statement = str(
+            item.get("statement") or item.get("description") or ""
+        ).strip() or (
             f"This observation covers the {item['dimension']} obligation "
             f"{str(item['item_id']).rsplit(':', 1)[-1]}."
         )

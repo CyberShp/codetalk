@@ -3243,6 +3243,7 @@ class WorkbenchWorkflowRunner:
         step_results: list[dict[str, Any]],
         audit: dict[str, Any],
         deadline_monotonic: float | None = None,
+        attempt_number: int = 1,
     ) -> dict[str, Any]:
         """Run one artifact-scoped repair turn for a completed external Agent.
 
@@ -3250,6 +3251,8 @@ class WorkbenchWorkflowRunner:
         contract. It never re-runs discovery and cannot replace protected
         artifacts. The caller audits candidate bytes before accepting them.
         """
+        if attempt_number < 1:
+            raise ValueError("quality repair attempt_number must be positive")
         if str(audit.get("status") or "") not in {"needs_rework", "invalid"}:
             return {"attempted": False}
         if self._is_cancelled():
@@ -3343,7 +3346,7 @@ class WorkbenchWorkflowRunner:
             artifact_names=[*repair_artifacts, *protected],
         )
         prior_turn = str(run_payload.get("turn_id") or "turn_1")
-        repair_dir = artifact_dir / "quality_repairs" / "attempt_1"
+        repair_dir = artifact_dir / "quality_repairs" / f"attempt_{attempt_number}"
         repair_dir.mkdir(parents=True, exist_ok=True)
         _write_json(repair_dir / "quality_audit_before.json", audit)
         _snapshot_agent_turn_artifacts(artifact_dir, turn_id=prior_turn)
@@ -3365,7 +3368,7 @@ class WorkbenchWorkflowRunner:
             {
                 "step_id": step_id,
                 "provider": str(step_result.get("provider") or ""),
-                "attempt": 1,
+                "attempt": attempt_number,
                 "affected_artifacts": repair_artifacts,
                 "user_message": "质量门禁发现问题，正在要求执行器只修复失败交付件。",
             },

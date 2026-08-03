@@ -31,7 +31,7 @@ MANIFEST_SCHEMA_VERSION = "quality-evaluation-manifest-v1"
 SUMMARY_SCHEMA_VERSION = "quality-baseline-summary-v2"
 POLICY_SCHEMA_VERSION = "quality-threshold-policy-v2"
 BUNDLE_SCHEMA_VERSION = "quality-baseline-bundle-v2"
-EVALUATOR_VERSION = "quality-evaluation-v1"
+EVALUATOR_VERSION = "quality-evaluation-v2"
 AXES = ("accuracy", "breadth", "depth")
 REQUIRED_DOMAINS = frozenset({"storage", "bmc", "kv-cache", "rdma-roce"})
 EVALUATOR_SOURCE_PATHS = (
@@ -41,6 +41,8 @@ EVALUATOR_SOURCE_PATHS = (
     "backend/app/services/quality_depth_evaluator.py",
     "backend/app/services/quality_evaluator.py",
     "backend/app/services/quality_benchmark_runner.py",
+    "backend/app/services/quality_benchmark_semantic_judge.py",
+    "backend/app/services/behavior_claim_validator.py",
 )
 REQUIRED_METRICS = {
     "accuracy": frozenset(

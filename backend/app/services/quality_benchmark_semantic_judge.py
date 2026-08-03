@@ -46,7 +46,8 @@ class SemanticJudgment:
     axis: SemanticAxis
     candidate_statement: str
     oracle_statement: str
-    evidence_refs: tuple[str, ...]
+    observed_evidence_refs: tuple[str, ...]
+    required_evidence_refs: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -239,7 +240,7 @@ class BehaviorClaimBatchSemanticJudge:
                 verdicts={},
                 metadata=_audit_metadata(
                     snapshot_label=snapshot_label,
-                    status="completed",
+                    status="no_candidates",
                     request_sha256=_sha256_json({"claims": []}),
                     result_sha256=_sha256_json({"claims": []}),
                     validator={
@@ -430,28 +431,22 @@ def _build_validation_request(
     context_by_ref: dict[tuple[str, int, int], dict[str, Any]] = {}
     claims: list[dict[str, Any]] = []
     for judgment in judgments:
-        context_ids: list[str] = []
-        bindings: list[dict[str, str]] = []
         if not judgment.candidate_statement.strip() or not judgment.oracle_statement.strip():
             raise ValueError("semantic judgment statements must be non-empty")
-        for raw_ref in judgment.evidence_refs:
-            parsed = _parse_evidence_ref(raw_ref)
-            key = (parsed["path"], parsed["start_line"], parsed["end_line"])
-            context = context_by_ref.get(key)
-            if context is None:
-                context = _source_context(source, **parsed)
-                context = {"context_id": f"CTX-{len(contexts) + 1:04d}", **context}
-                context_by_ref[key] = context
-                contexts.append(context)
-            context_ids.append(str(context["context_id"]))
-            bindings.append(
-                {
-                    "path": parsed["path"],
-                    "symbol": parsed["symbol"],
-                    "lines": f"L{parsed['start_line']}-L{parsed['end_line']}",
-                    "quote": str(context["content"]),
-                }
-            )
+        observed_context_ids, observed_bindings = _materialize_role_evidence(
+            judgment.observed_evidence_refs,
+            source=source,
+            contexts=contexts,
+            context_by_ref=context_by_ref,
+        )
+        required_context_ids, required_bindings = _materialize_role_evidence(
+            judgment.required_evidence_refs,
+            source=source,
+            contexts=contexts,
+            context_by_ref=context_by_ref,
+        )
+        if not observed_context_ids or not required_context_ids:
+            raise ValueError("semantic judgments require observed and required evidence")
         claims.append(
             {
                 "claim_id": judgment.judgment_id,
@@ -468,8 +463,14 @@ def _build_validation_request(
                 "candidate_statement": judgment.candidate_statement.strip(),
                 "oracle_statement": judgment.oracle_statement.strip(),
                 "binding": judgment.judgment_id,
-                "context_ids": list(dict.fromkeys(context_ids)),
-                "evidence_bindings": bindings,
+                # The mature behavior validator consumes these legacy fields. Keep
+                # them candidate-only so hidden truth cannot fill an evidence gap.
+                "context_ids": observed_context_ids,
+                "evidence_bindings": observed_bindings,
+                "observed_context_ids": observed_context_ids,
+                "observed_evidence_bindings": observed_bindings,
+                "required_context_ids": required_context_ids,
+                "required_evidence_bindings": required_bindings,
             }
         )
     payload: dict[str, Any] = {
@@ -484,6 +485,36 @@ def _build_validation_request(
     }
     payload["request_sha256"] = _sha256_json(payload)
     return payload
+
+
+def _materialize_role_evidence(
+    evidence_refs: Sequence[str],
+    *,
+    source: Path,
+    contexts: list[dict[str, Any]],
+    context_by_ref: dict[tuple[str, int, int], dict[str, Any]],
+) -> tuple[list[str], list[dict[str, str]]]:
+    context_ids: list[str] = []
+    bindings: list[dict[str, str]] = []
+    for raw_ref in evidence_refs:
+        parsed = _parse_evidence_ref(raw_ref)
+        key = (parsed["path"], parsed["start_line"], parsed["end_line"])
+        context = context_by_ref.get(key)
+        if context is None:
+            context = _source_context(source, **parsed)
+            context = {"context_id": f"CTX-{len(contexts) + 1:04d}", **context}
+            context_by_ref[key] = context
+            contexts.append(context)
+        context_ids.append(str(context["context_id"]))
+        bindings.append(
+            {
+                "path": parsed["path"],
+                "symbol": parsed["symbol"],
+                "lines": f"L{parsed['start_line']}-L{parsed['end_line']}",
+                "quote": str(context["content"]),
+            }
+        )
+    return list(dict.fromkeys(context_ids)), bindings
 
 
 def _parse_evidence_ref(raw_ref: str) -> dict[str, Any]:
@@ -545,8 +576,12 @@ def _benchmark_semantic_prompt(request: dict[str, Any]) -> str:
             "BENCHMARK SEMANTIC EQUIVALENCE RULES:",
             "Each source_behavior statement contains BENCHMARK_CANDIDATE and "
             "HIDDEN_ORACLE_REQUIREMENT.",
+            "OBSERVED contexts are the only evidence cited by the candidate. REQUIRED "
+            "contexts describe the hidden oracle boundary and must not supply evidence "
+            "missing from OBSERVED contexts.",
             "Return supports only when the candidate fully and correctly expresses the "
-            "oracle requirement and the cited source directly supports that complete meaning.",
+            "oracle requirement and OBSERVED contexts alone directly support that complete "
+            "meaning.",
             "A natural paraphrase may support. A reversed, false, overbroad, or partial "
             "candidate must be contradicts or insufficient even when its source range is real.",
             "Write the final JSON object to semantic_verdicts.json in the declared artifact "

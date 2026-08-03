@@ -86,6 +86,7 @@ _SCENARIO_ARTIFACT_KINDS = frozenset(
 @dataclass(frozen=True)
 class CoverageUniverseItem:
     item_id: str
+    statement: str
     dimension: BreadthDimension
     critical: bool
     applicability: Applicability
@@ -383,6 +384,7 @@ def _parse_universe(
     for artifact_row in rows:
         row = artifact_row.payload
         item_id = _required_string(row, "item_id", "id")
+        statement = _required_string(row, "statement")
         if item_id in seen:
             raise ValueError(f"duplicate coverage universe item_id: {item_id}")
         seen.add(item_id)
@@ -419,6 +421,7 @@ def _parse_universe(
         items.append(
             CoverageUniverseItem(
                 item_id=item_id,
+                statement=statement,
                 dimension=dimension,
                 critical=critical,
                 applicability=applicability,

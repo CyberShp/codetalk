@@ -213,13 +213,82 @@ class CaseTestExecution(ContractModel):
 
 
 class QualityBenchmarkCase(ContractModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        strict=True,
+        json_schema_extra={
+            "allOf": [
+                {
+                    "if": {
+                        "properties": {
+                            "truth_package_version": {
+                                "pattern": r"^(?:[2-9]|[1-9][0-9]+)$"
+                            }
+                        },
+                        "required": ["truth_package_version"],
+                    },
+                    "then": {
+                        "properties": {
+                            "analysis_target": {"type": "string", "minLength": 1}
+                        },
+                        "required": ["analysis_target"],
+                    },
+                }
+            ]
+        },
+    )
     schema_version: Literal[CASE_SCHEMA_VERSION]
     case_id: SafeComponent
     project_id: ProjectId
+    analysis_target: NonEmptyString | None = None
     truth_package_version: TruthPackageVersion
     tier: Tier
     truth_package: TruthPackagePaths
     test_execution: CaseTestExecution
+
+    @model_validator(mode="after")
+    def require_analysis_target_for_truth_v2(self) -> "QualityBenchmarkCase":
+        if int(self.truth_package_version) >= 2 and not self.analysis_target:
+            raise ValueError("truth_package_version >= 2 requires analysis_target")
+        return self
+
+
+class CoverageTruthItem(ContractModel):
+    item_id: NonEmptyString
+    dimension: Literal[
+        "entrypoints", "flows", "branches", "states", "resources", "boundaries",
+        "concurrency", "errors", "protocol", "historical", "mutation",
+    ]
+    critical: bool
+    applicability: Literal["required", "conditional"]
+    statement: NonEmptyString
+    description: NonEmptyString | None = None
+    evidence_refs: list[NonEmptyString] = Field(strict=False, min_length=1)
+    applicability_evidence_refs: list[NonEmptyString] = Field(
+        default_factory=list, strict=False
+    )
+
+    @model_validator(mode="after")
+    def require_conditional_applicability_evidence(self) -> "CoverageTruthItem":
+        if self.applicability == "conditional" and not self.applicability_evidence_refs:
+            raise ValueError(
+                "conditional coverage item requires applicability_evidence_refs"
+            )
+        return self
+
+
+class CoverageUniverseTruth(ContractModel):
+    schema_version: Literal["quality-breadth-universe-v1"] | None = None
+    case_id: NonEmptyString
+    items: list[CoverageTruthItem] = Field(strict=False, min_length=1)
+
+    @model_validator(mode="after")
+    def require_unique_item_ids(self) -> "CoverageUniverseTruth":
+        item_ids = [item.item_id for item in self.items]
+        if len(item_ids) != len(set(item_ids)):
+            raise ValueError("coverage universe item ids must be unique")
+        return self
 
 
 class ResolvedQualityProject(ContractModel):
@@ -323,6 +392,15 @@ def load_quality_case(
             f"tier {case.tier} is not declared for project_id {case.project_id}"
         )
     _validate_truth_package_files(source, case.truth_package)
+    coverage_path = source.resolve().parent / case.truth_package.coverage_universe.path
+    try:
+        coverage = CoverageUniverseTruth.model_validate(
+            _read_json_object(coverage_path, label="coverage universe")
+        )
+    except ValidationError as exc:
+        raise QualityCorpusError(f"invalid coverage universe: {exc}") from exc
+    if coverage.case_id != case.case_id:
+        raise QualityCorpusError("coverage universe case_id does not match the case")
     _validate_depth_truth_package(
         source,
         case=case,
@@ -602,6 +680,13 @@ def quality_case_json_schema() -> dict[str, Any]:
     """Return the Draft 2020-12 case schema for authoring and CI diagnostics."""
 
     schema = QualityBenchmarkCase.model_json_schema(mode="validation")
+    return {"$schema": "https://json-schema.org/draft/2020-12/schema", **schema}
+
+
+def quality_coverage_universe_json_schema() -> dict[str, Any]:
+    """Return the formal hidden Breadth-universe authoring schema."""
+
+    schema = CoverageUniverseTruth.model_json_schema(mode="validation")
     return {"$schema": "https://json-schema.org/draft/2020-12/schema", **schema}
 
 

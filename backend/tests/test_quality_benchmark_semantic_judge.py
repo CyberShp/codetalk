@@ -18,7 +18,8 @@ def _judgment(*, candidate: str = "The reset request joins the pending queue."):
         oracle_statement=(
             "A busy concurrent reset appends the request to pending_resets."
         ),
-        evidence_refs=("source://storage.c#reset-busy:L2-L3",),
+        observed_evidence_refs=("source://storage.c#reset-busy:L2-L2",),
+        required_evidence_refs=("source://storage.c#reset-busy:L2-L3",),
     )
 
 
@@ -89,6 +90,114 @@ def test_behavior_claim_batch_judge_reuses_bound_l2_validator_and_records_identi
     assert len(result.metadata["request_sha256"]) == 64
     assert len(result.metadata["result_sha256"]) == 64
     assert "pending_resets" not in json.dumps(result.metadata)
+
+
+def test_semantic_request_keeps_observed_and_required_evidence_roles_separate(
+    tmp_path: Path,
+) -> None:
+    from app.services.quality_benchmark_semantic_judge import (
+        BehaviorClaimBatchSemanticJudge,
+        SemanticJudgment,
+    )
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "storage.c").write_text(
+        "\n".join(
+            [
+                "line 1",
+                "if (busy) {",
+                "  prepare(req);",
+                "  check(controller);",
+                "  pending_resets.append(req);",
+                "  return EBUSY;",
+                "}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    async def role_asserting_materializer(**kwargs):
+        request = kwargs["request"]
+        claim = request["claims"][0]
+        contexts = {item["context_id"]: item for item in request["contexts"]}
+        observed = [contexts[item] for item in claim["observed_context_ids"]]
+        required = [contexts[item] for item in claim["required_context_ids"]]
+        assert [(item["start_line"], item["end_line"]) for item in observed] == [(2, 4)]
+        assert [(item["start_line"], item["end_line"]) for item in required] == [(2, 6)]
+        assert "pending_resets.append" not in observed[0]["content"]
+        assert "pending_resets.append" in required[0]["content"]
+        return {
+            "status": "completed",
+            "validator": {
+                "provider": "fixture",
+                "runtime_id": "role-aware",
+                "model": "judge-model-v2",
+                "independent": True,
+            },
+            "response_models": ["judge-model-v2"],
+            "claims": [{
+                "claim_id": claim["claim_id"],
+                "binding": claim["binding"],
+                "status": "insufficient",
+                "reason": "The observed range does not contain the claimed append.",
+            }],
+        }
+
+    judgment = SemanticJudgment(
+        judgment_id="accuracy-half-range",
+        axis="accuracy",
+        candidate_statement="A busy reset is appended to pending_resets.",
+        oracle_statement="A busy reset is appended to pending_resets.",
+        observed_evidence_refs=("source://storage.c#L2-L4",),
+        required_evidence_refs=("source://storage.c#L2-L6",),
+    )
+    result = BehaviorClaimBatchSemanticJudge(
+        materializer=role_asserting_materializer
+    ).judge(
+        judgments=(judgment,),
+        source_dir=source,
+        generator_model="generator-model-v1",
+        deadline_monotonic=time.monotonic() + 10,
+        snapshot_label="first_pass",
+    )
+
+    assert result.verdicts == {"accuracy-half-range": "insufficient"}
+
+
+def test_semantic_prompt_forbids_required_truth_from_supplying_candidate_evidence() -> None:
+    from app.services.quality_benchmark_semantic_judge import _benchmark_semantic_prompt
+
+    prompt = _benchmark_semantic_prompt({"claims": [], "contexts": []})
+
+    assert "OBSERVED" in prompt
+    assert "REQUIRED" in prompt
+    assert "must not supply evidence" in prompt
+
+
+def test_behavior_claim_batch_judge_records_when_prefilter_found_no_candidates(
+    tmp_path: Path,
+) -> None:
+    from app.services.quality_benchmark_semantic_judge import (
+        BehaviorClaimBatchSemanticJudge,
+    )
+
+    source = tmp_path / "source"
+    source.mkdir()
+
+    result = BehaviorClaimBatchSemanticJudge().judge(
+        judgments=(),
+        source_dir=source,
+        generator_model="generator-model-v1",
+        deadline_monotonic=time.monotonic() + 10,
+        snapshot_label="first_pass",
+    )
+
+    assert result.verdicts == {}
+    assert result.limitations == ()
+    assert result.metadata["status"] == "no_candidates"
+    assert result.metadata["duration_ms"] == 0.0
 
 
 def test_behavior_claim_batch_judge_fails_closed_for_same_model(tmp_path: Path) -> None:
