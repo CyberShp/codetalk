@@ -1,6 +1,6 @@
 {
   "case_id": "spdk-concurrent-bdev-reset-001",
-  "evidence_catalog_sha256": "0c72c6b8ba90054136a981163db8f8d061a244a4373df6ddb9a522831cb490f8",
+  "evidence_catalog_sha256": "bc8a19f2925b08b9cc97e7c8f30ac7ab6a0b77b6a5ea99779ac29101e5835051",
   "execution_tier": "S",
   "chains": [
     {

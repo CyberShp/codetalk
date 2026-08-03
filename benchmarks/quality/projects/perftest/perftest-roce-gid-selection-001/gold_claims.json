@@ -2,44 +2,140 @@
   "case_id": "perftest-roce-gid-selection-001",
   "claims": [
     {
-      "gold_id": "perftest-gid:auto-trigger",
-      "semantic_key": "perftest.roce.gid_selection.auto_trigger",
+      "gold_id": "perftest-gid:initial-selection-state",
+      "semantic_key": "perftest.roce.gid_selection.initial_state",
       "critical": true,
       "applicability": "applicable",
-      "claim": "The parameter defaults are gid_index=-1, use_gid_user=0 and IPv4 preference; on an Ethernet link check_link changes an unset gid_index to 0 without marking it user-selected, causing set_up_connection to use automatic selection.",
-      "evidence_refs": ["source://src/perftest_parameters.c#L992-L1013", "source://src/perftest_parameters.c#L1113-L1121", "source://src/perftest_parameters.c#L4483-L4493", "source://src/perftest_communication.c#L914-L928"]
+      "claim": "The initial selection state uses gid_index -1, marks the GID as not user-selected, and prefers IPv4.",
+      "evidence_refs": ["source://src/perftest_parameters.h#L111-L111", "source://src/perftest_parameters.c#L1010-L1012", "source://src/perftest_parameters.c#L1119-L1120"]
     },
     {
-      "gold_id": "perftest-gid:priority-score",
-      "semantic_key": "perftest.roce.gid_selection.priority_score",
+      "gold_id": "perftest-gid:ethernet-unset-to-zero",
+      "semantic_key": "perftest.roce.gid_selection.ethernet_unset_to_zero",
       "critical": true,
       "applicability": "applicable",
-      "claim": "Automatic selection scores requested address-family match by 100, non-link-local scope by 10, and RoCE version by at most 9; the declared weights make address family dominate scope and scope dominate RoCE version, with v2 rated above v1.",
-      "evidence_refs": ["source://src/perftest_communication.c#L613-L640", "source://src/perftest_communication.c#L644-L703"]
+      "claim": "On an Ethernet link, check_link changes an unset gid_index from -1 to 0.",
+      "evidence_refs": ["source://src/perftest_parameters.c#L4491-L4493"]
     },
     {
-      "gold_id": "perftest-gid:skip-and-select",
-      "semantic_key": "perftest.roce.gid_selection.skip_invalid_choose_max",
+      "gold_id": "perftest-gid:automatic-setup-path",
+      "semantic_key": "perftest.roce.gid_selection.automatic_setup_path",
       "critical": true,
       "applicability": "applicable",
-      "claim": "A GID query failure or all-zero GID scores -1 and is skipped; get_best_gid_index scans the table and retains the first index with a strictly greater score, returning -1 when no valid entry exists.",
-      "evidence_refs": ["source://src/perftest_communication.c#L663-L675", "source://src/perftest_communication.c#L705-L723"]
+      "claim": "When gid_index is set but use_gid_user is false, set_up_connection replaces it with the index returned by automatic selection.",
+      "evidence_refs": ["source://src/perftest_communication.c#L914-L927"]
     },
     {
-      "gold_id": "perftest-gid:explicit-bypass",
-      "semantic_key": "perftest.roce.gid_selection.explicit_index_bypass",
+      "gold_id": "perftest-gid:address-family-score",
+      "semantic_key": "perftest.roce.gid_selection.address_family_score",
       "critical": true,
       "applicability": "applicable",
-      "claim": "Supplying -x/--gid-index sets use_gid_user=1, so set_up_connection queries that exact index and bypasses get_best_gid_index; --ipv6 changes only the automatic family preference.",
-      "evidence_refs": ["source://src/perftest_parameters.c#L3114-L3115", "source://src/perftest_parameters.c#L3212-L3213", "source://src/perftest_parameters.c#L3345-L3347", "source://src/perftest_parameters.c#L4260-L4266", "source://src/perftest_communication.c#L914-L928"]
+      "claim": "Automatic selection adds 100 points when a GID's address family matches the requested family preference.",
+      "evidence_refs": ["source://src/perftest_communication.c#L644-L650", "source://src/perftest_communication.c#L677-L680"]
     },
     {
-      "gold_id": "perftest-gid:error-cleanup",
-      "semantic_key": "perftest.roce.gid_selection.failure_cleanup",
+      "gold_id": "perftest-gid:global-scope-score",
+      "semantic_key": "perftest.roce.gid_selection.global_scope_score",
       "critical": true,
       "applicability": "applicable",
-      "claim": "Failure to select or query a GID makes set_up_connection return -1; write_bw reports setup failure and enters destroy/free cleanup, while a selected index is later installed as the GRH sgid_index for global addressing.",
-      "evidence_refs": ["source://src/perftest_communication.c#L914-L945", "source://src/write_bw.c#L143-L191", "source://src/write_bw.c#L611-L639", "source://src/perftest_resources.c#L3472-L3490"]
+      "claim": "Automatic selection adds 10 points when a GID is not link-local.",
+      "evidence_refs": ["source://src/perftest_communication.c#L644-L650", "source://src/perftest_communication.c#L682-L683"]
+    },
+    {
+      "gold_id": "perftest-gid:roce-version-score",
+      "semantic_key": "perftest.roce.gid_selection.roce_version_score",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "Automatic selection rates RoCE v2 above v1 and adds a positive RoCE rate capped at 9 points.",
+      "evidence_refs": ["source://src/perftest_communication.c#L620-L640", "source://src/perftest_communication.c#L644-L650", "source://src/perftest_communication.c#L685-L699"]
+    },
+    {
+      "gold_id": "perftest-gid:query-failure-skip",
+      "semantic_key": "perftest.roce.gid_selection.query_failure_skip",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "A GID-table entry whose ibv_query_gid call fails receives score -1.",
+      "evidence_refs": ["source://src/perftest_communication.c#L663-L672"]
+    },
+    {
+      "gold_id": "perftest-gid:zero-gid-skip",
+      "semantic_key": "perftest.roce.gid_selection.zero_gid_skip",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "An all-zero GID-table entry receives score -1.",
+      "evidence_refs": ["source://src/perftest_communication.c#L663-L675"]
+    },
+    {
+      "gold_id": "perftest-gid:first-strict-max-wins",
+      "semantic_key": "perftest.roce.gid_selection.first_strict_max_wins",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "Automatic selection updates the winner only for a strictly greater score, so the first index retains a tied maximum score.",
+      "evidence_refs": ["source://src/perftest_communication.c#L705-L720"]
+    },
+    {
+      "gold_id": "perftest-gid:no-valid-index",
+      "semantic_key": "perftest.roce.gid_selection.no_valid_index",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "Automatic selection returns -1 when no table entry has a score greater than -1.",
+      "evidence_refs": ["source://src/perftest_communication.c#L705-L722"]
+    },
+    {
+      "gold_id": "perftest-gid:explicit-index-path",
+      "semantic_key": "perftest.roce.gid_selection.explicit_index_path",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "Supplying -x/--gid-index marks the index as user-selected, causing set_up_connection to query that exact index instead of running automatic selection.",
+      "evidence_refs": ["source://src/perftest_parameters.c#L3114-L3114", "source://src/perftest_parameters.c#L3345-L3346", "source://src/perftest_communication.c#L914-L927"]
+    },
+    {
+      "gold_id": "perftest-gid:ipv6-auto-preference",
+      "semantic_key": "perftest.roce.gid_selection.ipv6_auto_preference",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "The --ipv6 option changes the address-family preference consumed by automatic GID scoring without selecting an explicit GID index.",
+      "evidence_refs": ["source://src/perftest_parameters.c#L3212-L3212", "source://src/perftest_parameters.c#L4260-L4262", "source://src/perftest_communication.c#L679-L680", "source://src/perftest_communication.c#L713-L715"]
+    },
+    {
+      "gold_id": "perftest-gid:explicit-query-failure",
+      "semantic_key": "perftest.roce.gid_selection.explicit_query_failure",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "set_up_connection returns -1 when querying a user-selected explicit GID index fails.",
+      "evidence_refs": ["source://src/perftest_communication.c#L918-L920"]
+    },
+    {
+      "gold_id": "perftest-gid:automatic-no-valid-index",
+      "semantic_key": "perftest.roce.gid_selection.automatic_no_valid_index",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "set_up_connection returns -1 when automatic GID selection finds no valid index.",
+      "evidence_refs": ["source://src/perftest_communication.c#L921-L925"]
+    },
+    {
+      "gold_id": "perftest-gid:automatic-query-failure",
+      "semantic_key": "perftest.roce.gid_selection.automatic_selected_query_failure",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "set_up_connection returns -1 when querying the automatically selected GID index fails.",
+      "evidence_refs": ["source://src/perftest_communication.c#L921-L927"]
+    },
+    {
+      "gold_id": "perftest-gid:write-bw-failure-cleanup",
+      "semantic_key": "perftest.roce.gid_selection.write_bw_failure_cleanup",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "write_bw reports a connection-setup failure and transfers control to its destroy and free cleanup path.",
+      "evidence_refs": ["source://src/write_bw.c#L187-L190", "source://src/write_bw.c#L611-L638"]
+    },
+    {
+      "gold_id": "perftest-gid:selected-index-installed",
+      "semantic_key": "perftest.roce.gid_selection.selected_index_installed",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "For global addressing, the selected port's GID index is installed as the GRH sgid_index.",
+      "evidence_refs": ["source://src/perftest_resources.c#L3476-L3485"]
     }
   ]
 }

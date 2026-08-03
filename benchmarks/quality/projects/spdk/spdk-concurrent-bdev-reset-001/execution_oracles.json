@@ -39,6 +39,13 @@
         "obligation_id": "trigger"
       },
       {
+        "evidence_ref": "source://test/unit/lib/bdev/nvme/bdev_nvme.c/bdev_nvme_ut.c#L4430-L4452:node-trigger-multipath-concurrent",
+        "evidence_group": "multipath-concurrent-reset",
+        "chain_id": "spdk-reset-chain",
+        "category": "node",
+        "obligation_id": "trigger"
+      },
+      {
         "evidence_ref": "source://test/unit/lib/bdev/nvme/bdev_nvme.c/bdev_nvme_ut.c#L2024-L2025:node-first-reset-active",
         "chain_id": "spdk-reset-chain",
         "category": "node",

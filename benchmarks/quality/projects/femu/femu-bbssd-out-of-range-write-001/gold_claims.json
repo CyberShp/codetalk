@@ -2,27 +2,66 @@
   "case_id": "femu-bbssd-out-of-range-write-001",
   "claims": [
     {
-      "gold_id": "femu-bbssd:range-rejection",
-      "semantic_key": "femu.bbssd.write.out_of_range.status",
+      "gold_id": "femu-bbssd:range-rejection-error-page",
+      "semantic_key": "femu.bbssd.write.out_of_range.error_page_record",
       "critical": true,
       "applicability": "applicable",
-      "claim": "A BBSSD write whose exclusive end LBA exceeds namespace size is rejected with NVME_LBA_RANGE | NVME_DNR after an error-page record is created.",
+      "claim": "When the exclusive end LBA exceeds namespace size, femu_nvme_rw_check_req creates an NVME_LBA_RANGE error-page record.",
       "evidence_refs": [
-        "source://hw/femu/bbssd/bb.c#L85-L99",
+        "source://hw/femu/nvme-util.c#L204-L213"
+      ]
+    },
+    {
+      "gold_id": "femu-bbssd:range-rejection-status",
+      "semantic_key": "femu.bbssd.write.out_of_range.status_propagation",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "For a BBSSD write whose exclusive end LBA exceeds namespace size, NVME_LBA_RANGE | NVME_DNR is returned through nvme_rw and the BBSSD I/O-command dispatch.",
+      "evidence_refs": [
+        "source://hw/femu/bbssd/bb.c#L85-L98",
         "source://hw/femu/nvme-io.c#L443-L466",
         "source://hw/femu/nvme-util.c#L204-L214"
       ]
     },
     {
-      "gold_id": "femu-bbssd:failed-request-completion",
-      "semantic_key": "femu.bbssd.write.failed_request.completion",
+      "gold_id": "femu-bbssd:failed-request-to-ftl",
+      "semantic_key": "femu.bbssd.write.failed_request.status_to_ftl_ring",
       "critical": true,
       "applicability": "applicable",
-      "claim": "The failed request keeps its error status, bypasses FTL opcode handlers, traverses the completion rings, posts a CQE, and returns to the submission-queue request list.",
+      "claim": "The I/O loop stores the failed command status in the request and, in non-inline mode, enqueues that request to its FTL ring.",
       "evidence_refs": [
-        "source://hw/femu/nvme-io.c#L159-L202",
-        "source://hw/femu/bbssd/ftl.c#L2773-L2819",
-        "source://hw/femu/nvme-io.c#L267-L293"
+        "source://hw/femu/nvme-io.c#L159-L169",
+        "source://hw/femu/nvme-io.c#L189-L202"
+      ]
+    },
+    {
+      "gold_id": "femu-bbssd:failed-request-skip-handler",
+      "semantic_key": "femu.bbssd.write.failed_request.skip_opcode_handler",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "The FTL loop executes an opcode handler only when req->status is NVME_SUCCESS, so a request carrying an error status skips those handlers.",
+      "evidence_refs": [
+        "source://hw/femu/bbssd/ftl.c#L2773-L2812"
+      ]
+    },
+    {
+      "gold_id": "femu-bbssd:failed-request-to-poller",
+      "semantic_key": "femu.bbssd.write.failed_request.to_poller_ring",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "After FTL processing, the request is enqueued to the corresponding poller ring.",
+      "evidence_refs": [
+        "source://hw/femu/bbssd/ftl.c#L2814-L2819"
+      ]
+    },
+    {
+      "gold_id": "femu-bbssd:failed-request-cqe-recycle",
+      "semantic_key": "femu.bbssd.write.failed_request.cqe_and_sq_recycle",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "For an active completion queue, the BBSSD poller path posts the request's CQE and returns the request to its submission queue's free list.",
+      "evidence_refs": [
+        "source://hw/femu/nvme-io.c#L263-L292"
       ]
     }
   ]

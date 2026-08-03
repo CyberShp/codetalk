@@ -24,6 +24,7 @@ from app.services.quality_benchmark_workbench import (
     BenchmarkWorkbenchQualityBlocked,
     execute_quality_benchmark_workbench,
 )
+from app.services.quality_evaluation_contract import EVALUATOR_VERSION
 
 GENERATOR_SCHEMA_VERSION = "quality-benchmark-generator-v1"
 
@@ -372,7 +373,7 @@ def _build_and_publish_success(
         {
             "model": model,
             "codetalk": codetalk_revision,
-            "evaluator": "quality-evaluation-v2",
+            "evaluator": EVALUATOR_VERSION,
         },
     )
     _write_json(

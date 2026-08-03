@@ -105,6 +105,52 @@ CONFIRMED_COMPOUND_BREADTH_ITEM_IDS = {
     "ucx-roce:errors",
 }
 
+CONFIRMED_COMPOUND_GOLD_IDS = {
+    "bmcweb-gold-003",
+    "bmcweb-gold-005b",
+    "femu-bbssd:range-rejection",
+    "femu-bbssd:failed-request-completion",
+    "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:lru-skips-pinned",
+    "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:unpin-recovers",
+    "mooncake-store-put-commit-readiness-recovery-001:put-start-processing",
+    "mooncake-store-put-commit-readiness-recovery-001:processing-not-readable",
+    "mooncake-store-put-commit-readiness-recovery-001:wrong-client-rejected",
+    "mooncake-store-put-commit-readiness-recovery-001:owner-commit-recovers-readiness",
+    "mooncake-store-put-commit-readiness-recovery-001:remove-releases-object-lifecycle",
+    "nvme-csd:sync-dispatch",
+    "nvme-csd:passthru-fields",
+    "nvme-csd:passthru-cdw11-cdw12",
+    "open-cas:default-flush",
+    "open-cas:default-oracle",
+    "spdk-reset:concurrent-queue",
+    "spdk-reset:pending-completion",
+    "spdk-reset:unit-oracle",
+    "nvme-gold-001",
+    "nvme-gold-002",
+    "nvme-gold-003",
+    "nvme-gold-005",
+    "nvme-gold-006",
+    "nvme-gold-007",
+    "perftest-gid:auto-trigger",
+    "perftest-gid:priority-score",
+    "perftest-gid:skip-and-select",
+    "perftest-gid:explicit-bypass",
+    "perftest-gid:error-cleanup",
+    "perftest-gid:selection-query-failure",
+    "rdma-mw:capability-shape",
+    "rdma-mw:restricted-bind",
+    "rdma-mw:unsupported-is-skip",
+    "rdma-mw:lifecycle-cleanup",
+    "rdma-mw:pd-qp-retain-mw",
+    "state-gold-004",
+    "state-gold-006",
+    "state-gold-007",
+    "ucx-roce:modes",
+    "ucx-roce:legacy-override",
+    "ucx-roce:route-failure",
+    "ucx-roce:local-subnet-boundary",
+}
+
 EXPECTED_ATOMIC_BREADTH_ITEM_COUNTS = {
     "bmcweb": 12,
     "femu": 13,
@@ -118,6 +164,21 @@ EXPECTED_ATOMIC_BREADTH_ITEM_COUNTS = {
     "rdma-core": 14,
     "spdk": 15,
     "ucx": 30,
+}
+
+EXPECTED_ATOMIC_GOLD_CLAIM_COUNTS = {
+    "bmcweb": 12,
+    "femu": 6,
+    "lmcache": 9,
+    "mooncake": 15,
+    "nvme-csd": 8,
+    "open-cas-linux": 8,
+    "perftest": 17,
+    "phosphor-nvme": 16,
+    "phosphor-state-manager": 12,
+    "rdma-core": 14,
+    "spdk": 7,
+    "ucx": 14,
 }
 
 SOURCE_ROOT = Path("/Volumes/Media/codetalk-quality-corpus/sources")
@@ -144,13 +205,13 @@ def test_all_twelve_pinned_projects_have_a_hash_verified_tier_s_case() -> None:
     assert len(cases) == len(EXPECTED_PROJECT_IDS)
 
 
-def test_all_registered_cases_expose_atomic_truth_at_version_four() -> None:
+def test_all_registered_cases_expose_atomic_truth_at_version_five() -> None:
     registry = load_quality_registry(REGISTRY_PATH)
     case_paths = sorted(PROJECTS_ROOT.glob("*/*/case.json"))
     cases = [load_quality_case(path, registry=registry) for path in case_paths]
 
-    assert registry.truth_package_version == "4"
-    assert all(case.truth_package_version == "4" for case in cases)
+    assert registry.truth_package_version == "5"
+    assert all(case.truth_package_version == "5" for case in cases)
     assert all(str(case.analysis_target).strip() for case in cases)
     item_ids = set()
     item_count = 0
@@ -168,6 +229,38 @@ def test_all_registered_cases_expose_atomic_truth_at_version_four() -> None:
     assert item_count == sum(EXPECTED_ATOMIC_BREADTH_ITEM_COUNTS.values())
     assert len(item_ids) == item_count
     assert item_ids.isdisjoint(CONFIRMED_COMPOUND_BREADTH_ITEM_IDS)
+
+
+def test_bmc_gold_truth_splits_transition_and_error_test_obligations() -> None:
+    case_path = next(PROJECTS_ROOT.glob("bmcweb/*/case.json"))
+    payload = json.loads((case_path.parent / "gold_claims.json").read_text())
+    claims = payload["claims"]
+    claim_ids = {claim["gold_id"] for claim in claims}
+
+    assert len(claims) == 12
+    assert {
+        "bmcweb-gold-005a",
+        "bmcweb-gold-005c",
+        "bmcweb-gold-006a",
+        "bmcweb-gold-006b",
+    }.issubset(claim_ids)
+    assert {"bmcweb-gold-005", "bmcweb-gold-006"}.isdisjoint(claim_ids)
+
+
+def test_all_gold_truth_retires_confirmed_compound_obligations() -> None:
+    gold_ids: set[str] = set()
+    for path in sorted(PROJECTS_ROOT.glob("*/*/gold_claims.json")):
+        claims = json.loads(path.read_text())["claims"]
+        project_id = path.parents[1].name
+        assert len(claims) == EXPECTED_ATOMIC_GOLD_CLAIM_COUNTS[project_id]
+        for claim in claims:
+            gold_id = claim["gold_id"]
+            assert gold_id not in gold_ids
+            assert str(claim.get("claim") or claim.get("statement") or "").strip()
+            gold_ids.add(gold_id)
+
+    assert gold_ids.isdisjoint(CONFIRMED_COMPOUND_GOLD_IDS)
+    assert len(gold_ids) == sum(EXPECTED_ATOMIC_GOLD_CLAIM_COUNTS.values())
 
 
 @pytest.mark.parametrize("project_id", sorted(EXPECTED_PROJECT_IDS))
@@ -301,25 +394,19 @@ def test_phosphor_nvme_power_not_good_truth_preserves_inventory_write_gate() -> 
         / "phosphor-nvme-present-power-not-good-001"
     )
     truth = json.loads((case_dir / "gold_claims.json").read_text(encoding="utf-8"))
-    claim = next(
-        item
-        for item in truth["claims"]
-        if item["semantic_key"]
-        == "nvme.present.power_not_good.requests.fault_on.locate_off.and.inventory_present"
-    )
+    claims = {item["gold_id"]: item for item in truth["claims"]}
 
-    assert claim["claim"] == (
-        "When the present signal reports a drive but power-good is false, "
-        "Nvme::read requests the fault LED on, requests the locate LED off, and "
-        "calls setNvmeInventoryProperties with Present set to true and default "
-        "NVMe data. That helper writes the inventory Present property and asset "
-        "fields only when the cached serial number differs from the sampled "
-        "serial number; Nvme::read logs and latches the power error only if it "
-        "was not already latched."
-    )
-    assert claim["evidence_refs"] == [
-        "source://nvme_manager.cpp#L66-L92",
-        "source://nvme_manager.cpp#L697-L722",
+    assert claims["nvme-gold-002a"]["evidence_refs"] == [
+        "source://nvme_manager.cpp#L679-L708"
+    ]
+    assert claims["nvme-gold-002b"]["evidence_refs"] == [
+        "source://nvme_manager.cpp#L679-L711"
+    ]
+    assert claims["nvme-gold-002c"]["evidence_refs"] == [
+        "source://nvme_manager.cpp#L679-L722"
+    ]
+    assert claims["nvme-gold-007a"]["evidence_refs"] == [
+        "source://nvme_manager.cpp#L71-L90"
     ]
 
 
@@ -434,8 +521,12 @@ class _BmcUnexpectedErrorSemanticAdapter:
 class _SelectiveBatchSemanticJudge:
     """Deterministic batch double that rejects every explicitly reversed observation."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        equivalent_accuracy: set[tuple[str, str]] | None = None,
+    ) -> None:
         self.calls = []
+        self.equivalent_accuracy = equivalent_accuracy or set()
 
     def judge(self, *, judgments, snapshot_label, **kwargs):
         from app.services.quality_benchmark_semantic_judge import SemanticJudgeResult
@@ -458,7 +549,13 @@ class _SelectiveBatchSemanticJudge:
                     else "insufficient"
                 )
             else:
-                verdict = "supports"
+                verdict = (
+                    "supports"
+                    if candidate.strip() == oracle.strip()
+                    or (candidate.strip(), oracle.strip())
+                    in self.equivalent_accuracy
+                    else "insufficient"
+                )
             verdicts[judgment.judgment_id] = verdict
         return SemanticJudgeResult(
             verdicts=verdicts,
@@ -609,8 +706,8 @@ def _write_dynamic_candidate(
         if category not in {"node", "edge", "check"}:
             continue
         grouped_bindings.setdefault(
-            (binding.chain_id, category, binding.obligation_id), []
-        ).append(binding.evidence_ref)
+            (binding.chain_id, category, binding.obligation_id), {}
+        ).setdefault(binding.evidence_group, []).append(binding.evidence_ref)
     depth_chains = []
     for hidden_chain in truth["chains"]:
         public_chain = {
@@ -630,6 +727,14 @@ def _write_dynamic_candidate(
                 statement = str(obligation["statement"])
                 if reverse_all:
                     statement = f"The following statement is false: {statement}"
+                evidence_groups = grouped_bindings[
+                    (hidden_chain["chain_id"], category, obligation_id)
+                ]
+                selected_group = evidence_groups[
+                    "default"
+                    if "default" in evidence_groups
+                    else sorted(evidence_groups)[0]
+                ]
                 public_chain[field].append(
                     {
                         id_field: f"public-{category}-{index}",
@@ -637,9 +742,7 @@ def _write_dynamic_candidate(
                         "narrative": statement,
                         "evidence_refs": [
                             _public_ref(raw_ref)
-                            for raw_ref in grouped_bindings[
-                                (hidden_chain["chain_id"], category, obligation_id)
-                            ]
+                            for raw_ref in selected_group
                         ],
                     }
                 )
@@ -665,7 +768,21 @@ def _dynamic_snapshot(
         reverse_all=reverse_all,
         claim_override=claim_override,
     )
-    judge = _SelectiveBatchSemanticJudge()
+    equivalent_accuracy: set[tuple[str, str]] = set()
+    if claim_override is not None:
+        gold = json.loads((case_path.parent / "gold_claims.json").read_text())
+        hidden = next(
+            item
+            for item in gold["claims"]
+            if item["semantic_key"] == claim_override[0]
+        )
+        hidden_statement = str(
+            hidden.get("claim") or hidden.get("statement") or ""
+        )
+        equivalent_accuracy.add(
+            (claim_override[1].lower().strip(), hidden_statement.lower().strip())
+        )
+    judge = _SelectiveBatchSemanticJudge(equivalent_accuracy)
     audits = []
     snapshot = evaluate_artifact_snapshot(
         case_path=case_path,
@@ -686,9 +803,12 @@ def _dynamic_snapshot(
         "breadth",
         "depth",
     }
+    assert judge.calls[1]["judgments"] == judge.calls[0]["judgments"]
     assert judge.calls[1]["mode"] == "deep"
     assert audits[0]["status"] == "completed"
+    assert audits[0]["decision_role"] == "diagnostic_screening"
     assert audits[1]["status"] == "completed"
+    assert audits[1]["decision_role"] == "authoritative_adjudication"
     return snapshot
 
 
@@ -719,15 +839,15 @@ def test_real_corpus_all_reversed_candidate_fails_closed_on_every_axis(
     [
         (
             "spdk",
-            "spdk.bdev_nvme.concurrent_reset.pending_queue",
-            "When the controller is busy resetting, the app thread queues the concurrent "
-            "reset I/O in pending_resets and returns from the handler.",
+            "spdk.bdev_nvme.concurrent_reset.pending_queue_append",
+            "When controller reset reports busy, the app-thread handler adds the "
+            "concurrent reset I/O to pending_resets.",
         ),
         (
             "spdk",
-            "spdk.bdev_nvme.concurrent_reset.pending_completion",
-            "Once controller reset finishes, each pending reset I/O is dequeued and resumed "
-            "according to that controller-reset result.",
+            "spdk.bdev_nvme.concurrent_reset.pending_completion_resume_rc",
+            "Each removed pending reset continues with the return code derived from "
+            "the controller-reset result.",
         ),
         (
             "lmcache",
@@ -737,15 +857,14 @@ def test_real_corpus_all_reversed_candidate_fails_closed_on_every_axis(
         ),
         (
             "mooncake",
-            "mooncake.store.put_end.complete_replica_readiness",
-            "The original PutStart client can finish PutEnd, transition its replica to "
-            "COMPLETE, and then observe that complete replica through GetReplicaList.",
+            "mooncake.store.put_end.marks_matching_replicas_complete",
+            "PutEnd marks every replica of the requested replica type as complete.",
         ),
         (
             "phosphor-nvme",
-            "nvme.inventory.present.write.is.serial_change_gated",
-            "setNvmeInventoryProperties updates Present and asset data and refreshes the "
-            "cached serial only when the sampled serial has changed.",
+            "nvme.inventory.serial_change.publishes.present.and_asset_group",
+            "When the sampled serial differs from the cached serial, the inventory "
+            "helper publishes Present together with the grouped asset fields.",
         ),
     ],
 )

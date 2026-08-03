@@ -18,6 +18,7 @@ from app.services.quality_benchmark_corpus import (
     QualityBaselineCorpusIdentity,
 )
 from app.services.quality_evaluation_contract import (
+    EVALUATOR_VERSION,
     MetricName,
     QualityEvaluationReport,
     validate_quality_evaluation,
@@ -31,7 +32,6 @@ MANIFEST_SCHEMA_VERSION = "quality-evaluation-manifest-v1"
 SUMMARY_SCHEMA_VERSION = "quality-baseline-summary-v2"
 POLICY_SCHEMA_VERSION = "quality-threshold-policy-v2"
 BUNDLE_SCHEMA_VERSION = "quality-baseline-bundle-v2"
-EVALUATOR_VERSION = "quality-evaluation-v2"
 AXES = ("accuracy", "breadth", "depth")
 REQUIRED_DOMAINS = frozenset({"storage", "bmc", "kv-cache", "rdma-roce"})
 EVALUATOR_SOURCE_PATHS = (

@@ -85,7 +85,7 @@ def test_behavior_claim_batch_judge_reuses_bound_l2_validator_and_records_identi
     assert seen["generator_identity"] == "agent-runtime:codex:generator-model-v1"
     assert 0 < float(seen["timeout_seconds"]) <= 10
     assert result.metadata["snapshot"] == "first_pass"
-    assert result.metadata["judge_version"] == "quality-semantic-judge-v1"
+    assert result.metadata["judge_version"] == "quality-semantic-judge-v3"
     assert result.metadata["judge"]["model"] == "judge-model-v2"
     assert len(result.metadata["request_sha256"]) == 64
     assert len(result.metadata["result_sha256"]) == 64
@@ -174,6 +174,17 @@ def test_semantic_prompt_forbids_required_truth_from_supplying_candidate_evidenc
     assert "OBSERVED" in prompt
     assert "REQUIRED" in prompt
     assert "must not supply evidence" in prompt
+
+
+def test_semantic_prompt_requires_material_clause_by_clause_entailment() -> None:
+    from app.services.quality_benchmark_semantic_judge import _benchmark_semantic_prompt
+
+    prompt = _benchmark_semantic_prompt({"claims": [], "contexts": []})
+
+    assert "condition, ordering, quantifier, actor, and lifecycle boundary" in prompt
+    assert "each material clause" in prompt
+    assert "Any omitted or unsupported material clause" in prompt
+    assert "REQUIRED contexts to fill" in prompt
 
 
 def test_behavior_claim_batch_judge_records_when_prefilter_found_no_candidates(

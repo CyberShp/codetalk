@@ -2,34 +2,121 @@
   "case_id": "phosphor-nvme-present-power-not-good-001",
   "claims": [
     {
-      "gold_id": "nvme-gold-001",
-      "semantic_key": "nvme.poll.reads.present.and.power.gpios.before.present.branch",
+      "gold_id": "nvme-gold-001a",
+      "semantic_key": "nvme.poll.samples.present.and.power.gpios.with_defaults",
       "critical": true,
       "applicability": "applicable",
-      "claim": "For each configured NVMe drive, Nvme::read derives the present and power-good GPIO paths, reads each configured pin (or uses the built-in present and power-good defaults), computes isPwrGood, and only then branches on whether the drive is present.",
-      "evidence_refs": ["source://nvme_manager.cpp#L662-L679"],
-      "applicability_evidence_refs": ["source://nvme_manager.cpp#L656-L695"]
-    },
-    {
-      "gold_id": "nvme-gold-002",
-      "semantic_key": "nvme.present.power_not_good.requests.fault_on.locate_off.and.inventory_present",
-      "critical": true,
-      "applicability": "applicable",
-      "claim": "When the present signal reports a drive but power-good is false, Nvme::read requests the fault LED on, requests the locate LED off, and calls setNvmeInventoryProperties with Present set to true and default NVMe data. That helper writes the inventory Present property and asset fields only when the cached serial number differs from the sampled serial number; Nvme::read logs and latches the power error only if it was not already latched.",
+      "claim": "For each configured drive, Nvme::read derives the present and power-good GPIO paths and samples each configured pin, using IS_PRESENT or POWERGD when the corresponding pin is not configured.",
       "evidence_refs": [
-        "source://nvme_manager.cpp#L66-L92",
-        "source://nvme_manager.cpp#L697-L722"
+        "source://nvme_manager.cpp#L662-L676"
       ],
-      "applicability_evidence_refs": ["source://nvme_manager.cpp#L697-L722"]
+      "applicability_evidence_refs": [
+        "source://nvme_manager.cpp#L662-L676"
+      ]
     },
     {
-      "gold_id": "nvme-gold-003",
-      "semantic_key": "nvme.power_not_good.skips.smbus.and.forces.failure.sample",
+      "gold_id": "nvme-gold-001b",
+      "semantic_key": "nvme.poll.computes.power_good_from_sample",
       "critical": true,
       "applicability": "applicable",
-      "claim": "When power-good is false, readNvmeData skips getNVMeInfobyBusID, marks the sampled drive absent, assigns the temperature-sensor failure value, records failure, and advances the SMBus error count to the retry limit so the retry path is skipped.",
-      "evidence_refs": ["source://nvme_manager.cpp#L568-L589"],
-      "applicability_evidence_refs": ["source://nvme_manager.cpp#L568-L589"]
+      "claim": "Nvme::read computes isPwrGood by comparing the sampled power-good value with POWERGD.",
+      "evidence_refs": [
+        "source://nvme_manager.cpp#L675-L677"
+      ],
+      "applicability_evidence_refs": [
+        "source://nvme_manager.cpp#L675-L677"
+      ]
+    },
+    {
+      "gold_id": "nvme-gold-001c",
+      "semantic_key": "nvme.poll.branches_on_present_after_power_good_computation",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "Nvme::read computes isPwrGood before it branches on whether the sampled present value equals IS_PRESENT.",
+      "evidence_refs": [
+        "source://nvme_manager.cpp#L675-L679"
+      ],
+      "applicability_evidence_refs": [
+        "source://nvme_manager.cpp#L675-L679"
+      ]
+    },
+    {
+      "gold_id": "nvme-gold-002a",
+      "semantic_key": "nvme.present.power_not_good.requests.fault_on.and.locate_off",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "When the drive is present but power-good is false, Nvme::read requests the fault LED on and the locate LED off.",
+      "evidence_refs": [
+        "source://nvme_manager.cpp#L679-L708"
+      ],
+      "applicability_evidence_refs": [
+        "source://nvme_manager.cpp#L679-L708"
+      ]
+    },
+    {
+      "gold_id": "nvme-gold-002b",
+      "semantic_key": "nvme.present.power_not_good.passes.default_data.with_present_true",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "When the drive is present but power-good is false, Nvme::read value-initializes NVMeData and passes it to setNvmeInventoryProperties with Present set to true.",
+      "evidence_refs": [
+        "source://nvme_manager.cpp#L679-L711"
+      ],
+      "applicability_evidence_refs": [
+        "source://nvme_manager.cpp#L679-L711"
+      ]
+    },
+    {
+      "gold_id": "nvme-gold-002c",
+      "semantic_key": "nvme.present.power_not_good.logs.once.and_latches_error",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "When the drive is present but power-good is false, Nvme::read emits the power-error logs and sets the per-drive error latch only if that latch is not already true.",
+      "evidence_refs": [
+        "source://nvme_manager.cpp#L679-L722"
+      ],
+      "applicability_evidence_refs": [
+        "source://nvme_manager.cpp#L679-L722"
+      ]
+    },
+    {
+      "gold_id": "nvme-gold-003a",
+      "semantic_key": "nvme.power_not_good.skips.smbus_read",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "readNvmeData calls getNVMeInfobyBusID only when isPwrGood is true, so the false branch skips the SMBus read.",
+      "evidence_refs": [
+        "source://nvme_manager.cpp#L568-L585"
+      ],
+      "applicability_evidence_refs": [
+        "source://nvme_manager.cpp#L568-L585"
+      ]
+    },
+    {
+      "gold_id": "nvme-gold-003b",
+      "semantic_key": "nvme.power_not_good.samples.absent.temperature_failure.and_false",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "When isPwrGood is false, readNvmeData marks the sampled drive absent, assigns TEMPERATURE_SENSOR_FAILURE to the sampled sensor value, and sets success to false.",
+      "evidence_refs": [
+        "source://nvme_manager.cpp#L581-L585"
+      ],
+      "applicability_evidence_refs": [
+        "source://nvme_manager.cpp#L581-L585"
+      ]
+    },
+    {
+      "gold_id": "nvme-gold-003c",
+      "semantic_key": "nvme.power_not_good.forces.retry_limit.and_skips_retry_return",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "When isPwrGood is false, readNvmeData sets the SMBus error count to maxSmbusErrorRetry; because the later retry condition requires a lower count, the retry increment, log, and early return are skipped.",
+      "evidence_refs": [
+        "source://nvme_manager.cpp#L586-L606"
+      ],
+      "applicability_evidence_refs": [
+        "source://nvme_manager.cpp#L586-L606"
+      ]
     },
     {
       "gold_id": "nvme-gold-004",
@@ -37,38 +124,91 @@
       "critical": true,
       "applicability": "applicable",
       "claim": "After attempting to read the drive, Nvme::read sets the sensor availability to the current isPwrGood value whenever the drive remains in the NVMe object map.",
-      "evidence_refs": ["source://nvme_manager.cpp#L729-L735"],
-      "applicability_evidence_refs": ["source://nvme_manager.cpp#L729-L735"]
+      "evidence_refs": [
+        "source://nvme_manager.cpp#L729-L735"
+      ],
+      "applicability_evidence_refs": [
+        "source://nvme_manager.cpp#L729-L735"
+      ]
     },
     {
-      "gold_id": "nvme-gold-005",
-      "semantic_key": "nvme.power_recovery.clears.error_latch.and.reenters.read_path",
+      "gold_id": "nvme-gold-005a",
+      "semantic_key": "nvme.power_recovery.clears.error_latch",
       "critical": false,
       "applicability": "applicable",
-      "claim": "When power-good is true again, Nvme::read clears the drive's power-error latch and calls readNvmeData with isPwrGood true, which re-enables the getNVMeInfobyBusID SMBus read path.",
+      "claim": "When isPwrGood is true, Nvme::read clears the drive's power-error latch.",
+      "evidence_refs": [
+        "source://nvme_manager.cpp#L697-L727"
+      ],
+      "applicability_evidence_refs": [
+        "source://nvme_manager.cpp#L697-L727"
+      ]
+    },
+    {
+      "gold_id": "nvme-gold-005b",
+      "semantic_key": "nvme.power_recovery.reenters.smbus_read_path",
+      "critical": false,
+      "applicability": "applicable",
+      "claim": "Nvme::read passes the true isPwrGood value to readNvmeData, whose true branch calls getNVMeInfobyBusID.",
       "evidence_refs": [
         "source://nvme_manager.cpp#L576-L580",
-        "source://nvme_manager.cpp#L724-L732"
+        "source://nvme_manager.cpp#L697-L732"
       ],
-      "applicability_evidence_refs": ["source://nvme_manager.cpp#L724-L735"]
+      "applicability_evidence_refs": [
+        "source://nvme_manager.cpp#L697-L732"
+      ]
     },
     {
-      "gold_id": "nvme-gold-006",
-      "semantic_key": "nvme.fault_led.write.is.guarded.by.locate_led_state",
+      "gold_id": "nvme-gold-006a",
+      "semantic_key": "nvme.fault_led.empty_group_path.returns",
       "critical": false,
       "applicability": "applicable",
-      "claim": "setFaultLED returns when either LED group path is empty and otherwise writes the fault LED Asserted property only while the locate LED is not asserted and the current fault LED state differs from the requested state.",
-      "evidence_refs": ["source://nvme_manager.cpp#L134-L151"],
-      "applicability_evidence_refs": ["source://nvme_manager.cpp#L134-L152"]
+      "claim": "setFaultLED returns immediately when either the locate LED group path or the fault LED group path is empty.",
+      "evidence_refs": [
+        "source://nvme_manager.cpp#L134-L140"
+      ],
+      "applicability_evidence_refs": [
+        "source://nvme_manager.cpp#L134-L140"
+      ]
     },
     {
-      "gold_id": "nvme-gold-007",
-      "semantic_key": "nvme.inventory.present.write.is.serial_change_gated",
+      "gold_id": "nvme-gold-006b",
+      "semantic_key": "nvme.fault_led.write.requires.locate_off.and_state_change",
+      "critical": false,
+      "applicability": "applicable",
+      "claim": "With non-empty paths, setFaultLED writes the fault LED Asserted property only when the locate LED is not asserted and the current fault LED state differs from the requested state.",
+      "evidence_refs": [
+        "source://nvme_manager.cpp#L142-L150"
+      ],
+      "applicability_evidence_refs": [
+        "source://nvme_manager.cpp#L142-L150"
+      ]
+    },
+    {
+      "gold_id": "nvme-gold-007a",
+      "semantic_key": "nvme.inventory.serial_change.publishes.present.and_asset_group",
       "critical": true,
       "applicability": "applicable",
-      "claim": "setNvmeInventoryProperties writes the inventory Present property and asset fields only when the cached serial number differs from the sampled serial number, then updates the cached serial number.",
-      "evidence_refs": ["source://nvme_manager.cpp#L66-L92"],
-      "applicability_evidence_refs": ["source://nvme_manager.cpp#L66-L132"]
+      "claim": "When the cached serial differs from the sampled serial, setNvmeInventoryProperties publishes the inventory Present property together with Manufacturer, SerialNumber, Model, and DriveLifeUsed.",
+      "evidence_refs": [
+        "source://nvme_manager.cpp#L71-L90"
+      ],
+      "applicability_evidence_refs": [
+        "source://nvme_manager.cpp#L71-L90"
+      ]
+    },
+    {
+      "gold_id": "nvme-gold-007b",
+      "semantic_key": "nvme.inventory.serial_change.updates.cached_serial",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "After publishing the serial-change-gated inventory properties, setNvmeInventoryProperties updates the cached serial number to the sampled serial number.",
+      "evidence_refs": [
+        "source://nvme_manager.cpp#L75-L92"
+      ],
+      "applicability_evidence_refs": [
+        "source://nvme_manager.cpp#L75-L92"
+      ]
     }
   ]
 }

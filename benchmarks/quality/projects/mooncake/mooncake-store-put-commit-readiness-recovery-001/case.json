@@ -3,10 +3,10 @@
   "case_id": "mooncake-store-put-commit-readiness-recovery-001",
   "project_id": "mooncake",
   "analysis_target": "Mooncake store put commit, readiness, failure, and recovery lifecycle.",
-  "truth_package_version": "4",
+  "truth_package_version": "5",
   "tier": "S",
   "truth_package": {
-    "gold_claims": {"path": "gold_claims.json", "sha256": "65e964c0307d61fa8feb50e78eefa6b2a603baa22dbc5c140dce1a9523c087b7"},
+    "gold_claims": {"path": "gold_claims.json", "sha256": "d6ba132d0dfa1cab4e225b7e2cb8cc9f6f1fa61eeb0b165279cc1b916558df5f"},
     "coverage_universe": {"path": "coverage_universe.json", "sha256": "ab8b327cd433ce35fa3b708ff057be194e705579ce77a2ca4d284da9af2414de"},
     "critical_chains": {"path": "critical_chains.json", "sha256": "540daeca64f953c4e11379aceeb07bb225c01c186075438d94144538b4c1c096"},
     "execution_oracles": {"path": "execution_oracles.json", "sha256": "cc2725ff707e2cc764943326b5e9cb7192be753a091df0a525d75c120b6906cd"}

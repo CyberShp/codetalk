@@ -2,20 +2,44 @@
   "case_id": "ucx-roce-reachability-mode-001",
   "claims": [
     {
-      "gold_id": "ucx-roce:modes",
-      "semantic_key": "ucx.uct.ib.roce_reachability.config_modes",
+      "gold_id": "ucx-roce:mode-values",
+      "semantic_key": "ucx.uct.ib.roce_reachability.mode_values",
       "critical": true,
       "applicability": "applicable",
-      "claim": "UCX_IB_ROCE_REACHABILITY_MODE is an enum with route as the default and route, local_subnet, and all values; all is documented as assuming every address reachable without a check.",
-      "evidence_refs": ["source://src/uct/ib/base/ib_iface.c#L70-L75", "source://src/uct/ib/base/ib_iface.c#L217-L222", "source://src/uct/ib/base/ib_iface.h#L112-L120"]
+      "claim": "The RoCE reachability mode enum exposes route, local_subnet, and all values.",
+      "evidence_refs": ["source://src/uct/ib/base/ib_iface.c#L70-L75"]
     },
     {
-      "gold_id": "ucx-roce:legacy-override",
-      "semantic_key": "ucx.uct.ib.roce_reachability.legacy_local_subnet_override",
+      "gold_id": "ucx-roce:route-default",
+      "semantic_key": "ucx.uct.ib.roce_reachability.route_default",
       "critical": true,
       "applicability": "applicable",
-      "claim": "During RoCE interface initialization, legacy ROCE_LOCAL_SUBNET=y overrides the selected mode to local_subnet; prefix bits are otherwise reset to zero unless the GID is RoCEv2 and local_subnet mode is active.",
-      "evidence_refs": ["source://src/uct/ib/base/ib_iface.c#L1455-L1506"]
+      "claim": "ROCE_REACHABILITY_MODE defaults to route.",
+      "evidence_refs": ["source://src/uct/ib/base/ib_iface.c#L217-L222"]
+    },
+    {
+      "gold_id": "ucx-roce:all-no-check-semantics",
+      "semantic_key": "ucx.uct.ib.roce_reachability.all_no_check_semantics",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "The all configuration value is documented as assuming every address is reachable without any check.",
+      "evidence_refs": ["source://src/uct/ib/base/ib_iface.c#L217-L222"]
+    },
+    {
+      "gold_id": "ucx-roce:legacy-mode-override",
+      "semantic_key": "ucx.uct.ib.roce_reachability.legacy_mode_override",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "During RoCE interface initialization, enabled legacy rocev2_local_subnet overrides the configured reachability mode to local_subnet.",
+      "evidence_refs": ["source://src/uct/ib/base/ib_iface.c#L1470-L1474"]
+    },
+    {
+      "gold_id": "ucx-roce:prefix-reset",
+      "semantic_key": "ucx.uct.ib.roce_reachability.prefix_reset",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "Interface initialization resets address prefix bits to zero unless the GID is RoCEv2 and the active reachability mode is local_subnet.",
+      "evidence_refs": ["source://src/uct/ib/base/ib_iface.c#L1476-L1480"]
     },
     {
       "gold_id": "ucx-roce:all-short-circuit",
@@ -26,20 +50,68 @@
       "evidence_refs": ["source://src/uct/ib/base/ib_iface.c#L920-L983", "source://src/uct/ib/base/ib_iface.c#L792-L872", "source://README.md#L148-L150"]
     },
     {
-      "gold_id": "ucx-roce:route-failure",
-      "semantic_key": "ucx.uct.ib.roce_reachability.route_resolution",
+      "gold_id": "ucx-roce:missing-netdev-unreachable",
+      "semantic_key": "ucx.uct.ib.roce_reachability.missing_netdev_unreachable",
       "critical": true,
       "applicability": "applicable",
-      "claim": "Route mode requires a RoCE netdev and accepts the best netdev route, a qualifying loopback route, or a kernel local route; otherwise it fills a no-route information string and returns unreachable.",
-      "evidence_refs": ["source://src/uct/ib/base/ib_iface.c#L697-L759", "source://src/uct/ib/base/ib_iface.c#L861-L864"]
+      "claim": "Route reachability returns unreachable when no RoCE netdev index can be obtained for the selected GID.",
+      "evidence_refs": ["source://src/uct/ib/base/ib_iface.c#L710-L716"]
     },
     {
-      "gold_id": "ucx-roce:local-subnet-boundary",
-      "semantic_key": "ucx.uct.ib.roce_reachability.local_subnet_boundary",
+      "gold_id": "ucx-roce:best-route-reachable",
+      "semantic_key": "ucx.uct.ib.roce_reachability.best_route_reachable",
       "critical": true,
       "applicability": "applicable",
-      "claim": "Local-subnet mode treats a zero-bit prefix as universally reachable and otherwise returns the same-subnet comparison; the existing RoCE gtest only demonstrates successful traffic under local_subnet mode.",
-      "evidence_refs": ["source://src/uct/ib/base/ib_iface.c#L761-L789", "source://src/uct/ib/base/ib_iface.c#L867-L872", "source://test/gtest/uct/ib/test_ib.cc#L51-L78", "source://test/gtest/uct/ib/test_ib.cc#L305-L314"]
+      "claim": "Route reachability returns reachable when the RoCE netdev is the best route to the remote address.",
+      "evidence_refs": ["source://src/uct/ib/base/ib_iface.c#L718-L721"]
+    },
+    {
+      "gold_id": "ucx-roce:loopback-route-reachable",
+      "semantic_key": "ucx.uct.ib.roce_reachability.loopback_route_reachable",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "If the best-netdev check fails, route reachability accepts an existing route to the remote address through the loopback interface.",
+      "evidence_refs": ["source://src/uct/ib/base/ib_iface.c#L723-L733"]
+    },
+    {
+      "gold_id": "ucx-roce:kernel-local-route-reachable",
+      "semantic_key": "ucx.uct.ib.roce_reachability.kernel_local_route_reachable",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "If earlier route checks fail, route reachability accepts a kernel local route to the remote address.",
+      "evidence_refs": ["source://src/uct/ib/base/ib_iface.c#L735-L746"]
+    },
+    {
+      "gold_id": "ucx-roce:no-route-unreachable",
+      "semantic_key": "ucx.uct.ib.roce_reachability.no_route_unreachable",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "When none of the accepted route checks succeeds, route reachability fills a no-route information string and returns unreachable.",
+      "evidence_refs": ["source://src/uct/ib/base/ib_iface.c#L748-L758"]
+    },
+    {
+      "gold_id": "ucx-roce:zero-prefix-wildcard",
+      "semantic_key": "ucx.uct.ib.roce_reachability.zero_prefix_wildcard",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "Local-subnet reachability treats a zero-bit prefix as making any address reachable.",
+      "evidence_refs": ["source://src/uct/ib/base/ib_iface.c#L770-L773"]
+    },
+    {
+      "gold_id": "ucx-roce:nonzero-subnet-compare",
+      "semantic_key": "ucx.uct.ib.roce_reachability.nonzero_subnet_compare",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "For a nonzero prefix, local-subnet reachability returns the result of comparing the local and remote addresses within that prefix length.",
+      "evidence_refs": ["source://src/uct/ib/base/ib_iface.c#L775-L788"]
+    },
+    {
+      "gold_id": "ucx-roce:gtest-success-only",
+      "semantic_key": "ucx.uct.ib.roce_reachability.gtest_success_only",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "The existing local_subnet RoCE gtest exercises only a successful short-message send and receive flow.",
+      "evidence_refs": ["source://test/gtest/uct/ib/test_ib.cc#L51-L78", "source://test/gtest/uct/ib/test_ib.cc#L305-L312"]
     }
   ]
 }

@@ -3,12 +3,12 @@
   "case_id": "nvme-csd-sync-compute-passthru-001",
   "project_id": "nvme-csd",
   "analysis_target": "NVMe-CSD synchronous compute passthrough submission and completion behavior.",
-  "truth_package_version": "4",
+  "truth_package_version": "5",
   "tier": "S",
   "truth_package": {
     "gold_claims": {
       "path": "gold_claims.json",
-      "sha256": "0fa41303fc8eeba0265f4850cc7c0b32efbfbb2633a383097e7678b0828af670"
+      "sha256": "ca444d52dc89be4011994d55fe1a22010ec10535f4ed59265b41c84bc78a6fed"
     },
     "coverage_universe": {
       "path": "coverage_universe.json",

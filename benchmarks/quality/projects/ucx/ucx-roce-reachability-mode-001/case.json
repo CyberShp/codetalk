@@ -3,10 +3,10 @@
   "case_id": "ucx-roce-reachability-mode-001",
   "project_id": "ucx",
   "analysis_target": "UCX RoCE reachability mode selection, compatibility, and fallback behavior.",
-  "truth_package_version": "4",
+  "truth_package_version": "5",
   "tier": "S",
   "truth_package": {
-    "gold_claims": {"path": "gold_claims.json", "sha256": "a884965d79602df301fc311033f65b9887e7e484de490a58bc703d9b8d386d4f"},
+    "gold_claims": {"path": "gold_claims.json", "sha256": "be83dfa9815b879bb4f43582e69c4a376efa0eb3da17e2b3074d3e9d04cfd768"},
     "coverage_universe": {"path": "coverage_universe.json", "sha256": "d4abdd2b2ecca6f75f4e79554702567dcb5c06cced53d727903a9a8e9bac0df9"},
     "critical_chains": {"path": "critical_chains.json", "sha256": "c28092bb1fdf960847ae03d947e91d8f9165ab5b53ffe5a16421e4d299f1912a"},
     "execution_oracles": {"path": "execution_oracles.json", "sha256": "12befda5c34970fe4a069ee93aec286f139ced89f30cae645fd19770e0a394eb"}

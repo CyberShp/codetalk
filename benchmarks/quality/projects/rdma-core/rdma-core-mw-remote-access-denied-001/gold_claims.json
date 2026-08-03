@@ -10,20 +10,44 @@
       "evidence_refs": ["source://tests/test_qpex.py#L137-L144", "source://tests/test_qpex.py#L247-L285"]
     },
     {
-      "gold_id": "rdma-mw:capability-shape",
-      "semantic_key": "rdma_core.qpex.bind_mw.capability_shape",
+      "gold_id": "rdma-mw:qpex-send-ops",
+      "semantic_key": "rdma_core.qpex.bind_mw.rc_send_ops",
       "critical": true,
       "applicability": "applicable",
-      "claim": "QpExRCBindMw creates an RC extended QP with RDMA-write and bind-MW send operations, and registers its MR with remote-write and MW-bind access in addition to local write.",
-      "evidence_refs": ["source://tests/test_qpex.py#L137-L144", "source://tests/utils.py#L440-L458"]
+      "claim": "QpExRCBindMw creates an RC extended QP whose declared send operations are RDMA write and bind MW.",
+      "evidence_refs": ["source://tests/test_qpex.py#L137-L140"]
     },
     {
-      "gold_id": "rdma-mw:restricted-bind",
-      "semantic_key": "rdma_core.qpex.bind_mw.local_write_only_rkey",
+      "gold_id": "rdma-mw:mr-access-flags",
+      "semantic_key": "rdma_core.qpex.bind_mw.mr_access_flags",
       "critical": true,
       "applicability": "applicable",
-      "claim": "The test allocates a Type-2 MW, increments its rkey, and binds the full MR through MWBindInfo carrying only IBV_ACCESS_LOCAL_WRITE before requiring a successful bind completion.",
-      "evidence_refs": ["source://tests/test_qpex.py#L247-L275"]
+      "claim": "QpExRCBindMw registers its MR with local-write, remote-write, and MW-bind access.",
+      "evidence_refs": ["source://tests/test_qpex.py#L142-L144", "source://tests/utils.py#L440-L458"]
+    },
+    {
+      "gold_id": "rdma-mw:type2-allocation",
+      "semantic_key": "rdma_core.qpex.bind_mw.type2_allocation",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "The bind-MW test allocates an IBV_MW_TYPE_2 memory window from the server protection domain.",
+      "evidence_refs": ["source://tests/test_qpex.py#L266-L271"]
+    },
+    {
+      "gold_id": "rdma-mw:restricted-full-mr-bind",
+      "semantic_key": "rdma_core.qpex.bind_mw.incremented_rkey_local_write_full_mr",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "The test increments the MW rkey and binds the server MR's full buffer and length with only IBV_ACCESS_LOCAL_WRITE in MWBindInfo.",
+      "evidence_refs": ["source://tests/test_qpex.py#L264-L274"]
+    },
+    {
+      "gold_id": "rdma-mw:bind-completion-success",
+      "semantic_key": "rdma_core.qpex.bind_mw.successful_bind_completion",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "After posting the bind operation, the test polls the server CQ with poll_cq, which raises unless the bind completion status is IBV_WC_SUCCESS.",
+      "evidence_refs": ["source://tests/test_qpex.py#L273-L275", "source://tests/utils.py#L697-L714"]
     },
     {
       "gold_id": "rdma-mw:remote-access-error",
@@ -34,20 +58,60 @@
       "evidence_refs": ["source://tests/test_qpex.py#L276-L285", "source://tests/utils.py#L659-L694"]
     },
     {
-      "gold_id": "rdma-mw:unsupported-is-skip",
-      "semantic_key": "rdma_core.qpex.bind_mw.unsupported_skip",
+      "gold_id": "rdma-mw:qpex-player-unsupported-skip",
+      "semantic_key": "rdma_core.qpex.bind_mw.qpex_player_eopnotsupp_skip",
       "critical": true,
       "applicability": "applicable",
-      "claim": "EOPNOTSUPP while creating the extended QP player or allocating the MW is converted to SkipTest, so an unsupported device is not evidence that the denial behavior passed.",
-      "evidence_refs": ["source://tests/base.py#L337-L351", "source://tests/test_qpex.py#L266-L271", "source://tests/utils.py#L406-L412"]
+      "claim": "EOPNOTSUPP during extended-QP player creation is converted to SkipTest rather than a passing denial result.",
+      "evidence_refs": ["source://tests/utils.py#L406-L412", "source://tests/base.py#L345-L351"]
     },
     {
-      "gold_id": "rdma-mw:lifecycle-cleanup",
-      "semantic_key": "rdma_core.qpex.bind_mw.context_owned_cleanup",
+      "gold_id": "rdma-mw:allocation-unsupported-skip",
+      "semantic_key": "rdma_core.qpex.bind_mw.allocation_eopnotsupp_skip",
       "critical": true,
       "applicability": "applicable",
-      "claim": "Test teardown closes both endpoint contexts; Context.close closes dependent weak references before closing the device, while the MW is retained by its PD and QP and deallocated by MW.close.",
-      "evidence_refs": ["source://tests/base.py#L359-L371", "source://pyverbs/device.pyx#L180-L192", "source://pyverbs/mr.pyx#L314-L350", "source://pyverbs/qp.pyx#L1405-L1410"]
+      "claim": "EOPNOTSUPP from Type-2 MW allocation is converted to SkipTest rather than a passing denial result.",
+      "evidence_refs": ["source://tests/test_qpex.py#L266-L271"]
+    },
+    {
+      "gold_id": "rdma-mw:endpoint-context-teardown",
+      "semantic_key": "rdma_core.qpex.bind_mw.endpoint_context_teardown",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "Test teardown closes both the server and client endpoint contexts when they exist.",
+      "evidence_refs": ["source://tests/base.py#L359-L371"]
+    },
+    {
+      "gold_id": "rdma-mw:dependent-before-device-close",
+      "semantic_key": "rdma_core.qpex.bind_mw.dependent_before_device_close",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "Context.close closes its dependent weak references before calling ibv_close_device.",
+      "evidence_refs": ["source://pyverbs/device.pyx#L180-L192"]
+    },
+    {
+      "gold_id": "rdma-mw:pd-retains-mw",
+      "semantic_key": "rdma_core.qpex.bind_mw.pd_retains_allocated_mw",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "An allocated MW is retained by its protection domain.",
+      "evidence_refs": ["source://pyverbs/mr.pyx#L327-L330"]
+    },
+    {
+      "gold_id": "rdma-mw:qp-retains-bound-mw",
+      "semantic_key": "rdma_core.qpex.bind_mw.qp_retains_bound_mw",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "A QP retains the MW when wr_bind_mw is issued.",
+      "evidence_refs": ["source://pyverbs/qp.pyx#L1405-L1410"]
+    },
+    {
+      "gold_id": "rdma-mw:deallocation",
+      "semantic_key": "rdma_core.qpex.bind_mw.mw_deallocation",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "MW.close deallocates a live underlying memory window with ibv_dealloc_mw and then clears its MW pointer and PD reference.",
+      "evidence_refs": ["source://pyverbs/mr.pyx#L335-L350"]
     }
   ]
 }

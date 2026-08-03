@@ -20,13 +20,22 @@
       "applicability_evidence_refs": ["source://redfish-core/lib/systems.hpp#L3500-L3510"]
     },
     {
-      "gold_id": "bmcweb-gold-003",
-      "semantic_key": "bmcweb.reset_action_info.expected.missing_property.errors.use.fallback_values",
+      "gold_id": "bmcweb-gold-003a",
+      "semantic_key": "bmcweb.reset_action_info.bad_request_descriptor.uses.fallback_values",
       "critical": true,
       "applicability": "applicable",
-      "claim": "For bad_request_descriptor or host_unreachable errors, afterGetAllowedHostTransitions treats AllowedHostTransitions as unavailable and appends On, ForceOn, ForceRestart, GracefulRestart, and GracefulShutdown to the default ResetTypes.",
-      "evidence_refs": ["source://redfish-core/lib/systems.hpp#L3512-L3525"],
-      "applicability_evidence_refs": ["source://redfish-core/lib/systems.hpp#L3512-L3525"]
+      "claim": "For a bad_request_descriptor error, afterGetAllowedHostTransitions appends On, ForceOn, ForceRestart, GracefulRestart, and GracefulShutdown to the default ResetTypes.",
+      "evidence_refs": ["source://redfish-core/lib/systems.hpp#L3514-L3525"],
+      "applicability_evidence_refs": ["source://redfish-core/lib/systems.hpp#L3514-L3525"]
+    },
+    {
+      "gold_id": "bmcweb-gold-003b",
+      "semantic_key": "bmcweb.reset_action_info.host_unreachable.uses.fallback_values",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "For a host_unreachable error, afterGetAllowedHostTransitions appends On, ForceOn, ForceRestart, GracefulRestart, and GracefulShutdown to the default ResetTypes.",
+      "evidence_refs": ["source://redfish-core/lib/systems.hpp#L3514-L3525"],
+      "applicability_evidence_refs": ["source://redfish-core/lib/systems.hpp#L3514-L3525"]
     },
     {
       "gold_id": "bmcweb-gold-004",
@@ -38,22 +47,67 @@
       "applicability_evidence_refs": ["source://redfish-core/lib/systems.hpp#L3526-L3531"]
     },
     {
-      "gold_id": "bmcweb-gold-005",
-      "semantic_key": "bmcweb.reset_action_info.maps.supported.dbus.transitions.to.redfish.reset_types",
+      "gold_id": "bmcweb-gold-005a",
+      "semantic_key": "bmcweb.reset_action_info.maps.on.to.on.and.force_on",
       "critical": false,
       "applicability": "applicable",
-      "claim": "dbusToRfAllowedHostTransitions maps On to On and ForceOn, Off to GracefulShutdown, GracefulWarmReboot to GracefulRestart, and ForceWarmReboot to ForceRestart; unsupported transitions only produce a warning.",
-      "evidence_refs": ["source://redfish-core/lib/systems.hpp#L3470-L3497"],
-      "applicability_evidence_refs": ["source://redfish-core/lib/systems.hpp#L3470-L3549"]
+      "claim": "dbusToRfAllowedHostTransitions maps the D-Bus On transition to both Redfish On and ForceOn reset types.",
+      "evidence_refs": ["source://redfish-core/lib/systems.hpp#L3474-L3478"],
+      "applicability_evidence_refs": ["source://redfish-core/lib/systems.hpp#L3474-L3478"]
     },
     {
-      "gold_id": "bmcweb-gold-006",
-      "semantic_key": "bmcweb.reset_action_info.tests.distinguish.unexpected.error.from.missing_property",
+      "gold_id": "bmcweb-gold-005b-off",
+      "semantic_key": "bmcweb.reset_action_info.maps.off.to.graceful_shutdown",
+      "critical": false,
+      "applicability": "applicable",
+      "claim": "dbusToRfAllowedHostTransitions maps the D-Bus Off transition to the Redfish GracefulShutdown reset type.",
+      "evidence_refs": ["source://redfish-core/lib/systems.hpp#L3479-L3483"],
+      "applicability_evidence_refs": ["source://redfish-core/lib/systems.hpp#L3479-L3483"]
+    },
+    {
+      "gold_id": "bmcweb-gold-005b-graceful-warm-reboot",
+      "semantic_key": "bmcweb.reset_action_info.maps.graceful_warm_reboot.to.graceful_restart",
+      "critical": false,
+      "applicability": "applicable",
+      "claim": "dbusToRfAllowedHostTransitions maps the D-Bus GracefulWarmReboot transition to the Redfish GracefulRestart reset type.",
+      "evidence_refs": ["source://redfish-core/lib/systems.hpp#L3484-L3488"],
+      "applicability_evidence_refs": ["source://redfish-core/lib/systems.hpp#L3484-L3488"]
+    },
+    {
+      "gold_id": "bmcweb-gold-005b-force-warm-reboot",
+      "semantic_key": "bmcweb.reset_action_info.maps.force_warm_reboot.to.force_restart",
+      "critical": false,
+      "applicability": "applicable",
+      "claim": "dbusToRfAllowedHostTransitions maps the D-Bus ForceWarmReboot transition to the Redfish ForceRestart reset type.",
+      "evidence_refs": ["source://redfish-core/lib/systems.hpp#L3489-L3493"],
+      "applicability_evidence_refs": ["source://redfish-core/lib/systems.hpp#L3489-L3493"]
+    },
+    {
+      "gold_id": "bmcweb-gold-005c",
+      "semantic_key": "bmcweb.reset_action_info.unsupported.transition.logs.warning",
+      "critical": false,
+      "applicability": "applicable",
+      "claim": "An unsupported D-Bus host transition reaches the final branch, which logs a warning without appending a ResetType value.",
+      "evidence_refs": ["source://redfish-core/lib/systems.hpp#L3494-L3497"],
+      "applicability_evidence_refs": ["source://redfish-core/lib/systems.hpp#L3494-L3497"]
+    },
+    {
+      "gold_id": "bmcweb-gold-006a",
+      "semantic_key": "bmcweb.reset_action_info.test.unexpected.error.returns.internal_server_error",
       "critical": true,
       "applicability": "applicable",
-      "claim": "The GetAllowedHostTransition tests verify that an unexpected invalid_argument error returns Internal Server Error, while a missing D-Bus property returns the complete fallback ResetType parameter list.",
-      "evidence_refs": ["source://test/redfish-core/lib/system_test.cpp#L25-L64"],
-      "applicability_evidence_refs": ["source://test/redfish-core/lib/system_test.cpp#L25-L64"]
+      "claim": "The UnexpectedError test verifies that an invalid_argument error passed to afterGetAllowedHostTransitions produces an Internal Server Error response.",
+      "evidence_refs": ["source://test/redfish-core/lib/system_test.cpp#L25-L35"],
+      "applicability_evidence_refs": ["source://test/redfish-core/lib/system_test.cpp#L25-L35"]
+    },
+    {
+      "gold_id": "bmcweb-gold-006b",
+      "semantic_key": "bmcweb.reset_action_info.test.missing.property.returns.fallback.parameters",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "The NoPropOnDbus test verifies that a missing D-Bus property produces a ResetType parameter containing the complete eight-value fallback list.",
+      "evidence_refs": ["source://test/redfish-core/lib/system_test.cpp#L37-L64"],
+      "applicability_evidence_refs": ["source://test/redfish-core/lib/system_test.cpp#L37-L64"]
     }
   ]
 }

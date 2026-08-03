@@ -2,24 +2,73 @@
   "case_id": "nvme-csd-sync-compute-passthru-001",
   "claims": [
     {
-      "gold_id": "nvme-csd:sync-dispatch",
-      "semantic_key": "nvme_csd.host.sync_compute.dispatch",
+      "gold_id": "nvme-csd:sync-dispatch-queue",
+      "semantic_key": "nvme_csd.host.sync_compute.queue_calls_xxdo",
       "critical": true,
       "applicability": "applicable",
-      "claim": "For a non-null request, csQueueComputeRequest synchronously calls xxDoComputeRequest and returns its status; xxDoComputeRequest delegates to tsp_compute_operation.",
+      "claim": "For a non-null request, csQueueComputeRequest calls xxDoComputeRequest and returns its status.",
       "evidence_refs": [
-        "source://host/snia_cs_api/cs_api_nvme_tsp.c#L522-L524",
         "source://host/snia_cs_api/cs_api_nvme_tsp.c#L562-L577"
       ]
     },
     {
-      "gold_id": "nvme-csd:passthru-fields",
-      "semantic_key": "nvme_csd.host.sync_compute.admin_passthru_fields",
+      "gold_id": "nvme-csd:sync-dispatch-tsp",
+      "semantic_key": "nvme_csd.host.sync_compute.xxdo_calls_tsp",
       "critical": true,
       "applicability": "applicable",
-      "claim": "The operation issues opcode 0xc0 with compute/userspace cdw10, synchronous cdw11=0, cdw12=req_size, a 4096-byte data buffer, and a one-hour timeout.",
+      "claim": "xxDoComputeRequest returns the result of tsp_compute_operation for the request.",
       "evidence_refs": [
-        "source://host/snia_cs_api/cs_api_nvme_tsp.c#L234-L253"
+        "source://host/snia_cs_api/cs_api_nvme_tsp.c#L522-L523"
+      ]
+    },
+    {
+      "gold_id": "nvme-csd:passthru-opcode-cdw10",
+      "semantic_key": "nvme_csd.host.sync_compute.admin_passthru_opcode_cdw10",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "tsp_compute_operation issues admin passthrough opcode 0xc0 with cdw10 set to TSP_CS_COMPUTE | ROUTE_CS_COMPUTE_THROUGH_USER_SPACE.",
+      "evidence_refs": [
+        "source://host/snia_cs_api/cs_api_nvme_tsp.c#L246-L249"
+      ]
+    },
+    {
+      "gold_id": "nvme-csd:passthru-cdw11-sync",
+      "semantic_key": "nvme_csd.host.sync_compute.admin_passthru_cdw11_sync",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "The synchronous admin passthrough sets cdw11 to 0.",
+      "evidence_refs": [
+        "source://host/snia_cs_api/cs_api_nvme_tsp.c#L247-L250"
+      ]
+    },
+    {
+      "gold_id": "nvme-csd:passthru-cdw12-request-size",
+      "semantic_key": "nvme_csd.host.sync_compute.admin_passthru_cdw12_request_size",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "The admin passthrough sets cdw12 to req_size.",
+      "evidence_refs": [
+        "source://host/snia_cs_api/cs_api_nvme_tsp.c#L247-L250"
+      ]
+    },
+    {
+      "gold_id": "nvme-csd:passthru-buffer",
+      "semantic_key": "nvme_csd.host.sync_compute.admin_passthru_4096_buffer",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "The admin passthrough uses the local 4096-byte buffer as its data buffer and data length.",
+      "evidence_refs": [
+        "source://host/snia_cs_api/cs_api_nvme_tsp.c#L234-L250"
+      ]
+    },
+    {
+      "gold_id": "nvme-csd:passthru-timeout",
+      "semantic_key": "nvme_csd.host.sync_compute.admin_passthru_one_hour_timeout",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "The admin passthrough timeout is 3,600,000 milliseconds (one hour).",
+      "evidence_refs": [
+        "source://host/snia_cs_api/cs_api_nvme_tsp.c#L247-L251"
       ]
     },
     {

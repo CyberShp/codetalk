@@ -226,11 +226,19 @@ def _catalog_digest(catalog: dict[str, object]) -> str:
     canonical = {
         "case_id": catalog["case_id"],
         "bindings": sorted(
-            catalog["bindings"],
+            (
+                {
+                    key: value
+                    for key, value in binding.items()
+                    if key != "evidence_group" or value != "default"
+                }
+                for binding in catalog["bindings"]
+            ),
             key=lambda binding: (
                 binding["chain_id"],
                 binding["category"],
                 binding["obligation_id"],
+                binding.get("evidence_group", "default"),
                 binding["evidence_ref"],
             ),
         ),
@@ -311,6 +319,23 @@ def test_catalog_digest_is_canonical_and_owned_by_hidden_truth() -> None:
     )
     assert depth.depth_evidence_catalog_sha256(catalog) == (
         truth["evidence_catalog_sha256"]
+    )
+
+
+def test_explicit_default_evidence_group_preserves_catalog_digest() -> None:
+    depth = _depth()
+    truth = _truth()
+    omitted = depth.DepthEvidenceCatalog.model_validate(_catalog(truth))
+    explicit_payload = deepcopy(_catalog(truth))
+    for binding in explicit_payload["bindings"]:
+        binding["evidence_group"] = "default"
+    explicit = depth.DepthEvidenceCatalog.model_validate(explicit_payload)
+
+    assert depth.serialize_depth_evidence_catalog(explicit) == (
+        depth.serialize_depth_evidence_catalog(omitted)
+    )
+    assert depth.depth_evidence_catalog_sha256(explicit) == (
+        depth.depth_evidence_catalog_sha256(omitted)
     )
 
 
@@ -453,6 +478,63 @@ def test_static_obligation_requires_the_complete_catalog_evidence_set() -> None:
     assert result.status.value == "fail"
     assert "chain:flow/node:trigger" in _miss_ids(result)
     assert result.validation_layers.l1.status.value == "fail"
+
+
+def test_static_obligation_accepts_either_complete_evidence_group() -> None:
+    depth = _depth()
+    truth = _truth()
+    catalog_payload = _catalog(truth)
+    primary = next(
+        binding
+        for binding in catalog_payload["bindings"]
+        if binding["category"] == "node" and binding["obligation_id"] == "trigger"
+    )
+    alternate = deepcopy(primary)
+    alternate["evidence_ref"] = "source://depth#flow:node:trigger:alternate"
+    alternate["evidence_group"] = "alternate-trigger"
+    catalog_payload["bindings"].append(alternate)
+    truth["evidence_catalog_sha256"] = _catalog_digest(catalog_payload)
+    candidate = _candidate(truth)
+    trigger = candidate["chains"][0]["nodes"][0]
+    trigger["evidence_refs"] = [alternate["evidence_ref"]]
+
+    result = _evaluate(depth, truth, candidate, catalog_payload)
+
+    assert result.status.value == "pass"
+    assert "chain:flow/node:trigger" not in _miss_ids(result)
+
+
+def test_static_obligation_rejects_refs_mixed_across_evidence_groups() -> None:
+    depth = _depth()
+    truth = _truth()
+    catalog_payload = _catalog(truth)
+    primary = next(
+        binding
+        for binding in catalog_payload["bindings"]
+        if binding["category"] == "node" and binding["obligation_id"] == "trigger"
+    )
+    primary_second = deepcopy(primary)
+    primary_second["evidence_ref"] = "source://depth#flow:node:trigger:primary-2"
+    alternate_first = deepcopy(primary)
+    alternate_first["evidence_ref"] = "source://depth#flow:node:trigger:alternate-1"
+    alternate_first["evidence_group"] = "alternate-trigger"
+    alternate_second = deepcopy(alternate_first)
+    alternate_second["evidence_ref"] = "source://depth#flow:node:trigger:alternate-2"
+    catalog_payload["bindings"].extend(
+        [primary_second, alternate_first, alternate_second]
+    )
+    truth["evidence_catalog_sha256"] = _catalog_digest(catalog_payload)
+    candidate = _candidate(truth)
+    trigger = candidate["chains"][0]["nodes"][0]
+    trigger["evidence_refs"] = [
+        primary["evidence_ref"],
+        alternate_second["evidence_ref"],
+    ]
+
+    result = _evaluate(depth, truth, candidate, catalog_payload)
+
+    assert result.status.value == "fail"
+    assert "chain:flow/node:trigger" in _miss_ids(result)
 
 
 def test_chain_stopping_before_mutation_fails_with_addressable_open_obligations() -> None:

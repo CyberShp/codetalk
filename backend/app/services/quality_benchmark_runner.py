@@ -376,35 +376,47 @@ def evaluate_artifact_snapshot(
             result=result,
             judgments=recorder.judgments,
             diagnostics=semantic_diagnostics,
+            extras={"decision_role": "diagnostic_screening"},
         )
-        decisive_judgments = tuple(
-            judgment
-            for judgment in recorder.judgments
-            if result.verdicts.get(judgment.judgment_id)
-            in {"supports", "contradicts"}
-        )
-        consensus_verdicts = dict(result.verdicts)
-        if decisive_judgments:
-            verification = batch_judge.judge(
-                judgments=decisive_judgments,
+        resolved_verdicts = dict(result.verdicts)
+        if recorder.judgments:
+            adjudication = batch_judge.judge(
+                judgments=recorder.judgments,
                 source_dir=semantic_source_dir,
                 generator_model=str(generator_model),
                 judge_model=str(judge_model),
                 mode="deep",
                 deadline_monotonic=effective_deadline,
-                snapshot_label=f"{snapshot_label}_decisive_verification",
+                snapshot_label=f"{snapshot_label}_high_effort_adjudication",
+            )
+            disagreements = _semantic_verdict_disagreements(
+                result.verdicts,
+                adjudication.verdicts,
+            )
+            resolved_verdicts = _authoritative_semantic_verdicts(
+                result.verdicts,
+                adjudication.verdicts,
             )
             _append_semantic_result_audit(
                 semantic_audit_sink,
-                result=verification,
-                judgments=decisive_judgments,
+                result=adjudication,
+                judgments=recorder.judgments,
                 diagnostics=(),
+                extras={
+                    "decision_role": "authoritative_adjudication",
+                    "screening_disagreement_count": len(disagreements),
+                    "screening_disagreements": list(disagreements),
+                    "verdict_trace": list(
+                        _semantic_verdict_trace(
+                            recorder.judgments,
+                            result.verdicts,
+                            adjudication.verdicts,
+                            resolved_verdicts,
+                        )
+                    ),
+                },
             )
-            consensus_verdicts = _consensus_semantic_verdicts(
-                result.verdicts,
-                verification.verdicts,
-            )
-        adapter = _ResolvedBatchSemanticVerdictAdapter(consensus_verdicts)
+        adapter = _ResolvedBatchSemanticVerdictAdapter(resolved_verdicts)
     aligned_claim_ledger = _align_claim_semantics_from_evidence(
         _mapping(claim_ledger, "claim_ledger"),
         _items(gold_claims),
@@ -485,6 +497,7 @@ def _append_semantic_result_audit(
     result: Any,
     judgments: Sequence[SemanticJudgment],
     diagnostics: Sequence[Mapping[str, Any]],
+    extras: Mapping[str, Any] | None = None,
 ) -> None:
     if sink is None:
         return
@@ -498,27 +511,68 @@ def _append_semantic_result_audit(
             ),
             "diagnostics": list(diagnostics),
             "limitations": list(result.limitations),
+            **dict(extras or {}),
         }
     )
 
 
-def _consensus_semantic_verdicts(
-    first: Mapping[str, SemanticVerdict],
-    verification: Mapping[str, SemanticVerdict],
+def _authoritative_semantic_verdicts(
+    screening: Mapping[str, SemanticVerdict],
+    adjudication: Mapping[str, SemanticVerdict],
 ) -> dict[str, SemanticVerdict]:
-    consensus: dict[str, SemanticVerdict] = {}
-    for judgment_id, raw_first in first.items():
-        first_verdict = _validated_semantic_verdict(raw_first)
-        if first_verdict == "insufficient":
-            consensus[judgment_id] = "insufficient"
+    resolved: dict[str, SemanticVerdict] = {}
+    for judgment_id, raw_screening in screening.items():
+        _validated_semantic_verdict(raw_screening)
+        resolved[judgment_id] = _validated_semantic_verdict(
+            adjudication.get(judgment_id, "insufficient")
+        )
+    return resolved
+
+
+def _semantic_verdict_disagreements(
+    screening: Mapping[str, SemanticVerdict],
+    adjudication: Mapping[str, SemanticVerdict],
+) -> tuple[dict[str, str], ...]:
+    disagreements: list[dict[str, str]] = []
+    for judgment_id, raw_screening in screening.items():
+        screening_verdict = _validated_semantic_verdict(raw_screening)
+        adjudication_verdict = _validated_semantic_verdict(
+            adjudication.get(judgment_id, "insufficient")
+        )
+        if screening_verdict == adjudication_verdict:
             continue
-        verified = _validated_semantic_verdict(
-            verification.get(judgment_id, "insufficient")
+        disagreements.append(
+            {
+                "judgment_id": judgment_id,
+                "screening": screening_verdict,
+                "adjudication": adjudication_verdict,
+            }
         )
-        consensus[judgment_id] = (
-            first_verdict if verified == first_verdict else "insufficient"
-        )
-    return consensus
+    return tuple(disagreements)
+
+
+def _semantic_verdict_trace(
+    judgments: Sequence[SemanticJudgment],
+    screening: Mapping[str, SemanticVerdict],
+    adjudication: Mapping[str, SemanticVerdict],
+    resolved: Mapping[str, SemanticVerdict],
+) -> tuple[dict[str, str], ...]:
+    return tuple(
+        {
+            "judgment_id": judgment.judgment_id,
+            "axis": judgment.axis,
+            "screening": _validated_semantic_verdict(
+                screening.get(judgment.judgment_id, "insufficient")
+            ),
+            "adjudication": _validated_semantic_verdict(
+                adjudication.get(judgment.judgment_id, "insufficient")
+            ),
+            "resolved": _validated_semantic_verdict(
+                resolved.get(judgment.judgment_id, "insufficient")
+            ),
+        }
+        for judgment in judgments
+    )
 
 
 def _run_evaluator_owned_depth_oracle(
@@ -1323,8 +1377,40 @@ def _complete_evidence_match(
     return (
         observed_start <= required_start
         and observed_end >= required_end
-        and observed_length - required_length <= 20
+        and observed_length - required_length <= 40
     )
+
+
+def _has_bijective_complete_evidence_match(
+    observed: frozenset[tuple[Any, ...]],
+    required: set[tuple[Any, ...]],
+) -> bool:
+    if not required or len(observed) != len(required):
+        return False
+    observed_items = tuple(observed)
+    compatible_indices = sorted(
+        (
+            tuple(
+                index
+                for index, candidate in enumerate(observed_items)
+                if _complete_evidence_match(candidate, obligation)
+            )
+            for obligation in required
+        ),
+        key=len,
+    )
+    if any(not indices for indices in compatible_indices):
+        return False
+
+    def assign(position: int, used: frozenset[int]) -> bool:
+        if position == len(compatible_indices):
+            return True
+        return any(
+            index not in used and assign(position + 1, used | {index})
+            for index in compatible_indices[position]
+        )
+
+    return assign(0, frozenset())
 
 
 def _required_evidence_satisfied(
@@ -1938,28 +2024,38 @@ def _align_depth_candidate_from_evidence(
     ] = {}
     for category, observations in public_observations.items():
         for observed in observations:
-            observed_refs = {
-                match_key
-                for raw_ref in observed.get("evidence_refs") or []
-                for match_key in [_evidence_match_key(raw_ref)]
-                if match_key is not None
-            }
+            raw_observed_refs = tuple(observed.get("evidence_refs") or ())
+            observed_ref_keys = tuple(
+                _evidence_match_key(raw_ref) for raw_ref in raw_observed_refs
+            )
+            if any(match_key is None for match_key in observed_ref_keys):
+                continue
+            observed_refs = frozenset(observed_ref_keys)
+            if len(observed_refs) != len(raw_observed_refs):
+                continue
             potential: dict[tuple[str, str, str], tuple[Any, ...]] = {}
             for key, bindings in bindings_by_category[category].items():
-                required_refs = {
-                    match_key
-                    for binding in bindings
-                    for match_key in [_evidence_match_key(binding.evidence_ref)]
-                    if match_key is not None
-                }
-                if required_refs and all(
-                    any(
-                        _complete_evidence_match(candidate, obligation)
-                        for candidate in observed_refs
+                binding_groups: dict[str, list[Any]] = {}
+                for binding in bindings:
+                    binding_groups.setdefault(binding.evidence_group, []).append(
+                        binding
                     )
-                    for obligation in required_refs
-                ):
-                    potential[key] = tuple(bindings)
+                for group_id in sorted(binding_groups):
+                    group = tuple(binding_groups[group_id])
+                    required_refs = {
+                        match_key
+                        for binding in group
+                        for match_key in [
+                            _evidence_match_key(binding.evidence_ref)
+                        ]
+                        if match_key is not None
+                    }
+                    if _has_bijective_complete_evidence_match(
+                        observed_refs,
+                        required_refs,
+                    ):
+                        potential[key] = group
+                        break
             supported = []
             for key, bindings in potential.items():
                 verdict = adapter.depth_verdict(

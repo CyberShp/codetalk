@@ -2,14 +2,46 @@
   "case_id": "open-cas-wb-default-disconnect-001",
   "claims": [
     {
-      "gold_id": "open-cas:default-flush",
-      "semantic_key": "open_cas.disconnect.default.flush_dirty_data",
+      "gold_id": "open-cas:default-no-flush",
+      "semantic_key": "open_cas.disconnect.default.no_flush_false_sets_flush_data_true",
       "critical": true,
       "applicability": "applicable",
-      "claim": "The default userspace disconnect sets flush_data=true; the kernel path prevents new dirty data and flushes a running cache before locking and stopping it.",
+      "claim": "The script command defaults no_flush to false, passes it to disconnect_cache, and disconnect_cache sets the ioctl flush_data field to the inverse of no_flush, so the default requests flush_data=true.",
       "evidence_refs": [
-        "source://casadm/cas_lib.c#L1171-L1198",
-        "source://modules/cas_cache/layer_cache_management.c#L3596-L3611"
+        "source://casadm/cas_main.c#L80-L88",
+        "source://casadm/cas_main.c#L2072-L2077",
+        "source://casadm/cas_lib.c#L1188-L1195"
+      ]
+    },
+    {
+      "gold_id": "open-cas:disconnect-prevents-new-dirty-data",
+      "semantic_key": "open_cas.disconnect.kernel.prevents_new_dirty_data",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "The kernel disconnect path prevents new dirty data by setting the cache no-dirty flag before flush processing.",
+      "evidence_refs": [
+        "source://modules/cas_cache/layer_cache_management.c#L3596-L3601"
+      ]
+    },
+    {
+      "gold_id": "open-cas:disconnect-running-cache-flush",
+      "semantic_key": "open_cas.disconnect.kernel.flushes_only_running_cache_when_enabled",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "When no_flush is false, the kernel disconnect path calls _cache_flush_with_lock only if the cache is running and aborts the path if that flush reports an error.",
+      "evidence_refs": [
+        "source://modules/cas_cache/layer_cache_management.c#L3601-L3606"
+      ]
+    },
+    {
+      "gold_id": "open-cas:disconnect-lock-before-stop",
+      "semantic_key": "open_cas.disconnect.kernel.locks_before_sync_stop",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "The kernel disconnect path acquires the cache management lock before it invokes the synchronous cache stop.",
+      "evidence_refs": [
+        "source://modules/cas_cache/layer_cache_management.c#L3609-L3611",
+        "source://modules/cas_cache/layer_cache_management.c#L3654-L3655"
       ]
     },
     {
@@ -23,13 +55,35 @@
       ]
     },
     {
-      "gold_id": "open-cas:default-oracle",
-      "semantic_key": "open_cas.disconnect.default.functional_oracle",
+      "gold_id": "open-cas:default-oracle-queues-frozen",
+      "semantic_key": "open_cas.disconnect.default.oracle.exported_queues_frozen",
       "critical": true,
       "applicability": "applicable",
-      "claim": "test_disconnect_default constructs a dirty WB cache, disconnects with default flags, and after reconnect checks frozen exported queues, zero dirty blocks, and unchanged core CRCs.",
+      "claim": "test_disconnect_default creates a write-back cache with cores, writes data, disconnects with default flags, and fails if any exported object queue is not frozen.",
       "evidence_refs": [
-        "source://test/functional/tests/disconnect/test_disconnect.py#L67-L116"
+        "source://test/functional/tests/disconnect/test_disconnect.py#L78-L97"
+      ]
+    },
+    {
+      "gold_id": "open-cas:default-oracle-clean-reconnect",
+      "semantic_key": "open_cas.disconnect.default.oracle.reconnect_dirty_zero",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "After preparing dirty write-back data and disconnecting with default flags, test_disconnect_default reconnects the cache and fails unless the dirty-block count is zero.",
+      "evidence_refs": [
+        "source://test/functional/tests/disconnect/test_disconnect.py#L78-L92",
+        "source://test/functional/tests/disconnect/test_disconnect.py#L99-L105"
+      ]
+    },
+    {
+      "gold_id": "open-cas:default-oracle-core-crc-unchanged",
+      "semantic_key": "open_cas.disconnect.default.oracle.core_crc_unchanged",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "test_disconnect_default records each core CRC before the default disconnect and, after reconnect, fails if any core CRC differs from its recorded value.",
+      "evidence_refs": [
+        "source://test/functional/tests/disconnect/test_disconnect.py#L85-L100",
+        "source://test/functional/tests/disconnect/test_disconnect.py#L107-L113"
       ]
     }
   ]

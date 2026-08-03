@@ -547,6 +547,7 @@ class DepthCandidate(DepthInputModel):
 
 class TrustedEvidenceBinding(DepthInputModel):
     evidence_ref: NonEmptyString
+    evidence_group: NonEmptyString = "default"
     chain_id: NonEmptyString
     category: EvidenceBindingCategory = Field(strict=False)
     obligation_id: NonEmptyString
@@ -618,6 +619,7 @@ def serialize_depth_evidence_catalog(catalog: DepthEvidenceCatalog) -> str:
             binding.chain_id,
             binding.category.value,
             binding.obligation_id,
+            binding.evidence_group,
             binding.evidence_ref,
         ),
     )
@@ -629,6 +631,11 @@ def serialize_depth_evidence_catalog(catalog: DepthEvidenceCatalog) -> str:
                 "chain_id": binding.chain_id,
                 "category": binding.category.value,
                 "obligation_id": binding.obligation_id,
+                **(
+                    {"evidence_group": binding.evidence_group}
+                    if binding.evidence_group != "default"
+                    else {}
+                ),
             }
             for binding in bindings
         ],
@@ -681,7 +688,7 @@ class _InputIssue:
 DepthTruthInput = DepthTruth | Mapping[str, Any]
 DepthCandidateInput = DepthCandidate | Mapping[str, Any]
 _BindingKey = tuple[str, EvidenceBindingCategory, str]
-_BindingIndex = dict[_BindingKey, frozenset[str]]
+_BindingIndex = dict[_BindingKey, tuple[frozenset[str], ...]]
 
 
 def execute_depth_execution_oracles(
@@ -1216,11 +1223,18 @@ def evaluate_depth(
 
 
 def _binding_index(catalog: DepthEvidenceCatalog) -> _BindingIndex:
-    mutable: dict[_BindingKey, set[str]] = {}
+    mutable: dict[_BindingKey, dict[str, set[str]]] = {}
     for binding in catalog.bindings:
         key = (binding.chain_id, binding.category, binding.obligation_id)
-        mutable.setdefault(key, set()).add(binding.evidence_ref)
-    return {key: frozenset(refs) for key, refs in mutable.items()}
+        mutable.setdefault(key, {}).setdefault(binding.evidence_group, set()).add(
+            binding.evidence_ref
+        )
+    return {
+        key: tuple(
+            frozenset(groups[group_id]) for group_id in sorted(groups)
+        )
+        for key, groups in mutable.items()
+    }
 
 
 def _input_issues(
@@ -1367,13 +1381,13 @@ def _assess_chain(
                 chain_id=truth.chain_id,
                 category="node",
                 observed=observed,
-                trusted_refs=bindings.get(
+                trusted_ref_groups=bindings.get(
                     (
                         truth.chain_id,
                         EvidenceBindingCategory.NODE,
                         node.node_id,
                     ),
-                    frozenset(),
+                    (),
                 ),
                 passed=observed is not None
                 and observed.status is ObligationStatus.CLOSED,
@@ -1391,13 +1405,13 @@ def _assess_chain(
                 chain_id=truth.chain_id,
                 category="edge",
                 observed=observed,
-                trusted_refs=bindings.get(
+                trusted_ref_groups=bindings.get(
                     (
                         truth.chain_id,
                         EvidenceBindingCategory.EDGE,
                         edge.edge_id,
                     ),
-                    frozenset(),
+                    (),
                 ),
                 passed=observed is not None
                 and observed.status is ObligationStatus.CLOSED,
@@ -1416,13 +1430,13 @@ def _assess_chain(
                 chain_id=truth.chain_id,
                 category="check",
                 observed=observed,
-                trusted_refs=bindings.get(
+                trusted_ref_groups=bindings.get(
                     (
                         truth.chain_id,
                         EvidenceBindingCategory.CHECK,
                         check.check_id,
                     ),
-                    frozenset(),
+                    (),
                 ),
                 passed=observed is not None and observed.status is CheckStatus.PASS,
                 missing_reason="required disconfirming check is absent",
@@ -1441,7 +1455,7 @@ def _assess_observation(
     | ObservedDepthEdge
     | ObservedDisconfirmingCheck
     | None,
-    trusted_refs: frozenset[str],
+    trusted_ref_groups: tuple[frozenset[str], ...],
     passed: bool,
     missing_reason: str,
     open_reason: str,
@@ -1451,12 +1465,15 @@ def _assess_observation(
 ) -> _Assessment:
     matched = observed is not None
     candidate_refs = observed.evidence_refs if observed is not None else ()
+    trusted_refs = frozenset(
+        ref for group in trusted_ref_groups for ref in group
+    )
     evidence_refs = tuple(ref for ref in candidate_refs if ref in trusted_refs)
     candidate_ref_set = frozenset(candidate_refs)
     has_evidence = (
-        bool(trusted_refs)
+        bool(trusted_ref_groups)
         and len(candidate_refs) == len(candidate_ref_set)
-        and candidate_ref_set == trusted_refs
+        and candidate_ref_set in trusted_ref_groups
     )
     if not matched:
         closed = False
@@ -1556,9 +1573,12 @@ def _evaluate_l3(
         record = records.get(chain_id)
         if record is None:
             continue
-        trusted_refs = bindings.get(
+        trusted_ref_groups = bindings.get(
             (chain_id, EvidenceBindingCategory.L3, "execution"),
-            frozenset(),
+            (),
+        )
+        trusted_refs = frozenset(
+            ref for group in trusted_ref_groups for ref in group
         )
         accepted_refs = tuple(
             ref for ref in record.evidence_refs if ref in trusted_refs
@@ -1566,9 +1586,9 @@ def _evaluate_l3(
         accepted_by_chain[chain_id] = accepted_refs
         candidate_ref_set = frozenset(record.evidence_refs)
         if (
-            bool(trusted_refs)
+            bool(trusted_ref_groups)
             and len(record.evidence_refs) == len(candidate_ref_set)
-            and candidate_ref_set == trusted_refs
+            and candidate_ref_set in trusted_ref_groups
         ):
             supported_ids.add(chain_id)
     accepted_refs = _unique_strings(

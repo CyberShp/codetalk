@@ -19,6 +19,7 @@ from pydantic import (
 
 
 SCHEMA_VERSION = "quality-evaluation-v1"
+EVALUATOR_VERSION = "quality-evaluation-v3"
 
 NonEmptyString = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 CommitSha = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{40}$")]

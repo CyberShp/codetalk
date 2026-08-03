@@ -7,8 +7,12 @@
       "critical": true,
       "applicability": "applicable",
       "claim": "The Hypervisor constructor installs a PropertiesChanged match for the host0 object and the Boot Progress interface, with a callback that forwards each matching message to bootProgressChangeEvent.",
-      "evidence_refs": ["source://hypervisor_state_manager.hpp#L42-L50"],
-      "applicability_evidence_refs": ["source://hypervisor_state_manager.hpp#L42-L50"]
+      "evidence_refs": [
+        "source://hypervisor_state_manager.hpp#L42-L50"
+      ],
+      "applicability_evidence_refs": [
+        "source://hypervisor_state_manager.hpp#L42-L50"
+      ]
     },
     {
       "gold_id": "state-gold-002",
@@ -16,8 +20,12 @@
       "critical": true,
       "applicability": "applicable",
       "claim": "updateCurrentHostState maps the SystemInitComplete boot-progress stage to the Standby host state.",
-      "evidence_refs": ["source://hypervisor_state_manager.cpp#L64-L68"],
-      "applicability_evidence_refs": ["source://hypervisor_state_manager.cpp#L64-L68"]
+      "evidence_refs": [
+        "source://hypervisor_state_manager.cpp#L64-L68"
+      ],
+      "applicability_evidence_refs": [
+        "source://hypervisor_state_manager.cpp#L64-L68"
+      ]
     },
     {
       "gold_id": "state-gold-003",
@@ -25,17 +33,38 @@
       "critical": true,
       "applicability": "applicable",
       "claim": "updateCurrentHostState maps the OSRunning boot-progress stage to the Running host state.",
-      "evidence_refs": ["source://hypervisor_state_manager.cpp#L69-L73"],
-      "applicability_evidence_refs": ["source://hypervisor_state_manager.cpp#L69-L73"]
+      "evidence_refs": [
+        "source://hypervisor_state_manager.cpp#L69-L73"
+      ],
+      "applicability_evidence_refs": [
+        "source://hypervisor_state_manager.cpp#L69-L73"
+      ]
     },
     {
-      "gold_id": "state-gold-004",
-      "semantic_key": "hypervisor.boot_progress.unspecified.maps.current.and.requested.state.to.off",
+      "gold_id": "state-gold-004a",
+      "semantic_key": "hypervisor.boot_progress.unspecified.maps.current_state.to.off",
       "critical": true,
       "applicability": "applicable",
-      "claim": "For the Unspecified boot-progress stage, updateCurrentHostState sets CurrentHostState to Off and resets RequestedHostTransition to Off.",
-      "evidence_refs": ["source://hypervisor_state_manager.cpp#L74-L82"],
-      "applicability_evidence_refs": ["source://hypervisor_state_manager.cpp#L74-L82"]
+      "claim": "For the Unspecified boot-progress stage, updateCurrentHostState sets CurrentHostState to Off.",
+      "evidence_refs": [
+        "source://hypervisor_state_manager.cpp#L74-L80"
+      ],
+      "applicability_evidence_refs": [
+        "source://hypervisor_state_manager.cpp#L74-L80"
+      ]
+    },
+    {
+      "gold_id": "state-gold-004b",
+      "semantic_key": "hypervisor.boot_progress.unspecified.maps.requested_transition.to.off",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "For the Unspecified boot-progress stage, updateCurrentHostState resets RequestedHostTransition to Off.",
+      "evidence_refs": [
+        "source://hypervisor_state_manager.cpp#L74-L82"
+      ],
+      "applicability_evidence_refs": [
+        "source://hypervisor_state_manager.cpp#L74-L82"
+      ]
     },
     {
       "gold_id": "state-gold-005",
@@ -43,26 +72,90 @@
       "critical": false,
       "applicability": "applicable",
       "claim": "For a boot-progress value other than SystemInitComplete, OSRunning, or Unspecified, updateCurrentHostState sets CurrentHostState to Off.",
-      "evidence_refs": ["source://hypervisor_state_manager.cpp#L83-L88"],
-      "applicability_evidence_refs": ["source://hypervisor_state_manager.cpp#L83-L88"]
+      "evidence_refs": [
+        "source://hypervisor_state_manager.cpp#L83-L88"
+      ],
+      "applicability_evidence_refs": [
+        "source://hypervisor_state_manager.cpp#L83-L88"
+      ]
     },
     {
-      "gold_id": "state-gold-006",
-      "semantic_key": "hypervisor.properties_changed.parse_error.is.logged.and.returns.without.update",
+      "gold_id": "state-gold-006a",
+      "semantic_key": "hypervisor.properties_changed.parse_error.is.caught.and_logged",
       "critical": true,
       "applicability": "applicable",
-      "claim": "If reading a BootProgress PropertiesChanged message throws an sdbusplus exception, bootProgressChangeEvent logs the parse failure and returns before looking up BootProgress or calling updateCurrentHostState.",
-      "evidence_refs": ["source://hypervisor_state_manager.cpp#L91-L112"],
-      "applicability_evidence_refs": ["source://hypervisor_state_manager.cpp#L91-L112"]
+      "claim": "If reading a BootProgress PropertiesChanged message throws an sdbusplus exception, bootProgressChangeEvent catches it and logs the parse failure.",
+      "evidence_refs": [
+        "source://hypervisor_state_manager.cpp#L91-L102"
+      ],
+      "applicability_evidence_refs": [
+        "source://hypervisor_state_manager.cpp#L91-L102"
+      ]
     },
     {
-      "gold_id": "state-gold-007",
-      "semantic_key": "hypervisor.basic_paths.test.covers.direct.boot_progress.mapping",
+      "gold_id": "state-gold-006b",
+      "semantic_key": "hypervisor.properties_changed.parse_error.returns.before_update",
       "critical": true,
       "applicability": "applicable",
-      "claim": "The BasicPaths unit test directly exercises invalid, SystemInitComplete, OSRunning, and Unspecified boot-progress values and checks that they produce Off, Standby, Running, and Off host states respectively.",
-      "evidence_refs": ["source://test/hypervisor_state.cpp#L12-L39"],
-      "applicability_evidence_refs": ["source://test/hypervisor_state.cpp#L12-L39"]
+      "claim": "On an sdbusplus message-read exception, bootProgressChangeEvent returns before looking up BootProgress or calling updateCurrentHostState.",
+      "evidence_refs": [
+        "source://hypervisor_state_manager.cpp#L95-L112"
+      ],
+      "applicability_evidence_refs": [
+        "source://hypervisor_state_manager.cpp#L95-L112"
+      ]
+    },
+    {
+      "gold_id": "state-gold-007a",
+      "semantic_key": "hypervisor.basic_paths.invalid.maps.to.off",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "The BasicPaths unit test passes an invalid boot-progress value to updateCurrentHostState and expects CurrentHostState to be Off.",
+      "evidence_refs": [
+        "source://test/hypervisor_state.cpp#L12-L23"
+      ],
+      "applicability_evidence_refs": [
+        "source://test/hypervisor_state.cpp#L12-L23"
+      ]
+    },
+    {
+      "gold_id": "state-gold-007b",
+      "semantic_key": "hypervisor.basic_paths.system_init_complete.maps.to.standby",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "The BasicPaths unit test passes SystemInitComplete to updateCurrentHostState and expects CurrentHostState to be Standby.",
+      "evidence_refs": [
+        "source://test/hypervisor_state.cpp#L25-L28"
+      ],
+      "applicability_evidence_refs": [
+        "source://test/hypervisor_state.cpp#L25-L28"
+      ]
+    },
+    {
+      "gold_id": "state-gold-007c",
+      "semantic_key": "hypervisor.basic_paths.os_running.maps.to.running",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "The BasicPaths unit test passes OSRunning to updateCurrentHostState and expects CurrentHostState to be Running.",
+      "evidence_refs": [
+        "source://test/hypervisor_state.cpp#L30-L33"
+      ],
+      "applicability_evidence_refs": [
+        "source://test/hypervisor_state.cpp#L30-L33"
+      ]
+    },
+    {
+      "gold_id": "state-gold-007d",
+      "semantic_key": "hypervisor.basic_paths.unspecified.maps.to.off",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "The BasicPaths unit test passes Unspecified to updateCurrentHostState and expects CurrentHostState to be Off.",
+      "evidence_refs": [
+        "source://test/hypervisor_state.cpp#L35-L38"
+      ],
+      "applicability_evidence_refs": [
+        "source://test/hypervisor_state.cpp#L35-L38"
+      ]
     }
   ]
 }

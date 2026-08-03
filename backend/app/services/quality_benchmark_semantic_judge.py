@@ -26,7 +26,7 @@ from app.services.harness_facade import AgentHarnessFacade, HarnessRunRequest
 
 SemanticVerdict = Literal["supports", "contradicts", "insufficient"]
 SemanticAxis = Literal["accuracy", "breadth", "depth"]
-JUDGE_VERSION = "quality-semantic-judge-v1"
+JUDGE_VERSION = "quality-semantic-judge-v3"
 AUDIT_SCHEMA_VERSION = "quality-semantic-judge-audit-v1"
 DEFAULT_JUDGE_MODEL = "gpt-5.5"
 _LIMIT_DEADLINE = "SEMANTIC_JUDGE_DEADLINE_EXCEEDED"
@@ -582,6 +582,12 @@ def _benchmark_semantic_prompt(request: dict[str, Any]) -> str:
             "Return supports only when the candidate fully and correctly expresses the "
             "oracle requirement and OBSERVED contexts alone directly support that complete "
             "meaning.",
+            "Enumerate every material clause in the oracle, including each condition, "
+            "ordering, quantifier, actor, and lifecycle boundary; then identify the exact "
+            "OBSERVED line or lines that support each material clause in the candidate.",
+            "Do not use REQUIRED contexts to fill candidate details or evidence omitted from "
+            "OBSERVED contexts. Any omitted or unsupported material clause requires "
+            "insufficient, even when the remaining clauses are correct.",
             "A natural paraphrase may support. A reversed, false, overbroad, or partial "
             "candidate must be contradicts or insufficient even when its source range is real.",
             "Write the final JSON object to semantic_verdicts.json in the declared artifact "
@@ -650,7 +656,10 @@ def _audit_metadata(
         "status": str(status),
         "judge_version": JUDGE_VERSION,
         "judge_contract_sha256": hashlib.sha256(
-            f"{JUDGE_VERSION}:behavior-claim-validator-v2:full-entailment".encode()
+            (
+                f"{JUDGE_VERSION}:behavior-claim-validator-v3:"
+                "material-clause-entailment"
+            ).encode()
         ).hexdigest(),
         "judge": {
             key: validator[key]

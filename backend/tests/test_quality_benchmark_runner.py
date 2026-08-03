@@ -561,11 +561,29 @@ def test_real_snapshot_default_path_runs_batch_judge_for_all_three_axes(tmp_path
     assert {
         judgment.axis for judgment in semantic_judge.calls[0]["judgments"]
     } == {"accuracy", "breadth", "depth"}
+    assert semantic_judge.calls[1]["judgments"] == semantic_judge.calls[0]["judgments"]
     assert semantic_judge.calls[1]["mode"] == "deep"
     assert semantic_judge.calls[1]["snapshot_label"] == (
-        "first_pass_decisive_verification"
+        "first_pass_high_effort_adjudication"
     )
     assert len(audit_sink) == 2
+    assert audit_sink[0]["decision_role"] == "diagnostic_screening"
+    assert audit_sink[1]["decision_role"] == "authoritative_adjudication"
+    assert audit_sink[1]["screening_disagreement_count"] == 0
+    assert audit_sink[1]["screening_disagreements"] == []
+    assert len(audit_sink[1]["verdict_trace"]) == len(
+        semantic_judge.calls[0]["judgments"]
+    )
+    assert all(
+        set(item) == {
+            "judgment_id",
+            "axis",
+            "screening",
+            "adjudication",
+            "resolved",
+        }
+        for item in audit_sink[1]["verdict_trace"]
+    )
     assert audit_sink[0]["judge"]["model"] == "fixture-independent-judge"
     assert all(
         audit_sink[0]["candidate_count_by_axis"][axis] > 0
@@ -578,30 +596,66 @@ def test_real_snapshot_default_path_runs_batch_judge_for_all_three_axes(tmp_path
     }
 
 
-def test_semantic_consensus_fails_closed_on_any_decisive_disagreement() -> None:
+def test_high_effort_semantic_adjudication_is_authoritative_and_fail_closed() -> None:
     module = _runner()
 
-    assert module._consensus_semantic_verdicts(
+    assert module._authoritative_semantic_verdicts(
         {
-            "agreed-support": "supports",
-            "agreed-contradiction": "contradicts",
-            "support-disagreement": "supports",
-            "contradiction-disagreement": "contradicts",
-            "first-insufficient": "insufficient",
+            "confirmed-support": "supports",
+            "upgraded-support": "insufficient",
+            "downgraded-support": "supports",
+            "authoritative-contradiction": "supports",
+            "missing-adjudication": "supports",
         },
         {
-            "agreed-support": "supports",
-            "agreed-contradiction": "contradicts",
-            "support-disagreement": "insufficient",
-            "contradiction-disagreement": "supports",
+            "confirmed-support": "supports",
+            "upgraded-support": "supports",
+            "downgraded-support": "insufficient",
+            "authoritative-contradiction": "contradicts",
         },
     ) == {
-        "agreed-support": "supports",
-        "agreed-contradiction": "contradicts",
-        "support-disagreement": "insufficient",
-        "contradiction-disagreement": "insufficient",
-        "first-insufficient": "insufficient",
+        "confirmed-support": "supports",
+        "upgraded-support": "supports",
+        "downgraded-support": "insufficient",
+        "authoritative-contradiction": "contradicts",
+        "missing-adjudication": "insufficient",
     }
+
+
+def test_semantic_screening_disagreements_are_addressable() -> None:
+    module = _runner()
+
+    disagreements = module._semantic_verdict_disagreements(
+        {
+            "stable": "supports",
+            "upgraded": "insufficient",
+            "downgraded": "supports",
+            "missing": "supports",
+        },
+        {
+            "stable": "supports",
+            "upgraded": "supports",
+            "downgraded": "insufficient",
+        },
+    )
+
+    assert disagreements == (
+        {
+            "judgment_id": "upgraded",
+            "screening": "insufficient",
+            "adjudication": "supports",
+        },
+        {
+            "judgment_id": "downgraded",
+            "screening": "supports",
+            "adjudication": "insufficient",
+        },
+        {
+            "judgment_id": "missing",
+            "screening": "supports",
+            "adjudication": "insufficient",
+        },
+    )
 
 
 def test_cli_selectors_are_mutually_exclusive() -> None:
@@ -1812,7 +1866,7 @@ def test_depth_prefilter_accepts_complete_range_with_bounded_context() -> None:
     assert aligned["chains"][0]["nodes"][0]["node_id"] == "hidden-node"
 
 
-@pytest.mark.parametrize(("extra_lines", "expected"), [(20, True), (21, False)])
+@pytest.mark.parametrize(("extra_lines", "expected"), [(40, True), (41, False)])
 def test_complete_evidence_match_has_a_closed_context_boundary(
     extra_lines, expected
 ) -> None:
@@ -1908,6 +1962,123 @@ def test_depth_obligation_can_require_multiple_individually_valid_ranges() -> No
         "source://lib/storage.c#first:L10-L20",
         "source://lib/storage.c#second:L30-L40",
     ]
+
+
+def test_depth_obligation_accepts_one_complete_trusted_alternative_group() -> None:
+    module = _runner()
+    catalog = module.DepthEvidenceCatalog.model_validate({
+        "case_id": "case",
+        "bindings": [
+            {
+                "evidence_ref": "source://tests/primary.c#L10-L20:primary",
+                "chain_id": "hidden-chain",
+                "category": "node",
+                "obligation_id": "hidden-trigger",
+            },
+            {
+                "evidence_ref": "source://tests/alternate.c#L40-L52:alternate",
+                "evidence_group": "alternate-test",
+                "chain_id": "hidden-chain",
+                "category": "node",
+                "obligation_id": "hidden-trigger",
+            },
+        ],
+    })
+    truth = {
+        "chains": [{
+            "chain_id": "hidden-chain",
+            "nodes": [{"node_id": "hidden-trigger", "kind": "trigger"}],
+            "edges": [],
+            "disconfirming_checks": [],
+        }],
+    }
+    candidate = {
+        "chains": [{
+            "chain_id": "public-chain",
+            "nodes": [{
+                "node_id": "public-trigger",
+                "status": "closed",
+                "narrative": "The alternate test submits the concurrent trigger.",
+                "evidence_refs": ["source://tests/alternate.c#L40-L52"],
+            }],
+            "edges": [],
+            "disconfirming_checks": [],
+        }],
+    }
+
+    aligned = module._align_depth_candidate_from_evidence(
+        truth,
+        candidate,
+        catalog,
+        semantic_verdict_adapter=_IndependentAcceptingVerdictAdapter(),
+    )
+
+    assert aligned["chains"][0]["nodes"] == [{
+        "node_id": "hidden-trigger",
+        "status": "closed",
+        "evidence_refs": ["source://tests/alternate.c#L40-L52:alternate"],
+    }]
+
+
+def test_depth_obligation_rejects_complete_group_mixed_with_alternate_ref() -> None:
+    module = _runner()
+    catalog = module.DepthEvidenceCatalog.model_validate({
+        "case_id": "case",
+        "bindings": [
+            {
+                "evidence_ref": "source://tests/primary.c#L10-L20:primary-one",
+                "chain_id": "hidden-chain",
+                "category": "node",
+                "obligation_id": "hidden-trigger",
+            },
+            {
+                "evidence_ref": "source://tests/primary.c#L22-L30:primary-two",
+                "chain_id": "hidden-chain",
+                "category": "node",
+                "obligation_id": "hidden-trigger",
+            },
+            {
+                "evidence_ref": "source://tests/alternate.c#L40-L52:alternate-one",
+                "evidence_group": "alternate-test",
+                "chain_id": "hidden-chain",
+                "category": "node",
+                "obligation_id": "hidden-trigger",
+            },
+        ],
+    })
+    truth = {
+        "chains": [{
+            "chain_id": "hidden-chain",
+            "nodes": [{"node_id": "hidden-trigger", "kind": "trigger"}],
+            "edges": [],
+            "disconfirming_checks": [],
+        }],
+    }
+    candidate = {
+        "chains": [{
+            "chain_id": "public-chain",
+            "nodes": [{
+                "node_id": "public-trigger",
+                "status": "closed",
+                "narrative": "The primary test exercises the trigger.",
+                "evidence_refs": [
+                    "source://tests/primary.c#L10-L30",
+                    "source://tests/alternate.c#L40-L52",
+                ],
+            }],
+            "edges": [],
+            "disconfirming_checks": [],
+        }],
+    }
+
+    aligned = module._align_depth_candidate_from_evidence(
+        truth,
+        candidate,
+        catalog,
+        semantic_verdict_adapter=_IndependentAcceptingVerdictAdapter(),
+    )
+
+    assert aligned["chains"][0]["nodes"] == []
 
 
 def test_depth_reversed_narrative_does_not_close_by_source_range_alone() -> None:
