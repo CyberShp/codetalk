@@ -370,11 +370,13 @@ def _validate_generator_evidence(
         if observed != expected:
             raise BaselineError(f"generator/evaluation {label} mismatch")
     elapsed = generation.get("elapsed_seconds")
-    wall = execution.get("wall_clock_seconds")
+    generation_wall = execution.get("generation_wall_clock_seconds")
     if (
         isinstance(elapsed, bool)
         or not isinstance(elapsed, (int, float))
-        or abs(float(elapsed) - float(wall)) > 0.001
+        or isinstance(generation_wall, bool)
+        or not isinstance(generation_wall, (int, float))
+        or abs(float(elapsed) - float(generation_wall)) > 0.001
     ):
         raise BaselineError("generation elapsed time does not match execution evidence")
 

@@ -110,6 +110,7 @@ def _write_run(
         manifest["execution"] = {
             "profile": profile,
             "wall_clock_seconds": wall_seconds,
+            "generation_wall_clock_seconds": wall_seconds,
             "cache_reuse": False,
             "work_sufficiency": work_sufficiency,
         }

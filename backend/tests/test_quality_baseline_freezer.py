@@ -92,7 +92,7 @@ def _write_generator(root: Path, run: Path) -> Path:
                 "mode": execution["profile"],
                 "model": manifest["versions"]["model"],
                 "codetalk_revision": manifest["versions"]["codetalk"],
-                "elapsed_seconds": execution["wall_clock_seconds"],
+                "elapsed_seconds": execution["generation_wall_clock_seconds"],
                 "artifact_hash_manifest": "artifact_hash_manifest.json",
             },
             sort_keys=True,
@@ -282,6 +282,32 @@ def test_freezer_publishes_complete_read_only_self_contained_bundle(
     if os.name != "nt":
         assert all(path.stat().st_mode & 0o222 == 0 for path in output.rglob("*"))
         assert output.stat().st_mode & 0o222 == 0
+
+
+def test_freezer_compares_generator_elapsed_to_generation_phase_time(
+    tmp_path: Path,
+) -> None:
+    fixture = _evidence_fixture(tmp_path)
+    run = Path(fixture["runs"][0])
+    generator = Path(fixture["generators"][0])
+    manifest_path = run / "quality_evaluation_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    whole_chain_seconds = manifest["execution"]["wall_clock_seconds"]
+    generation_seconds = whole_chain_seconds - 90.0
+    manifest["execution"]["generation_wall_clock_seconds"] = generation_seconds
+
+    generation_path = generator / "generation_manifest.json"
+    generation = json.loads(generation_path.read_text())
+    generation["elapsed_seconds"] = generation_seconds
+    generation_path.write_text(json.dumps(generation) + "\n")
+    manifest["execution"]["generator_artifact_root_sha256"] = (
+        _rewrite_generator_hash_manifest(generator)
+    )
+    manifest_path.write_text(json.dumps(manifest) + "\n")
+
+    output = _freeze(fixture, tmp_path / "phase-timing")
+
+    assert output.is_dir()
 
 
 def test_freezer_rejects_generator_candidate_tamper(tmp_path: Path) -> None:
