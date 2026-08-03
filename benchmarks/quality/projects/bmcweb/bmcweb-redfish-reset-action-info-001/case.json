@@ -3,13 +3,13 @@
   "case_id": "bmcweb-redfish-reset-action-info-001",
   "project_id": "bmcweb",
   "analysis_target": "Redfish ComputerSystem.Reset ActionInfo host-transition validation; exclude Manager.Reset.",
-  "truth_package_version": "3",
+  "truth_package_version": "4",
   "tier": "S",
   "truth_package": {
     "gold_claims": {"path": "gold_claims.json", "sha256": "98015e1f4c75902b1685ed03b7f5739f6d4445cb0b3077545d1bbc22f65683cf"},
-    "coverage_universe": {"path": "coverage_universe.json", "sha256": "ad904ceeefd697b29b85fd2742c2ac983e255bf85306896a525d9244f76408df"},
-    "critical_chains": {"path": "critical_chains.json", "sha256": "32d31e8bb5eedf9fd7b13cf749d0b9fc363e641ab5c6c4fbdec90643fb1ca95d"},
-    "execution_oracles": {"path": "execution_oracles.json", "sha256": "594a4e49700564cbfcce5e43e1ebce4b94b2d64fa89c5fac256713d2d2df4762"}
+    "coverage_universe": {"path": "coverage_universe.json", "sha256": "4e281f055d8668eaee642402dabc268f33215c0f4d0080c06c3f830b69f7504c"},
+    "critical_chains": {"path": "critical_chains.json", "sha256": "8dcc942e899369fe0aa8cf607fee495b236bc9d9fc7350eb2d481b7aed5ca93b"},
+    "execution_oracles": {"path": "execution_oracles.json", "sha256": "e7e8d788d3f2698558013c486f8032c6425ee29960cf2fd59ee60774ab9eadb9"}
   },
   "test_execution": {
     "policy": "allowlisted",

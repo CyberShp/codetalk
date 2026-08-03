@@ -3,7 +3,7 @@
   "execution_plan": {"schema_version": "quality-depth-execution-v1", "case_id": "bmcweb-redfish-reset-action-info-001", "execution_tier": "S", "policy": "disabled", "oracles": [], "limitations": []},
   "tier_dispositions": [{"tier": "E", "status": "unavailable", "requirements": ["BMCWEB_TEST_BUILD", "ISOLATED_DBUS_FIXTURE"], "limitation": "EXECUTION_ENVIRONMENT_NOT_PROVISIONED"}],
   "bindings": [
-    {"evidence_ref": "source://redfish-core/lib/systems.hpp#L3645-L3652:node-trigger", "chain_id": "bmcweb-reset-action-info-chain", "category": "node", "obligation_id": "get-trigger"},
+    {"evidence_ref": "source://redfish-core/lib/systems.hpp#L3649-L3652:node-trigger", "chain_id": "bmcweb-reset-action-info-chain", "category": "node", "obligation_id": "get-trigger"},
     {"evidence_ref": "source://redfish-core/lib/systems.hpp#L3564-L3606:node-precondition", "chain_id": "bmcweb-reset-action-info-chain", "category": "node", "obligation_id": "system-valid-precondition"},
     {"evidence_ref": "source://redfish-core/lib/systems.hpp#L3564-L3606:node-entry", "chain_id": "bmcweb-reset-action-info-chain", "category": "node", "obligation_id": "handler-entry"},
     {"evidence_ref": "source://redfish-core/lib/systems.hpp#L3552-L3561:node-call", "chain_id": "bmcweb-reset-action-info-chain", "category": "node", "obligation_id": "dbus-allowed-transitions-call"},
@@ -16,7 +16,8 @@
     {"evidence_ref": "source://redfish-core/lib/systems.hpp#L3500-L3533:node-release", "chain_id": "bmcweb-reset-action-info-chain", "category": "node", "obligation_id": "allowable-values-release"},
     {"evidence_ref": "source://test/redfish-core/lib/system_test.cpp#L25-L35:node-observation", "chain_id": "bmcweb-reset-action-info-chain", "category": "node", "obligation_id": "http-500-observation"},
     {"evidence_ref": "source://test/redfish-core/lib/system_test.cpp#L25-L64:node-oracle", "chain_id": "bmcweb-reset-action-info-chain", "category": "node", "obligation_id": "system-test-oracle"},
-    {"evidence_ref": "source://redfish-core/lib/systems.hpp#L3645-L3652:edge-01", "chain_id": "bmcweb-reset-action-info-chain", "category": "edge", "obligation_id": "trigger-to-precondition"},
+    {"evidence_ref": "source://redfish-core/lib/systems.hpp#L3649-L3652:edge-01-route", "chain_id": "bmcweb-reset-action-info-chain", "category": "edge", "obligation_id": "trigger-to-precondition"},
+    {"evidence_ref": "source://redfish-core/lib/systems.hpp#L3564-L3590:edge-01-validation", "chain_id": "bmcweb-reset-action-info-chain", "category": "edge", "obligation_id": "trigger-to-precondition"},
     {"evidence_ref": "source://redfish-core/lib/systems.hpp#L3564-L3606:edge-02", "chain_id": "bmcweb-reset-action-info-chain", "category": "edge", "obligation_id": "precondition-to-entry"},
     {"evidence_ref": "source://redfish-core/lib/systems.hpp#L3552-L3606:edge-03", "chain_id": "bmcweb-reset-action-info-chain", "category": "edge", "obligation_id": "entry-to-call"},
     {"evidence_ref": "source://redfish-core/lib/systems.hpp#L3500-L3561:edge-04", "chain_id": "bmcweb-reset-action-info-chain", "category": "edge", "obligation_id": "call-to-acquire"},

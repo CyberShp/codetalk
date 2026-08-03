@@ -966,6 +966,36 @@ def test_accuracy_prefilter_accepts_bounded_bidirectional_range_containment(
     )
 
     assert aligned["claims"][0]["semantic_key"] == "canonical.semantic.key"
+
+
+def test_accuracy_prefilter_rejects_disproportionately_broad_range() -> None:
+    module = _runner()
+    gold = [{
+        "gold_id": "hidden-gold",
+        "semantic_key": "canonical.semantic.key",
+        "claim": "The reset result is cleared.",
+        "evidence_refs": ["source://module/reset.c#L20-L20"],
+    }]
+    ledger = {
+        "claims": [{
+            "claim_id": "public-claim",
+            "claim": "The reset result is cleared.",
+            "semantic_key": "generator-wording",
+            "evidence_refs": [{
+                "path": "module/reset.c",
+                "start_line": 10,
+                "end_line": 30,
+            }],
+        }],
+    }
+
+    aligned = module._align_claim_semantics_from_evidence(
+        ledger,
+        gold,
+        semantic_verdict_adapter=_IndependentAcceptingVerdictAdapter(),
+    )
+
+    assert aligned["claims"][0]["semantic_key"].startswith("candidate-unmatched-")
     assert aligned["claims"][0]["l2_status"] == "supports"
 
 
@@ -1432,7 +1462,7 @@ def test_evaluator_aligns_public_breadth_refs_only_after_independent_semantic_ve
     assert "hidden-universe-item" not in json.dumps(aligned)
 
 
-def test_breadth_prefilter_accepts_bounded_range_containment() -> None:
+def test_breadth_prefilter_rejects_partial_canonical_range() -> None:
     module = _runner()
     universe = {
         "items": [{
@@ -1454,9 +1484,7 @@ def test_breadth_prefilter_accepts_bounded_range_containment() -> None:
         semantic_verdict_adapter=_IndependentAcceptingVerdictAdapter(),
     )
 
-    assert aligned["items"][0]["evidence_refs"] == [
-        "source://lib/storage.c#branch:L30-L35"
-    ]
+    assert aligned["items"][0]["evidence_refs"] == []
 
 
 def test_breadth_prefers_unique_evidence_before_judging_shared_ranges() -> None:
@@ -1669,7 +1697,7 @@ def test_evaluator_prefers_passing_check_observation_for_the_same_truth_key() ->
     }]
 
 
-def test_depth_prefilter_accepts_bounded_range_containment() -> None:
+def test_depth_prefilter_rejects_partial_canonical_range() -> None:
     module = _runner()
     catalog = module.DepthEvidenceCatalog.model_validate({
         "case_id": "case",
@@ -1708,7 +1736,61 @@ def test_depth_prefilter_accepts_bounded_range_containment() -> None:
         semantic_verdict_adapter=_IndependentAcceptingVerdictAdapter(),
     )
 
+    assert aligned["chains"][0]["nodes"] == []
+
+
+def test_depth_prefilter_accepts_complete_range_with_bounded_context() -> None:
+    module = _runner()
+    catalog = module.DepthEvidenceCatalog.model_validate({
+        "case_id": "case",
+        "bindings": [{
+            "evidence_ref": "source://lib/storage.c#L52-L57:node-hidden",
+            "chain_id": "hidden-chain",
+            "category": "node",
+            "obligation_id": "hidden-node",
+        }],
+    })
+    truth = {
+        "chains": [{
+            "chain_id": "hidden-chain",
+            "nodes": [{"node_id": "hidden-node"}],
+            "edges": [],
+            "disconfirming_checks": [],
+        }],
+    }
+    candidate = {
+        "chains": [{
+            "chain_id": "public-chain",
+            "nodes": [{
+                "node_id": "public-node",
+                "status": "closed",
+                "evidence_refs": ["source://lib/storage.c#L43-L57"],
+            }],
+            "edges": [],
+            "disconfirming_checks": [],
+        }],
+    }
+
+    aligned = module._align_depth_candidate_from_evidence(
+        truth,
+        candidate,
+        catalog,
+        semantic_verdict_adapter=_IndependentAcceptingVerdictAdapter(),
+    )
+
     assert aligned["chains"][0]["nodes"][0]["node_id"] == "hidden-node"
+
+
+@pytest.mark.parametrize(("extra_lines", "expected"), [(20, True), (21, False)])
+def test_complete_evidence_match_has_a_closed_context_boundary(
+    extra_lines, expected
+) -> None:
+    module = _runner()
+
+    assert module._complete_evidence_match(
+        ("range", "lib/storage.c", 40 - extra_lines, 45),
+        ("range", "lib/storage.c", 40, 45),
+    ) is expected
 
 
 def test_depth_edge_semantic_oracle_includes_statement_and_typed_endpoints() -> None:

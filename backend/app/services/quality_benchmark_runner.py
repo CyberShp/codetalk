@@ -1248,6 +1248,24 @@ def _bounded_evidence_match(
     return False
 
 
+def _complete_evidence_match(
+    observed: tuple[Any, ...], required: tuple[Any, ...]
+) -> bool:
+    if observed[0] != "range" or required[0] != "range":
+        return observed == required
+    _, observed_path, observed_start, observed_end = observed
+    _, required_path, required_start, required_end = required
+    if observed_path != required_path:
+        return False
+    observed_length = observed_end - observed_start + 1
+    required_length = required_end - required_start + 1
+    return (
+        observed_start <= required_start
+        and observed_end >= required_end
+        and observed_length - required_length <= 20
+    )
+
+
 def _required_evidence_satisfied(
     required: set[tuple[Any, ...]], observed: set[tuple[Any, ...]]
 ) -> bool:
@@ -1789,7 +1807,13 @@ def _breadth_evidence_requirement_satisfied(
         for match_key in [_evidence_match_key(raw_ref)]
         if match_key is not None
     }
-    return _required_evidence_satisfied(required, observed_keys)
+    return bool(required) and all(
+        any(
+            _complete_evidence_match(candidate, obligation)
+            for candidate in observed_keys
+        )
+        for obligation in required
+    )
 
 
 def _align_depth_candidate_from_evidence(
@@ -1867,7 +1891,13 @@ def _align_depth_candidate_from_evidence(
                     for match_key in [_evidence_match_key(binding.evidence_ref)]
                     if match_key is not None
                 }
-                if _required_evidence_satisfied(required_refs, observed_refs):
+                if required_refs and all(
+                    any(
+                        _complete_evidence_match(candidate, obligation)
+                        for candidate in observed_refs
+                    )
+                    for obligation in required_refs
+                ):
                     potential[key] = tuple(bindings)
             supported = []
             for key, bindings in potential.items():

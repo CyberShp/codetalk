@@ -3,7 +3,7 @@
   "case_id": "spdk-concurrent-bdev-reset-001",
   "project_id": "spdk",
   "analysis_target": "SPDK NVMe bdev concurrent reset handling and its dedicated unit-test coverage.",
-  "truth_package_version": "3",
+  "truth_package_version": "4",
   "tier": "S",
   "truth_package": {
     "gold_claims": {
@@ -12,7 +12,7 @@
     },
     "coverage_universe": {
       "path": "coverage_universe.json",
-      "sha256": "ba8111da3ea6c36813575cf4d2c28752925418c2407388d539cf20a68d456083"
+      "sha256": "ffd0f4ddb584e278b1120645d34fcd1184079ab2545707d9d96440a1b5493868"
     },
     "critical_chains": {
       "path": "critical_chains.json",

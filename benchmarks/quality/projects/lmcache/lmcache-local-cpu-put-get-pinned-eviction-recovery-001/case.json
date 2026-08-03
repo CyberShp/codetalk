@@ -3,7 +3,7 @@
   "case_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001",
   "project_id": "lmcache",
   "analysis_target": "LMCache local CPU backend pinned-memory put/get, eviction, and recovery lifecycle.",
-  "truth_package_version": "3",
+  "truth_package_version": "4",
   "tier": "S",
   "truth_package": {
     "gold_claims": {"path": "gold_claims.json", "sha256": "422ab94fb851e827959d35e5a2808c5c8aee2997be44fee07d7fa7f9df04723f"},

@@ -3,7 +3,7 @@
   "case_id": "open-cas-wb-default-disconnect-001",
   "project_id": "open-cas-linux",
   "analysis_target": "Open CAS Linux write-back default disconnect and recovery behavior.",
-  "truth_package_version": "3",
+  "truth_package_version": "4",
   "tier": "S",
   "truth_package": {
     "gold_claims": {

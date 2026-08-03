@@ -105,7 +105,7 @@ CONFIRMED_COMPOUND_BREADTH_ITEM_IDS = {
 }
 
 EXPECTED_ATOMIC_BREADTH_ITEM_COUNTS = {
-    "bmcweb": 13,
+    "bmcweb": 12,
     "femu": 13,
     "lmcache": 13,
     "mooncake": 23,
@@ -115,7 +115,7 @@ EXPECTED_ATOMIC_BREADTH_ITEM_COUNTS = {
     "phosphor-nvme": 13,
     "phosphor-state-manager": 12,
     "rdma-core": 14,
-    "spdk": 14,
+    "spdk": 15,
     "ucx": 30,
 }
 
@@ -143,13 +143,13 @@ def test_all_twelve_pinned_projects_have_a_hash_verified_tier_s_case() -> None:
     assert len(cases) == len(EXPECTED_PROJECT_IDS)
 
 
-def test_all_registered_cases_expose_atomic_truth_at_version_three() -> None:
+def test_all_registered_cases_expose_atomic_truth_at_version_four() -> None:
     registry = load_quality_registry(REGISTRY_PATH)
     case_paths = sorted(PROJECTS_ROOT.glob("*/*/case.json"))
     cases = [load_quality_case(path, registry=registry) for path in case_paths]
 
-    assert registry.truth_package_version == "3"
-    assert all(case.truth_package_version == "3" for case in cases)
+    assert registry.truth_package_version == "4"
+    assert all(case.truth_package_version == "4" for case in cases)
     assert all(str(case.analysis_target).strip() for case in cases)
     item_ids = set()
     item_count = 0
@@ -391,6 +391,30 @@ def _public_ref(raw_ref: str) -> str:
     assert normalized is not None
     path, start, end = normalized
     return f"source://{path}#L{start}-L{end}"
+
+
+class _AlwaysSupportsSemanticAdapter:
+    def __init__(self) -> None:
+        self.breadth_truth_ids = []
+        self.depth_truth_ids = []
+
+    def claim_verdict(self, *, candidate, truth):
+        return "supports"
+
+    def breadth_verdict(self, *, candidate, truth):
+        self.breadth_truth_ids.append(str(truth.get("item_id") or ""))
+        return "supports"
+
+    def depth_verdict(self, *, candidate, truth, binding):
+        self.depth_truth_ids.append(
+            str(
+                truth.get("node_id")
+                or truth.get("edge_id")
+                or truth.get("check_id")
+                or ""
+            )
+        )
+        return "supports"
 
 
 class _SelectiveBatchSemanticJudge:
@@ -760,6 +784,113 @@ def test_spdk_reversed_breadth_narratives_fail_the_real_hidden_universe() -> Non
 
     assert result.status.value == "fail"
     assert result.critical_misses
+
+
+def test_bmc_precise_get_route_reaches_breadth_semantic_judgment() -> None:
+    registry = load_quality_registry(REGISTRY_PATH)
+    case_path = next(PROJECTS_ROOT.glob("bmcweb/*/case.json"))
+    case = load_quality_case(case_path, registry=registry)
+    universe = json.loads(
+        (case_path.parent / case.truth_package.coverage_universe.path).read_text()
+    )
+    candidate = {
+        "items": [{
+            "candidate_id": "public-get-route",
+            "narrative": (
+                "GET ResetActionInfo requires getActionInfo and dispatches to "
+                "handleSystemCollectionResetActionGet."
+            ),
+            "evidence_refs": [
+                "source://redfish-core/lib/systems.hpp#L3649-L3652"
+            ],
+        }],
+    }
+
+    adapter = _AlwaysSupportsSemanticAdapter()
+    (aligned,) = _align_breadth_evidence_refs(
+        universe,
+        candidate,
+        semantic_verdict_adapter=adapter,
+    )
+
+    assert "bmcweb-entry-reset-action-info-get" in adapter.breadth_truth_ids
+    assert aligned["items"][0]["evidence_refs"] == [
+        "source://redfish-core/lib/systems.hpp#L3649-L3652"
+    ]
+
+
+def test_bmc_precise_get_route_and_validation_reach_depth_semantic_judgment() -> None:
+    registry = load_quality_registry(REGISTRY_PATH)
+    case_path = next(PROJECTS_ROOT.glob("bmcweb/*/case.json"))
+    case = load_quality_case(case_path, registry=registry)
+    truth = json.loads(
+        (case_path.parent / case.truth_package.critical_chains.path).read_text()
+    )
+    execution = json.loads(
+        (case_path.parent / case.truth_package.execution_oracles.path).read_text()
+    )
+    catalog = DepthEvidenceCatalog.model_validate(_depth_catalog_payload(execution))
+    candidate = {
+        "chains": [{
+            "chain_id": "public-bmc-chain",
+            "nodes": [{
+                "node_id": "public-get-trigger",
+                "status": "closed",
+                "narrative": "ResetActionInfo GET invokes its handler.",
+                "evidence_refs": [
+                    "source://redfish-core/lib/systems.hpp#L3649-L3652"
+                ],
+            }],
+            "edges": [{
+                "edge_id": "public-trigger-to-precondition",
+                "status": "closed",
+                "narrative": "The GET route validates the requested system.",
+                "evidence_refs": [
+                    "source://redfish-core/lib/systems.hpp#L3649-L3652",
+                    "source://redfish-core/lib/systems.hpp#L3564-L3590",
+                ],
+            }],
+            "disconfirming_checks": [],
+        }],
+    }
+
+    aligned = _align_depth_candidate_from_evidence(
+        truth,
+        candidate,
+        catalog,
+        semantic_verdict_adapter=_AlwaysSupportsSemanticAdapter(),
+    )
+
+    assert [item["node_id"] for item in aligned["chains"][0]["nodes"]] == [
+        "get-trigger"
+    ]
+    assert [item["edge_id"] for item in aligned["chains"][0]["edges"]] == [
+        "trigger-to-precondition"
+    ]
+
+
+def test_spdk_result_clear_and_owning_thread_truth_are_independently_atomic() -> None:
+    registry = load_quality_registry(REGISTRY_PATH)
+    case_path = next(PROJECTS_ROOT.glob("spdk/*/case.json"))
+    case = load_quality_case(case_path, registry=registry)
+    universe = json.loads(
+        (case_path.parent / case.truth_package.coverage_universe.path).read_text()
+    )
+    items = {item["item_id"]: item for item in universe["items"]}
+
+    assert items["spdk-reset:state-successful-controller-result"] == {
+        "item_id": "spdk-reset:state-successful-controller-result",
+        "dimension": "states",
+        "critical": True,
+        "applicability": "required",
+        "statement": "When rc is zero, bio->cpl.cdw0 is cleared to zero.",
+        "evidence_refs": [
+            "source://module/bdev/nvme/bdev_nvme.c#L3149-L3154"
+        ],
+    }
+    assert items["spdk-reset:state-owning-thread-continuation"]["evidence_refs"] == [
+        "source://module/bdev/nvme/bdev_nvme.c#L3155-L3158"
+    ]
 
 
 def test_spdk_reversed_depth_narratives_fail_the_real_hidden_chains() -> None:
