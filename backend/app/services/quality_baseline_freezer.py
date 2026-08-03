@@ -35,8 +35,8 @@ from app.services.quality_benchmark_corpus import (
 )
 from app.services.quality_benchmark_runner import _rename_directory_noreplace
 
-
 GENERATOR_REQUIRED_FILES = (
+    "benchmark_response.json",
     "repair_summary.json",
     "versions.json",
     "generation_manifest.json",
@@ -54,6 +54,7 @@ def freeze_baseline_output(
     repository_root: str | Path,
     thresholds: Mapping[str, Mapping[str, float]],
     calibration_audit: Mapping[str, Any],
+    review_evidence_files: Sequence[str | Path],
     work_sufficiency_audit: Mapping[str, Any],
     rapid_run_directories: Sequence[str | Path],
     rapid_generator_directories: Sequence[str | Path],
@@ -84,6 +85,12 @@ def freeze_baseline_output(
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(dir=output.parent, prefix=f".{output.name}."))
     try:
+        review_evidence_refs = _stage_review_evidence(
+            staging, review_evidence_files
+        )
+        _require_bound_calibration_evidence(
+            calibration_audit, review_evidence_refs
+        )
         core = _stage_evidence_group(
             staging,
             group="core",
@@ -200,6 +207,67 @@ def freeze_baseline_output(
     return output
 
 
+def _stage_review_evidence(
+    staging: Path,
+    evidence_files: Sequence[str | Path],
+) -> frozenset[str]:
+    if not evidence_files:
+        raise BaselineError("review evidence set must not be empty")
+    destination = staging / "review_evidence"
+    destination.mkdir()
+    retained: set[str] = set()
+    for source_value in evidence_files:
+        source = Path(source_value)
+        if source.is_symlink():
+            raise BaselineError(f"review evidence must not be a symlink: {source}")
+        try:
+            resolved = source.resolve(strict=True)
+        except OSError as exc:
+            raise BaselineError(f"review evidence is unavailable: {source}") from exc
+        if not resolved.is_file():
+            raise BaselineError(f"review evidence is not a file: {resolved}")
+        payload = resolved.read_bytes()
+        if not payload:
+            raise BaselineError(f"review evidence must not be empty: {resolved}")
+        digest = hashlib.sha256(payload).hexdigest()
+        ref = f"bundle-review-evidence://sha256/{digest}"
+        target = destination / digest
+        if target.exists():
+            if target.read_bytes() != payload:
+                raise BaselineError("review evidence SHA-256 collision")
+        else:
+            target.write_bytes(payload)
+        retained.add(ref)
+    return frozenset(retained)
+
+
+def _require_bound_calibration_evidence(
+    calibration_audit: Mapping[str, Any],
+    retained_refs: frozenset[str],
+) -> None:
+    referenced: set[str] = set()
+
+    def visit(value: Any) -> None:
+        if isinstance(value, Mapping):
+            for key, nested in value.items():
+                if key == "evidence_refs" and isinstance(nested, list):
+                    referenced.update(item for item in nested if isinstance(item, str))
+                visit(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                visit(nested)
+
+    visit(calibration_audit)
+    if not referenced:
+        raise BaselineError("calibration audit does not reference review evidence")
+    unbound = sorted(referenced - retained_refs)
+    if unbound:
+        raise BaselineError(
+            "calibration audit references evidence absent from the frozen bundle: "
+            + ", ".join(unbound)
+        )
+
+
 def _stage_evidence_group(
     staging: Path,
     *,
@@ -242,7 +310,7 @@ def _stage_evidence_group(
             expected_identity=evaluation_identity,
             require_execution=True,
         )
-        _validate_generator_evidence(generator, loaded)
+        _validate_generator_evidence(generator, loaded, expected_case=expected_case)
         result.append((case_id, pair_root))
         seen.add(case_id)
     return result
@@ -251,7 +319,10 @@ def _stage_evidence_group(
 def _require_tracked_corpus(
     identity: EvaluationCodeIdentity, corpus: QualityBaselineCorpusIdentity
 ) -> None:
-    relative_paths = ["benchmarks/quality/registry.json"]
+    relative_paths = [
+        "benchmarks/quality/registry.json",
+        "benchmarks/quality/reviewer_authority.json",
+    ]
     for case in corpus.cases:
         case_root = Path("benchmarks/quality/projects") / case.project_id / case.case_id
         relative_paths.append((case_root / "case.json").as_posix())
@@ -276,7 +347,7 @@ def _require_tracked_corpus(
     )
     if completed.returncode != 0:
         raise BaselineError(
-            "formal registry, case descriptors, and truth files must be tracked by the clean CodeTalk revision"
+            "formal registry, reviewer authority, case descriptors, and truth files must be tracked by the clean CodeTalk revision"
         )
 
 
@@ -346,7 +417,7 @@ def _copy_generator_once(source: Path, destination: Path) -> None:
 
 
 def _validate_generator_evidence(
-    generator: Path, evaluation: Any
+    generator: Path, evaluation: Any, *, expected_case: Any
 ) -> None:
     versions = _read_json_mapping(generator / "versions.json", "generator versions")
     manifest_versions = _mapping(evaluation.manifest.get("versions"), "versions")
@@ -364,6 +435,14 @@ def _validate_generator_evidence(
         "codetalk_revision": (
             generation.get("codetalk_revision"),
             versions.get("codetalk"),
+        ),
+        "source_tree": (
+            generation.get("source_tree"),
+            expected_case.source_tree,
+        ),
+        "evaluation source_tree": (
+            execution.get("generator_source_tree"),
+            expected_case.source_tree,
         ),
     }
     for label, (observed, expected) in checks.items():
@@ -385,6 +464,36 @@ def _validate_generator_evidence(
     if repair != expected_repair:
         raise BaselineError("generator/evaluation repair summary mismatch")
 
+    response_sha256 = str(generation.get("response_sha256") or "")
+    retained_response_sha256 = hashlib.sha256(
+        (generator / "benchmark_response.json").read_bytes()
+    ).hexdigest()
+    if retained_response_sha256 != response_sha256:
+        raise BaselineError(
+            "generator response hash does not match retained response bytes"
+        )
+    if execution.get("generator_response_sha256") != response_sha256:
+        raise BaselineError("evaluation response authority mismatch")
+
+    if generation.get("cache_reused") is True:
+        workbench_audit = _read_json_mapping(
+            generator / "workbench_audit.json", "workbench audit"
+        )
+        task_hashes = _mapping(
+            workbench_audit.get("task_artifact_hashes"),
+            "workbench task artifact hashes",
+        )
+        if task_hashes.get("benchmark_response.json") != response_sha256:
+            raise BaselineError(
+                "cached generator response is not bound to retained workbench evidence"
+            )
+        diagnostic = _mapping(
+            generation.get("work_sufficiency"), "generator work sufficiency"
+        )
+        if diagnostic.get("reuse_source_sha256") != response_sha256:
+            raise BaselineError(
+                "cached reuse source does not match the retained generator response"
+            )
     hash_manifest = _read_json_mapping(
         generator / "artifact_hash_manifest.json", "generator artifact hash manifest"
     )
@@ -609,6 +718,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--thresholds", required=True, type=Path)
     parser.add_argument("--calibration-audit", required=True, type=Path)
+    parser.add_argument(
+        "--review-evidence", required=True, action="append", type=Path
+    )
     parser.add_argument("--work-sufficiency-audit", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--previous-baseline", type=Path)
@@ -632,6 +744,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         calibration_audit=_read_json_mapping(
             args.calibration_audit, "calibration audit"
         ),
+        review_evidence_files=args.review_evidence,
         work_sufficiency_audit=_read_json_mapping(
             args.work_sufficiency_audit, "work sufficiency audit"
         ),

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import ast
+import asyncio
+import hashlib
 import io
 import json
-import hashlib
 import math
 import multiprocessing
 import os
@@ -17,54 +17,58 @@ import time
 import tokenize
 import traceback
 import uuid
-import cloudpickle
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Iterable
 
+import cloudpickle
 from app.config import settings
 from app.llm.base import BaseLLMClient, current_finish_reason
 from app.llm.factory import (
-    create_quality_repair_llm_client,
     create_llm_client_from_active,
+    create_quality_repair_llm_client,
     create_source_analysis_llm_client,
 )
 from app.services import legacy_workflow_execution as legacy_execution
 from app.services.agent_run_harness import (
     AgentRunRecord,
-    ArtifactValidationResult,
     ArtifactValidationHarness,
+    ArtifactValidationResult,
     _generic_agent_invocation_contract,
     _safe_required_artifact,
 )
-from app.services.artifact_profiles import validate_profile_artifacts
 from app.services.ai_thread_artifacts import ArtifactContractError
+from app.services.artifact_profiles import validate_profile_artifacts
 from app.services.coverage_workflow import parse_coverage_inputs
 from app.services.evidence_memory import EvidenceMemoryStore
-from app.services.harness_facade import AgentHarnessFacade, HarnessRunRequest
-from app.services.knowledge_store import KnowledgeStore
 from app.services.flow_evidence import (
     build_flow_evidence_pack,
     build_flow_outline,
     render_business_flow_markdown,
 )
-from app.services.provider_adapters.contracts import ProviderResumeToken, ProviderUnsupported
-from app.services.legacy_workbench_harness_contract import (
-    is_legacy_workbench_harness_contract,
-)
-from app.services.provider_adapters.registry import (
-    create_provider_adapter,
-    missing_provider_capabilities,
-)
-from app.services.tool_dispatch import ToolCallRequest, ToolDispatcher
-from app.services.managed_tool_runtime import ManagedToolRuntime, managed_tool_runtime
+from app.services.harness_facade import AgentHarnessFacade, HarnessRunRequest
 from app.services.input_consumption import (
     record_external_agent_artifact_consumption,
     record_external_agent_input_delivery,
     record_input_consumption_event,
 )
+from app.services.knowledge_store import KnowledgeStore
+from app.services.legacy_workbench_harness_contract import (
+    is_legacy_workbench_harness_contract,
+)
+from app.services.managed_tool_runtime import ManagedToolRuntime, managed_tool_runtime
+from app.services.provider_adapters.contracts import (
+    ProviderResumeToken,
+    ProviderUnsupported,
+)
+from app.services.provider_adapters.registry import (
+    create_provider_adapter,
+    missing_provider_capabilities,
+)
+from app.services.test_semantic_library import TestSemanticLibraryStore
+from app.services.tool_dispatch import ToolCallRequest, ToolDispatcher
 from app.services.workbench_artifact_manifest import write_task_artifact_manifest
 from app.services.workbench_run_enrichment import (
     finalize_enriched_task_run,
@@ -72,23 +76,26 @@ from app.services.workbench_run_enrichment import (
     knowledge_followup_requests,
     materialize_requested_knowledge,
 )
-from app.services.test_semantic_library import TestSemanticLibraryStore
-from app.services.workbench_task_run import BUILTIN_LLM_PROVIDER_ID
 from app.services.workbench_task_run import (
+    BUILTIN_LLM_PROVIDER_ID,
     FrozenV3ExecutionAuthorityError,
     WorkbenchTaskRunStore,
     load_frozen_v3_execution_authority,
     validate_run_snapshot_v3,
 )
-from app.services.workflow_run_status import (
-    derive_delivery_status,
-    legacy_delivery_status as _legacy_v3_delivery_status,
-    legacy_quality_status as _legacy_v3_quality_status,
-)
 from app.services.workflow_handler_dispatcher import (
     WorkflowHandlerDispatcher,
     WorkflowHandlerRequest,
     WorkflowHandlerResult,
+)
+from app.services.workflow_run_status import (
+    derive_delivery_status,
+)
+from app.services.workflow_run_status import (
+    legacy_delivery_status as _legacy_v3_delivery_status,
+)
+from app.services.workflow_run_status import (
+    legacy_quality_status as _legacy_v3_quality_status,
 )
 
 SAFE_RUNTIME_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -987,11 +994,26 @@ def _apply_benchmark_work_sufficiency(
         updated["work_sufficiency"] = diagnostic
         return updated, diagnostic
     if cache_reused:
+        try:
+            reuse_source_sha256 = hashlib.sha256(
+                (agent_dir / "benchmark_response.json").read_bytes()
+            ).hexdigest()
+        except OSError:
+            diagnostic = {
+                "status": "insufficient",
+                "auto_continue": remaining_seconds >= 120.0,
+                "elapsed_seconds": round(elapsed_seconds, 3),
+                "cache_reused": True,
+                "reasons": ["cache_reuse_source_unavailable"],
+            }
+            updated["work_sufficiency"] = diagnostic
+            return updated, diagnostic
         diagnostic = {
             "status": "reused",
             "auto_continue": False,
             "elapsed_seconds": round(elapsed_seconds, 3),
             "cache_reused": True,
+            "reuse_source_sha256": reuse_source_sha256,
             "reasons": [],
         }
         updated["work_sufficiency"] = diagnostic
@@ -1819,7 +1841,10 @@ class WorkbenchWorkflowRunner:
             NodeCheckpointStore,
             compute_node_idempotency_key,
         )
-        from app.services.workflow_scheduler import SUCCESS_STATUSES, WorkflowDagScheduler
+        from app.services.workflow_scheduler import (
+            SUCCESS_STATUSES,
+            WorkflowDagScheduler,
+        )
 
         effective_plan = json.loads(json.dumps(compiled_plan))
         for node in effective_plan.get("nodes") or []:
@@ -3897,7 +3922,10 @@ class WorkbenchWorkflowRunner:
         )
         _write_json(artifact_dir / "task_bundle.json", quality_retry_bundle)
         trusted_workflow_snapshot = _read_json(task_root / "workflow_snapshot.json")
-        from app.services.tool_action_journal import ToolActionContext, ToolActionJournal
+        from app.services.tool_action_journal import (
+            ToolActionContext,
+            ToolActionJournal,
+        )
 
         task_projection = _read_json(task_root / "task_run.json")
         tool_action_context = ToolActionContext(

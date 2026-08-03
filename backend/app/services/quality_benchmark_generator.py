@@ -16,7 +16,7 @@ import tempfile
 import time
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from app.services.agent_sandbox import credential_value_fingerprints
 from app.services.quality_benchmark_corpus import validate_truth_isolation
@@ -65,9 +65,9 @@ def generate_quality_benchmark_artifacts(
     timeout_seconds: int,
     codetalk_revision: str,
     truth_paths: tuple[str | Path, ...],
+    source_tree: str | None = None,
     approved_network_targets: tuple[str, ...] | None = None,
     analysis_target: str | None = None,
-    prepublication_gate: Callable[[Path], dict[str, Any]] | None = None,
 ) -> Path:
     """Generate one immutable candidate through the real CodeTalk Workbench."""
 
@@ -133,7 +133,6 @@ def generate_quality_benchmark_artifacts(
             prompt=prompt,
             output_schema=_generator_output_schema(),
             approved_network_targets=network_targets,
-            prepublication_gate=prepublication_gate,
         )
         expected_task_run_id = str(workbench.task_run_id)
         _require_before_deadline(deadline)
@@ -162,6 +161,7 @@ def generate_quality_benchmark_artifacts(
             model=model,
             mode=mode,
             codetalk_revision=codetalk_revision,
+            source_tree=source_tree,
             effective_timeout=effective_timeout,
             started_monotonic=started,
             deadline_monotonic=deadline,
@@ -209,6 +209,7 @@ def _run_postprocess_worker(
     model: str,
     mode: str,
     codetalk_revision: str,
+    source_tree: str | None,
     effective_timeout: int,
     started_monotonic: float,
     deadline_monotonic: float,
@@ -227,6 +228,7 @@ def _run_postprocess_worker(
             "model": model,
             "mode": mode,
             "codetalk_revision": codetalk_revision,
+            "source_tree": source_tree,
             "effective_timeout": effective_timeout,
             "started_monotonic": started_monotonic,
             "deadline_monotonic": deadline_monotonic,
@@ -275,6 +277,7 @@ def _postprocess_worker(
     model: str,
     mode: str,
     codetalk_revision: str,
+    source_tree: str | None,
     effective_timeout: int,
     started_monotonic: float,
     deadline_monotonic: float,
@@ -291,6 +294,7 @@ def _postprocess_worker(
             model=model,
             mode=mode,
             codetalk_revision=codetalk_revision,
+            source_tree=source_tree,
             effective_timeout=effective_timeout,
             started_monotonic=started_monotonic,
             deadline_monotonic=deadline_monotonic,
@@ -321,6 +325,7 @@ def _build_and_publish_success(
     model: str,
     mode: str,
     codetalk_revision: str,
+    source_tree: str | None,
     effective_timeout: int,
     started_monotonic: float,
     deadline_monotonic: float,
@@ -343,7 +348,9 @@ def _build_and_publish_success(
         raise _GenerationFailure("invalid_workbench_response", "invalid")
     _reject_candidate_secret_material(first_response, credential_fingerprints)
     _reject_candidate_secret_material(final_response, credential_fingerprints)
-    response_sha256 = hashlib.sha256(Path(workbench.response_path).read_bytes()).hexdigest()
+    final_response_bytes = Path(workbench.response_path).read_bytes()
+    response_sha256 = hashlib.sha256(final_response_bytes).hexdigest()
+    (staging / "benchmark_response.json").write_bytes(final_response_bytes)
     _write_json(staging / "workbench_audit.json", _sanitized_workbench_audit(workbench))
     _remove_tree(staging / "workbench_task")
 
@@ -376,6 +383,11 @@ def _build_and_publish_success(
             "evaluator": EVALUATOR_VERSION,
         },
     )
+    work_sufficiency = dict(getattr(workbench, "work_sufficiency", {}) or {})
+    cache_reused = bool(
+        work_sufficiency.get("cache_reused")
+        or work_sufficiency.get("status") == "reused"
+    )
     _write_json(
         staging / "generation_manifest.json",
         {
@@ -384,16 +396,15 @@ def _build_and_publish_success(
             "mode": mode,
             "model": model,
             "codetalk_revision": codetalk_revision,
+            "source_tree": source_tree,
             "elapsed_seconds": round(time.monotonic() - started_monotonic, 3),
             "timeout_seconds": effective_timeout,
-            "cache_reused": False,
+            "cache_reused": cache_reused,
             "truth_inputs": [],
             "runtime": "codetalk-workbench",
             "task_run_id": workbench.task_run_id,
             "workbench_status": workbench.status,
-            "work_sufficiency": dict(
-                getattr(workbench, "work_sufficiency", {}) or {}
-            ),
+            "work_sufficiency": work_sufficiency,
             "response_sha256": response_sha256,
             "artifact_hash_manifest": "artifact_hash_manifest.json",
         },
@@ -922,6 +933,7 @@ def _sanitized_workbench_audit(workbench: Any) -> dict[str, Any]:
         "task_run.json": task_artifact / "task_run.json",
         "execution.json": task_artifact / "execution.json",
         "benchmark_runtime.json": task_artifact / "benchmark_runtime.json",
+        "benchmark_response.json": Path(workbench.response_path),
         "sandbox_policy.json": (
             task_artifact / "agent_runs" / "analyze" / "sandbox_policy.json"
         ),

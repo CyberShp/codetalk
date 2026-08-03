@@ -7,7 +7,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from app.services.quality_evaluation_contract import (
     AxisStatus,
     EvaluationScope,
@@ -187,6 +186,26 @@ def test_all_claims_can_be_supported_while_critical_gold_omission_fails_recall()
     assert [miss.item_id for miss in result.critical_misses] == ["gold:G-CLEANUP"]
 
 
+def test_supported_duplicate_covers_gold_even_when_another_duplicate_is_unsupported() -> None:
+    result = _evaluate(
+        [
+            _claim("C-GOOD", "reset-path", evidence_id="EV-GOOD"),
+            _claim(
+                "C-BAD",
+                "reset-path",
+                evidence_id="EV-BAD",
+                l2_status="insufficient",
+            ),
+        ],
+        gold_claims=[_gold("G-RESET", "reset-path")],
+    )
+
+    precision = _metric(result, MetricName.CLAIM_PRECISION)
+    recall = _metric(result, MetricName.GOLD_RECALL)
+    assert (precision.numerator, precision.denominator) == (1, 2)
+    assert (recall.numerator, recall.denominator, recall.miss_ids) == (1, 1, ())
+
+
 def test_right_file_with_line_range_outside_verified_card_is_unsupported() -> None:
     result = _evaluate(
         [_claim("C-LINES", "line-bound", start_line=31, end_line=32)],
@@ -301,7 +320,7 @@ def test_precision_counts_each_emitted_fact_when_semantic_key_is_shared(
         2,
         (expected_precision_miss,),
     )
-    assert (recall.numerator, recall.denominator) == (0, 1)
+    assert (recall.numerator, recall.denominator, recall.miss_ids) == (1, 1, ())
     assert result.validation_layers.l1.status is expected_l1[0]
     assert (
         result.validation_layers.l1.numerator,
@@ -310,15 +329,10 @@ def test_precision_counts_each_emitted_fact_when_semantic_key_is_shared(
     assert (
         result.validation_layers.l2.numerator,
         result.validation_layers.l2.denominator,
-    ) == (1, 3)
+    ) == (2, 3)
     assert [
         (miss.item_id, miss.reason) for miss in result.critical_misses
-    ] == [
-        (f"claim:{failing_claim['claim_id']}", expected_claim_reason),
-        ("gold:G-SHARED", "critical_gold_contradicted")
-        if expected_precision_miss.startswith("contradicted:")
-        else ("gold:G-SHARED", "critical_gold_omitted"),
-    ]
+    ] == [(f"claim:{failing_claim['claim_id']}", expected_claim_reason)]
     assert result.status is AxisStatus.FAIL
 
 

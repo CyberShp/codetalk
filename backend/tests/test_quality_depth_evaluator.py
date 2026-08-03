@@ -480,6 +480,30 @@ def test_static_obligation_requires_the_complete_catalog_evidence_set() -> None:
     assert result.validation_layers.l1.status.value == "fail"
 
 
+def test_noncritical_untrusted_evidence_fails_without_critical_label() -> None:
+    depth = _depth()
+    chain = _chain()
+    node = next(item for item in chain["nodes"] if item["node_id"] == "state-mutation")
+    node["critical"] = False
+    truth = _truth(chain)
+    candidate = _candidate(truth)
+    observed = next(
+        item
+        for item in candidate["chains"][0]["nodes"]
+        if item["node_id"] == "state-mutation"
+    )
+    observed["evidence_refs"] = ["source://untrusted#L1-L1"]
+
+    result = _evaluate(depth, truth, candidate)
+
+    item_id = "chain:flow/node:state-mutation"
+    assert result.status.value == "fail"
+    assert result.validation_layers.l1.status.value == "fail"
+    assert item_id not in result.validation_layers.l1.critical_miss_ids
+    assert item_id not in result.validation_layers.l2.critical_miss_ids
+    assert item_id not in _miss_ids(result)
+
+
 def test_static_obligation_accepts_either_complete_evidence_group() -> None:
     depth = _depth()
     truth = _truth()
@@ -718,7 +742,8 @@ def test_every_truth_obligation_gates_even_when_marked_noncritical(
     item_id = f"chain:flow/{category}:{obligation_id}"
     minimum = _metric(result, "minimum_critical_chain_closure")
     assert result.status.value == "fail"
-    assert item_id in _miss_ids(result)
+    assert item_id not in _miss_ids(result)
+    assert item_id not in result.validation_layers.l2.critical_miss_ids
     assert item_id in minimum.miss_ids
     assert minimum.numerator < minimum.denominator
 

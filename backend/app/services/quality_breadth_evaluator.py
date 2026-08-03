@@ -569,12 +569,11 @@ def _matched_truth_ids(
 
 
 def _supported_exclusion(item: CoverageUniverseItem, disposition: _Disposition) -> bool:
+    required_evidence = frozenset(item.applicability_evidence_refs)
     return (
         item.applicability is Applicability.CONDITIONAL
-        and bool(disposition.evidence_refs)
-        and bool(
-            disposition.evidence_refs & frozenset(item.applicability_evidence_refs)
-        )
+        and bool(required_evidence)
+        and required_evidence.issubset(disposition.evidence_refs)
     )
 
 

@@ -12,7 +12,6 @@ from typing import Any
 import pytest
 from jsonschema import Draft202012Validator
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REGISTRY_PATH = REPO_ROOT / "benchmarks/quality/registry.json"
 REGISTRY_SCHEMA_PATH = REPO_ROOT / "benchmarks/quality/schemas/registry.schema.json"
@@ -286,14 +285,29 @@ def _depth_truth_contents() -> dict[str, Any]:
         "gold_claims.json": [{"claim_id": "claim-1"}],
         "coverage_universe.json": {
             "case_id": case_id,
-            "items": [{
-                "item_id": "coverage-1",
-                "dimension": "flows",
-                "critical": True,
-                "applicability": "required",
-                "statement": "The synthetic flow reaches its source-backed outcome.",
-                "evidence_refs": ["source://storage.c#L1-L1"],
-            }],
+            "items": [
+                {
+                    "item_id": f"coverage-{dimension}",
+                    "dimension": dimension,
+                    "critical": dimension == "flows",
+                    "applicability": "required",
+                    "statement": (
+                        f"The synthetic {dimension} obligation reaches its "
+                        "source-backed outcome."
+                    ),
+                    "evidence_refs": ["source://storage.c#L1-L1"],
+                }
+                for dimension in (
+                    "entrypoints",
+                    "flows",
+                    "branches",
+                    "states",
+                    "resources",
+                    "boundaries",
+                    "concurrency",
+                    "errors",
+                )
+            ],
         },
         "critical_chains.json": {
             "case_id": case_id,
@@ -389,6 +403,24 @@ def test_loader_resolves_pinned_synthetic_project_from_environment(
     assert resolved.expected_tree == registry.projects[0].expected_tree
 
 
+@pytest.mark.parametrize("change_kind", ["tracked", "untracked"])
+def test_resolver_rejects_dirty_or_untracked_source_tree(
+    tmp_path: Path, change_kind: str
+) -> None:
+    corpus = _corpus()
+    source_root, registry_path, _ = _valid_fixture(tmp_path)
+    project = source_root / "synthetic"
+    target = project / ("README.md" if change_kind == "tracked" else "UNTRACKED.txt")
+    target.write_text(f"{change_kind} change\n", encoding="utf-8")
+
+    with pytest.raises(corpus.QualityCorpusError, match="clean source tree"):
+        corpus.resolve_quality_project(
+            "synthetic",
+            registry=corpus.load_quality_registry(registry_path),
+            corpus_root=source_root,
+        )
+
+
 def test_domain_authority_distinguishes_generic_rdma_from_explicit_roce() -> None:
     corpus = _corpus()
 
@@ -426,6 +458,7 @@ def test_loader_invokes_only_read_only_git_metadata_commands(
         ["rev-parse", "HEAD"],
         ["rev-parse", "HEAD^{tree}"],
         ["config", "--get", "remote.origin.url"],
+        ["status", "--porcelain", "--untracked-files=all"],
     ]
     assert all(call[0][:2] == ["git", "-C"] for call in calls)
     assert all(call[1].get("shell") is not True for call in calls)
@@ -674,6 +707,41 @@ def test_case_loader_and_coverage_schema_reject_missing_semantic_statement(
         )
 
     schema = json.loads(COVERAGE_SCHEMA_PATH.read_text(encoding="utf-8"))
+    assert list(Draft202012Validator(schema).iter_errors(coverage))
+
+
+@pytest.mark.parametrize(
+    ("mutation", "match"),
+    [
+        ("missing_core_dimension", "core dimensions"),
+        ("no_critical_item", "critical item"),
+    ],
+)
+def test_case_loader_and_coverage_schema_reject_incomplete_core_universe(
+    tmp_path: Path,
+    mutation: str,
+    match: str,
+) -> None:
+    corpus = _corpus()
+    _, registry_path, _ = _valid_fixture(tmp_path)
+    payload = _case_payload(tmp_path)
+    coverage = copy.deepcopy(TRUTH_CONTENTS["coverage_universe.json"])
+    if mutation == "missing_core_dimension":
+        coverage["items"] = [
+            item for item in coverage["items"] if item["dimension"] != "concurrency"
+        ]
+    else:
+        for item in coverage["items"]:
+            item["critical"] = False
+    _rewrite_truth(tmp_path, payload, "coverage_universe", coverage)
+
+    with pytest.raises(corpus.QualityCorpusError, match=match):
+        corpus.load_quality_case(
+            _write_json(tmp_path / "case.json", payload),
+            registry=corpus.load_quality_registry(registry_path),
+        )
+
+    schema = corpus.quality_coverage_universe_json_schema()
     assert list(Draft202012Validator(schema).iter_errors(coverage))
 
 

@@ -8,7 +8,6 @@ import time
 from pathlib import Path
 
 import pytest
-
 from app.services.quality_evaluation_contract import AxisStatus, EvaluationScope
 from tests.test_quality_evaluator import _snapshot
 
@@ -124,6 +123,8 @@ def _case_tree(tmp_path: Path) -> Path:
     )
     from tests.test_quality_depth_evaluator import (
         _catalog as depth_catalog,
+    )
+    from tests.test_quality_depth_evaluator import (
         _truth as depth_truth,
     )
 
@@ -143,14 +144,26 @@ def _case_tree(tmp_path: Path) -> Path:
             "coverage_universe.json",
             {
                 "case_id": "case-1",
-                "items": [{
-                    "item_id": "U-1",
-                    "dimension": "flows",
-                    "critical": True,
-                    "applicability": "required",
-                    "statement": "The synthetic flow reaches recovery.",
-                    "evidence_refs": ["source://fixture.c#L1-L1"],
-                }],
+                "items": [
+                    {
+                        "item_id": f"U-{dimension}",
+                        "dimension": dimension,
+                        "critical": dimension == "flows",
+                        "applicability": "required",
+                        "statement": f"The synthetic {dimension} reaches recovery.",
+                        "evidence_refs": ["source://fixture.c#L1-L1"],
+                    }
+                    for dimension in (
+                        "entrypoints",
+                        "flows",
+                        "branches",
+                        "states",
+                        "resources",
+                        "boundaries",
+                        "concurrency",
+                        "errors",
+                    )
+                ],
             },
         ),
         ("critical_chains", "critical_chains.json", truth),
@@ -421,7 +434,9 @@ def test_depth_candidate_never_falls_back_to_truth_filename(tmp_path) -> None:
         )
 
 
-def test_real_snapshot_default_path_runs_batch_judge_for_all_three_axes(tmp_path) -> None:
+def test_real_snapshot_runs_authoritative_high_effort_judge_before_diagnostics(
+    tmp_path,
+) -> None:
     from app.services.quality_depth_evaluator import (
         DepthEvidenceCatalog,
         depth_evidence_catalog_sha256,
@@ -430,7 +445,11 @@ def test_real_snapshot_default_path_runs_batch_judge_for_all_three_axes(tmp_path
     from tests.test_quality_breadth_evaluator import _generated_for, _universe
     from tests.test_quality_depth_evaluator import (
         _candidate as depth_candidate,
+    )
+    from tests.test_quality_depth_evaluator import (
         _catalog as depth_catalog,
+    )
+    from tests.test_quality_depth_evaluator import (
         _truth as depth_truth,
     )
 
@@ -588,35 +607,31 @@ def test_real_snapshot_default_path_runs_batch_judge_for_all_three_axes(tmp_path
     assert snapshot.accuracy.status.value == "pass"
     assert snapshot.breadth.status.value == "pass"
     assert snapshot.depth.status.value == "pass"
-    assert len(semantic_judge.calls) == 2
+    assert len(semantic_judge.calls) == 1
     assert {
         judgment.axis for judgment in semantic_judge.calls[0]["judgments"]
     } == {"accuracy", "breadth", "depth"}
-    assert semantic_judge.calls[1]["judgments"] == semantic_judge.calls[0]["judgments"]
-    assert semantic_judge.calls[1]["mode"] == "deep"
-    assert semantic_judge.calls[1]["snapshot_label"] == (
+    assert semantic_judge.calls[0]["mode"] == "deep"
+    assert semantic_judge.calls[0]["snapshot_label"] == (
         "first_pass_high_effort_adjudication"
     )
-    assert len(audit_sink) == 2
-    assert audit_sink[0]["decision_role"] == "diagnostic_screening"
-    assert audit_sink[1]["decision_role"] == "high_effort_adjudication"
-    assert audit_sink[1]["decision_policy"] == (
+    assert len(audit_sink) == 1
+    assert audit_sink[0]["decision_role"] == "high_effort_adjudication"
+    assert audit_sink[0]["decision_policy"] == (
         "high_effort_material_guard"
     )
-    assert audit_sink[1]["screening_disagreement_count"] == 0
-    assert audit_sink[1]["screening_disagreements"] == []
-    assert len(audit_sink[1]["verdict_trace"]) == len(
+    assert audit_sink[0]["diagnostic_screening"] == "not_run_non_authoritative"
+    assert len(audit_sink[0]["verdict_trace"]) == len(
         semantic_judge.calls[0]["judgments"]
     )
     assert all(
         set(item) == {
             "judgment_id",
             "axis",
-            "screening",
             "adjudication",
             "resolved",
         }
-        for item in audit_sink[1]["verdict_trace"]
+        for item in audit_sink[0]["verdict_trace"]
     )
     assert audit_sink[0]["judge"]["model"] == "fixture-independent-judge"
     assert all(
@@ -1394,165 +1409,6 @@ def test_accuracy_prefilter_rejects_atomic_range_with_thirteen_context_lines() -
         ("range", "module/reset.c", 2142, 2157),
         ("range", "module/reset.c", 2152, 2154),
     ) is False
-
-
-def test_prepublication_compound_probe_flags_multi_owner_evidence_and_wording() -> None:
-    module = _runner()
-    shared = "source://systems.hpp#L3514-L3525"
-    gold = [
-        {
-            "gold_id": "missing",
-            "semantic_key": "missing.property",
-            "claim": "A missing property appends the five fallback reset types.",
-            "evidence_refs": [shared],
-        },
-        {
-            "gold_id": "unreachable",
-            "semantic_key": "unreachable.property",
-            "claim": "An unreachable property appends the five fallback reset types.",
-            "evidence_refs": [shared],
-        },
-    ]
-    claim = {
-        "claim_id": "compound",
-        "claim": "A missing or unreachable property adds the five fallback reset types.",
-        "evidence_refs": [{
-            "path": "systems.hpp",
-            "start_line": 3512,
-            "end_line": 3525,
-        }],
-    }
-
-    diagnostics = module._prepublication_compound_claim_diagnostics(
-        claims=(claim,),
-        gold_claims=gold,
-    )
-
-    assert diagnostics == [{
-        "axis": "accuracy",
-        "code": "compound_claim_requires_split",
-        "candidate_id": "compound",
-        "matched_obligation_count": 2,
-        "repairable": True,
-        "repair": {
-            "artifact": "claim_ledger.json",
-            "operation": "split_candidate_statement",
-        },
-    }]
-
-
-def test_prepublication_compound_probe_does_not_flag_atomic_shared_evidence() -> None:
-    module = _runner()
-    shared = "source://reset.c#L10-L20"
-    gold = [
-        {
-            "gold_id": "append",
-            "semantic_key": "queue.append",
-            "claim": "When reset selection returns EBUSY, the request is appended.",
-            "evidence_refs": [shared],
-        },
-        {
-            "gold_id": "return",
-            "semantic_key": "handler.return",
-            "claim": "After appending the request, the reset handler returns.",
-            "evidence_refs": [shared],
-        },
-    ]
-    claim = {
-        "claim_id": "atomic-append",
-        "claim": "When reset selection returns EBUSY, the request is appended.",
-        "evidence_refs": [{"path": "reset.c", "start_line": 10, "end_line": 20}],
-    }
-
-    assert module._prepublication_compound_claim_diagnostics(
-        claims=(claim,),
-        gold_claims=gold,
-    ) == []
-
-
-@pytest.mark.parametrize(
-    "claim_text",
-    [
-        "A missing property adds fallbacks. An unreachable property adds fallbacks.",
-        "A missing property adds fallbacks; an unreachable property adds fallbacks.",
-    ],
-)
-def test_prepublication_compound_probe_is_not_punctuation_bypassable(claim_text) -> None:
-    module = _runner()
-    shared = "source://reset.c#L10-L20"
-    gold = [
-        {
-            "gold_id": "missing",
-            "semantic_key": "property.missing",
-            "claim": "A missing property adds fallbacks.",
-            "evidence_refs": [shared],
-        },
-        {
-            "gold_id": "unreachable",
-            "semantic_key": "property.unreachable",
-            "claim": "An unreachable property adds fallbacks.",
-            "evidence_refs": [shared],
-        },
-    ]
-    claim = {
-        "claim_id": "compound",
-        "claim": claim_text,
-        "evidence_refs": [{"path": "reset.c", "start_line": 10, "end_line": 20}],
-    }
-
-    diagnostics = module._prepublication_compound_claim_diagnostics(
-        claims=(claim,),
-        gold_claims=gold,
-    )
-
-    assert [item["candidate_id"] for item in diagnostics] == ["compound"]
-
-
-def test_compound_split_successors_pass_prepublication_regate() -> None:
-    module = _runner()
-    shared = "source://systems.hpp#L3514-L3525"
-    gold = [
-        {
-            "gold_id": "missing",
-            "semantic_key": "property.missing",
-            "claim": "For a bad_request_descriptor error, fallback values are appended.",
-            "evidence_refs": [shared],
-        },
-        {
-            "gold_id": "unreachable",
-            "semantic_key": "property.unreachable",
-            "claim": "For a host_unreachable error, fallback values are appended.",
-            "evidence_refs": [shared],
-        },
-    ]
-    split_claims = (
-        {
-            "claim_id": "missing-only",
-            "claim": "A missing property appends fallback values.",
-            "evidence_refs": [{
-                "path": "systems.hpp", "start_line": 3514, "end_line": 3525,
-            }],
-        },
-        {
-            "claim_id": "unreachable-only",
-            "claim": "An unreachable host appends fallback values.",
-            "evidence_refs": [{
-                "path": "systems.hpp", "start_line": 3514, "end_line": 3525,
-            }],
-        },
-        {
-            "claim_id": "successful-read",
-            "claim": "A successful property read appends translated values.",
-            "evidence_refs": [{
-                "path": "systems.hpp", "start_line": 3514, "end_line": 3525,
-            }],
-        },
-    )
-
-    assert module._prepublication_compound_claim_diagnostics(
-        claims=split_claims,
-        gold_claims=gold,
-    ) == []
 
 
 @pytest.mark.parametrize("candidate_range", [(3178, 3182), (3155, 3175)])
@@ -2937,25 +2793,27 @@ def test_cli_generated_single_case_uses_direct_immutable_generator_root(
     output = tmp_path / "evaluation"
     generated_roots = []
     generated_targets = []
+    generated_gate_values = []
+    generated_source_trees = []
 
     monkeypatch.setattr(module, "load_quality_registry", lambda _: _Registry())
     monkeypatch.setattr(module, "_select_case_paths", lambda **_: [case_path])
     monkeypatch.setattr(
         module,
         "resolve_quality_project",
-        lambda *_args, **_kwargs: type("Project", (), {"path": source_root})(),
+        lambda *_args, **_kwargs: type(
+            "Project", (), {"path": source_root, "expected_tree": "d" * 40}
+        )(),
     )
     monkeypatch.setattr(module, "_quality_case_truth_paths", lambda *_args, **_kwargs: ())
-    monkeypatch.setattr(
-        module,
-        "_benchmark_compound_claim_gate",
-        lambda **_kwargs: (lambda _path: {"status": "completed", "issues": []}),
-    )
+    assert not hasattr(module, "_benchmark_compound_claim_gate")
 
     def fake_generate(**kwargs):
         root = Path(kwargs["output_dir"])
         generated_roots.append(root)
         generated_targets.append(kwargs.get("analysis_target"))
+        generated_gate_values.append(kwargs.get("prepublication_gate", "absent"))
+        generated_source_trees.append(kwargs.get("source_tree"))
         (root / "first_pass").mkdir(parents=True)
         (root / "final_after_auto_repair").mkdir()
         (root / "repair_summary.json").write_text(
@@ -3000,6 +2858,8 @@ def test_cli_generated_single_case_uses_direct_immutable_generator_root(
     ) == 0
     assert generated_roots == [Path(f"{output}.run-artifacts")]
     assert generated_targets == ["Public reset target"]
+    assert generated_gate_values == ["absent"]
+    assert generated_source_trees == ["d" * 40]
 
 
 def test_cli_multi_case_fresh_and_explicit_replay_keep_roots_separate(
@@ -3024,14 +2884,11 @@ def test_cli_multi_case_fresh_and_explicit_replay_keep_roots_separate(
     monkeypatch.setattr(
         module,
         "resolve_quality_project",
-        lambda *_args, **_kwargs: type("Project", (), {"path": source_root})(),
+        lambda *_args, **_kwargs: type(
+            "Project", (), {"path": source_root, "expected_tree": "d" * 40}
+        )(),
     )
     monkeypatch.setattr(module, "_quality_case_truth_paths", lambda *_args, **_kwargs: ())
-    monkeypatch.setattr(
-        module,
-        "_benchmark_compound_claim_gate",
-        lambda **_kwargs: (lambda _path: {"status": "completed", "issues": []}),
-    )
 
     def fake_generate(**kwargs):
         root = Path(kwargs["output_dir"])
@@ -3228,6 +3085,8 @@ def test_execution_manifest_binds_generator_artifact_root(tmp_path) -> None:
                 "cache_reused": False,
                 "workbench_status": "completed",
                 "work_sufficiency": {"status": "sufficient"},
+                "response_sha256": "b" * 64,
+                "source_tree": "c" * 40,
             }
         ),
         encoding="utf-8",
@@ -3240,6 +3099,8 @@ def test_execution_manifest_binds_generator_artifact_root(tmp_path) -> None:
 
     assert execution is not None
     assert execution["generator_artifact_root_sha256"] == "a" * 64
+    assert execution["generator_response_sha256"] == "b" * 64
+    assert execution["generator_source_tree"] == "c" * 40
 
 
 def test_task_run_projection_is_contract_valid_and_erases_truth_derived_ids(

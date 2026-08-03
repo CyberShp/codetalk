@@ -502,7 +502,13 @@ def _gold_groups(
             _GoldGroup(
                 canonical_key=canonical_key,
                 claims=group,
-                matched=bool(emitted and emitted.supported),
+                matched=bool(
+                    emitted
+                    and any(
+                        assessment.supported
+                        for assessment in emitted.assessments
+                    )
+                ),
                 contradicted=bool(
                     emitted and any(claim.contradicted for claim in emitted.claims)
                 ),

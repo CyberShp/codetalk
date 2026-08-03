@@ -23,7 +23,6 @@ from app.services.behavior_claim_validator import (
 )
 from app.services.harness_facade import AgentHarnessFacade, HarnessRunRequest
 
-
 SemanticVerdict = Literal["supports", "contradicts", "insufficient"]
 SemanticAxis = Literal["accuracy", "breadth", "depth"]
 JUDGE_VERSION = "quality-semantic-judge-v3"
@@ -134,6 +133,7 @@ class CodexHarnessSemanticMaterializer:
                     }
                 },
             }
+            idle_timeout = _semantic_idle_timeout_seconds(mode, remaining)
             run_request = HarnessRunRequest(
                 provider="codex",
                 command=[
@@ -158,7 +158,7 @@ class CodexHarnessSemanticMaterializer:
                 task_bundle=task_bundle,
                 prompt_transport="codex_exec_json",
                 timeout_seconds=max(1, int(math.ceil(remaining))),
-                idle_timeout_seconds=min(120.0, max(1.0, remaining)),
+                idle_timeout_seconds=idle_timeout,
                 requires_network=True,
                 run_id=(
                     "quality_semantic_judge_"
@@ -177,7 +177,7 @@ class CodexHarnessSemanticMaterializer:
                 result = facade.execute(
                     session.run_id,
                     timeout_sec=max(1, int(math.ceil(remaining))),
-                    idle_timeout_sec=min(120.0, max(1.0, remaining)),
+                    idle_timeout_sec=idle_timeout,
                     is_cancelled=lambda: time.monotonic() >= deadline_monotonic,
                 )
             if bool(getattr(result, "timed_out", False)):
@@ -206,6 +206,11 @@ class CodexHarnessSemanticMaterializer:
             return normalized
 
 
+def _semantic_idle_timeout_seconds(mode: str, remaining: float) -> float:
+    maximum = 300.0 if mode == "deep" else 120.0
+    return min(maximum, max(1.0, remaining))
+
+
 class BehaviorClaimBatchSemanticJudge:
     """Adapt benchmark observations to the mature source-bound L2 validator."""
 
@@ -217,8 +222,114 @@ class BehaviorClaimBatchSemanticJudge:
     ) -> None:
         self._materializer = materializer or CodexHarnessSemanticMaterializer()
         self.judge_model = str(judge_model).strip() or DEFAULT_JUDGE_MODEL
+        self._verdict_cache: dict[tuple[str, ...], SemanticVerdict] = {}
 
     def judge(
+        self,
+        *,
+        judgments: Sequence[SemanticJudgment],
+        source_dir: str | Path,
+        generator_model: str,
+        deadline_monotonic: float,
+        snapshot_label: str,
+        mode: str = "rapid",
+        judge_model: str | None = None,
+    ) -> SemanticJudgeResult:
+        ordered = tuple(judgments)
+        ids = tuple(item.judgment_id for item in ordered)
+        if len(set(ids)) != len(ids) or any(not item_id for item_id in ids):
+            raise ValueError("semantic judgment ids must be non-empty and unique")
+        effective_judge_model = str(judge_model or self.judge_model).strip()
+        source_identity = _semantic_source_identity(Path(source_dir))
+        keys = {
+            item.judgment_id: _semantic_verdict_cache_key(
+                item,
+                source_identity=source_identity,
+                generator_model=str(generator_model),
+                judge_model=effective_judge_model,
+                mode=str(mode),
+            )
+            for item in ordered
+        }
+        cached = {
+            item_id: self._verdict_cache[key]
+            for item_id, key in keys.items()
+            if key in self._verdict_cache
+        }
+        pending = tuple(item for item in ordered if item.judgment_id not in cached)
+        result = self._judge_uncached(
+            judgments=pending,
+            source_dir=source_dir,
+            generator_model=generator_model,
+            deadline_monotonic=deadline_monotonic,
+            snapshot_label=snapshot_label,
+            mode=mode,
+            judge_model=effective_judge_model,
+        )
+        if result.metadata.get("status") == "completed" and not result.limitations:
+            for item in pending:
+                verdict = result.verdicts.get(item.judgment_id)
+                if verdict in _VERDICTS:
+                    self._verdict_cache[keys[item.judgment_id]] = verdict
+        combined = {
+            item.judgment_id: cached.get(
+                item.judgment_id,
+                result.verdicts.get(item.judgment_id, "insufficient"),
+            )
+            for item in ordered
+        }
+        combined_request_sha256 = _sha256_json(
+            {
+                "source_identity": source_identity,
+                "generator_model": str(generator_model),
+                "judge_model": effective_judge_model,
+                "mode": str(mode),
+                "judgments": [
+                    {
+                        "judgment_id": item.judgment_id,
+                        "axis": item.axis,
+                        "candidate_statement": item.candidate_statement,
+                        "oracle_statement": item.oracle_statement,
+                        "observed_evidence_refs": list(item.observed_evidence_refs),
+                        "required_evidence_refs": list(item.required_evidence_refs),
+                    }
+                    for item in ordered
+                ],
+            }
+        )
+        materialized_result_sha256 = str(result.metadata.get("result_sha256") or "")
+        combined_result_sha256 = _sha256_json(
+            {
+                "combined_request_sha256": combined_request_sha256,
+                "verdicts": combined,
+                "materialized_result_sha256": materialized_result_sha256,
+            }
+        )
+        metadata = dict(result.metadata)
+        metadata.update(
+            {
+                "snapshot": snapshot_label,
+                "source_identity": source_identity,
+                "status": (
+                    "completed"
+                    if ordered and not pending and len(cached) == len(ordered)
+                    else metadata.get("status")
+                ),
+                "cache_hit_count": len(cached),
+                "materialized_count": len(pending),
+                "combined_request_sha256": combined_request_sha256,
+                "combined_result_sha256": combined_result_sha256,
+                "materialized_result_sha256": materialized_result_sha256,
+                "result_sha256": combined_result_sha256,
+            }
+        )
+        return SemanticJudgeResult(
+            verdicts=combined,
+            metadata=metadata,
+            limitations=result.limitations,
+        )
+
+    def _judge_uncached(
         self,
         *,
         judgments: Sequence[SemanticJudgment],
@@ -419,6 +530,68 @@ class BehaviorClaimBatchSemanticJudge:
             ),
             limitations=(),
         )
+
+
+def _semantic_verdict_cache_key(
+    judgment: SemanticJudgment,
+    *,
+    source_identity: str,
+    generator_model: str,
+    judge_model: str,
+    mode: str,
+) -> tuple[str, ...]:
+    content_sha256 = _sha256_json(
+        {
+            "judgment_id": judgment.judgment_id,
+            "axis": judgment.axis,
+            "candidate_statement": judgment.candidate_statement,
+            "oracle_statement": judgment.oracle_statement,
+            "observed_evidence_refs": list(judgment.observed_evidence_refs),
+            "required_evidence_refs": list(judgment.required_evidence_refs),
+        }
+    )
+    return (
+        source_identity,
+        generator_model,
+        judge_model,
+        mode,
+        content_sha256,
+    )
+
+
+def _semantic_source_identity(source_dir: Path) -> str:
+    source = source_dir.resolve()
+    try:
+        tree = subprocess.run(
+            ["git", "-C", str(source), "rev-parse", "HEAD^{tree}"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+        status = subprocess.run(
+            ["git", "-C", str(source), "status", "--porcelain", "--untracked-files=all"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+        if re.fullmatch(r"[0-9a-f]{40}", tree) and not status:
+            return f"git-tree:{tree}"
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+    digest = hashlib.sha256()
+    for path in sorted(source.rglob("*")):
+        if ".git" in path.relative_to(source).parts or not path.is_file():
+            continue
+        relative = path.relative_to(source).as_posix().encode("utf-8")
+        data = path.read_bytes()
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(len(data).to_bytes(8, "big"))
+        digest.update(data)
+    return f"content-sha256:{digest.hexdigest()}"
 
 
 def _build_validation_request(

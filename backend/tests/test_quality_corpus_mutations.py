@@ -6,7 +6,6 @@ import time
 from pathlib import Path
 
 import pytest
-
 from app.services.quality_benchmark_corpus import (
     QualityCorpusError,
     load_quality_case,
@@ -27,7 +26,6 @@ from app.services.quality_benchmark_semantic_judge import (
 )
 from app.services.quality_breadth_evaluator import evaluate_breadth
 from app.services.quality_depth_evaluator import DepthEvidenceCatalog, evaluate_depth
-
 
 REPO_ROOT = Path(__file__).parents[2]
 REGISTRY_PATH = REPO_ROOT / "benchmarks" / "quality" / "registry.json"
@@ -797,19 +795,16 @@ def _dynamic_snapshot(
         semantic_audit_sink=audits,
         snapshot_label="dynamic",
     )
-    assert len(judge.calls) == 2
+    assert len(judge.calls) == 1
     assert {item.axis for item in judge.calls[0]["judgments"]} == {
         "accuracy",
         "breadth",
         "depth",
     }
-    assert judge.calls[1]["judgments"] == judge.calls[0]["judgments"]
-    assert judge.calls[1]["mode"] == "deep"
+    assert judge.calls[0]["mode"] == "deep"
     assert audits[0]["status"] == "completed"
-    assert audits[0]["decision_role"] == "diagnostic_screening"
-    assert audits[1]["status"] == "completed"
-    assert audits[1]["decision_role"] == "high_effort_adjudication"
-    assert audits[1]["decision_policy"] == "high_effort_material_guard"
+    assert audits[0]["decision_role"] == "high_effort_adjudication"
+    assert audits[0]["decision_policy"] == "high_effort_material_guard"
     return snapshot
 
 

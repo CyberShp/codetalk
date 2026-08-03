@@ -25,7 +25,9 @@ from app.services.quality_benchmark_corpus import (
     load_quality_registry,
     resolve_quality_project,
 )
-from app.services.quality_benchmark_generator import generate_quality_benchmark_artifacts
+from app.services.quality_benchmark_generator import (
+    generate_quality_benchmark_artifacts,
+)
 from app.services.quality_benchmark_semantic_judge import (
     DEFAULT_JUDGE_MODEL,
     BehaviorClaimBatchSemanticJudge,
@@ -362,23 +364,7 @@ def evaluate_artifact_snapshot(
             if source_dir is not None
             else Path(".__quality_source_unavailable__")
         )
-        result = batch_judge.judge(
-            judgments=recorder.judgments,
-            source_dir=semantic_source_dir,
-            generator_model=str(generator_model),
-            judge_model=str(judge_model),
-            mode=str(mode),
-            deadline_monotonic=effective_deadline,
-            snapshot_label=str(snapshot_label),
-        )
-        _append_semantic_result_audit(
-            semantic_audit_sink,
-            result=result,
-            judgments=recorder.judgments,
-            diagnostics=semantic_diagnostics,
-            extras={"decision_role": "diagnostic_screening"},
-        )
-        resolved_verdicts = dict(result.verdicts)
+        resolved_verdicts: dict[str, SemanticVerdict] = {}
         if recorder.judgments:
             adjudication = batch_judge.judge(
                 judgments=recorder.judgments,
@@ -389,12 +375,8 @@ def evaluate_artifact_snapshot(
                 deadline_monotonic=effective_deadline,
                 snapshot_label=f"{snapshot_label}_high_effort_adjudication",
             )
-            disagreements = _semantic_verdict_disagreements(
-                result.verdicts,
-                adjudication.verdicts,
-            )
             resolved_verdicts = _authoritative_semantic_verdicts(
-                result.verdicts,
+                {},
                 adjudication.verdicts,
                 judgments=recorder.judgments,
             )
@@ -406,16 +388,24 @@ def evaluate_artifact_snapshot(
                 extras={
                     "decision_role": "high_effort_adjudication",
                     "decision_policy": "high_effort_material_guard",
-                    "screening_disagreement_count": len(disagreements),
-                    "screening_disagreements": list(disagreements),
-                    "verdict_trace": list(
-                        _semantic_verdict_trace(
-                            recorder.judgments,
-                            result.verdicts,
-                            adjudication.verdicts,
-                            resolved_verdicts,
-                        )
-                    ),
+                    "diagnostic_screening": "not_run_non_authoritative",
+                    "verdict_trace": [
+                        {
+                            "judgment_id": judgment.judgment_id,
+                            "axis": judgment.axis,
+                            "adjudication": _validated_semantic_verdict(
+                                adjudication.verdicts.get(
+                                    judgment.judgment_id, "insufficient"
+                                )
+                            ),
+                            "resolved": _validated_semantic_verdict(
+                                resolved_verdicts.get(
+                                    judgment.judgment_id, "insufficient"
+                                )
+                            ),
+                        }
+                        for judgment in recorder.judgments
+                    ],
                 },
             )
         adapter = _ResolvedBatchSemanticVerdictAdapter(resolved_verdicts)
@@ -529,8 +519,10 @@ def _authoritative_semantic_verdicts(
 ) -> dict[str, SemanticVerdict]:
     by_id = {judgment.judgment_id: judgment for judgment in judgments}
     resolved: dict[str, SemanticVerdict] = {}
-    for judgment_id, raw_screening in screening.items():
-        _validated_semantic_verdict(raw_screening)
+    for judgment_id in sorted(set(screening) | set(adjudication)):
+        raw_screening = screening.get(judgment_id)
+        if raw_screening is not None:
+            _validated_semantic_verdict(raw_screening)
         raw_adjudication = adjudication.get(judgment_id)
         if raw_adjudication is None:
             resolved[judgment_id] = "insufficient"
@@ -1018,13 +1010,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     1, int(max(0.0, case_deadline - time.monotonic()))
                 ),
                 codetalk_revision=_current_codetalk_revision(),
+                source_tree=source_dir.expected_tree,
                 truth_paths=_quality_case_truth_paths(case_path, registry=registry),
                 analysis_target=str(
                     case_payload.get("analysis_target") or case_id
-                ),
-                prepublication_gate=_benchmark_compound_claim_gate(
-                    case_path=case_path,
-                    registry=registry,
                 ),
             )
         output_root = Path(args.output) / case_id if multiple else Path(args.output)
@@ -1061,54 +1050,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _quality_generation_timeout(mode: str) -> int:
     return 5400 if mode == "deep" else 900
-
-
-def _benchmark_compound_claim_gate(
-    *, case_path: Path, registry: QualityBenchmarkRegistry
-) -> Any:
-    case_file = case_path.resolve()
-    case = load_quality_case(case_file, registry=registry)
-    gold_claims = _items(
-        _read_json(case_file.parent / case.truth_package.gold_claims.path)
-    )
-
-    def gate(response_path: Path) -> dict[str, Any]:
-        response = _mapping(_read_json(response_path), "benchmark response")
-        response_claims = tuple(
-            claim
-            for claim in response.get("claims") or []
-            if isinstance(claim, Mapping)
-        )
-        diagnostics = _prepublication_compound_claim_diagnostics(
-            claims=response_claims,
-            gold_claims=gold_claims,
-        )
-        _align_claim_semantics_from_evidence(
-            {"claims": list(response_claims)},
-            gold_claims,
-            semantic_diagnostic_sink=diagnostics,
-        )
-        unique_diagnostics = {
-            str(item.get("candidate_id") or ""): item for item in diagnostics
-        }
-        issues = [
-            {
-                "code": "compound_claim_requires_split",
-                "artifact": "benchmark_response.json",
-                "field": "claims",
-                "row_id": str(item.get("candidate_id") or ""),
-                "operation": "split_candidate_statement",
-                "repairable": True,
-            }
-            for item in unique_diagnostics.values()
-            if item.get("code") == "compound_claim_requires_split"
-        ]
-        return {
-            "status": "needs_rework" if issues else "completed",
-            "issues": issues,
-        }
-
-    return gate
 
 
 def _evaluation_repair_summary(value: Any) -> dict[str, Any]:
@@ -1158,6 +1099,12 @@ def _benchmark_execution_manifest(case_run_root: Path) -> dict[str, Any] | None:
     artifact_root_sha256 = str(artifact_manifest.get("root_sha256") or "")
     if not re.fullmatch(r"[0-9a-f]{64}", artifact_root_sha256):
         raise ValueError("generator artifact hash manifest requires root_sha256")
+    response_sha256 = str(payload.get("response_sha256") or "")
+    if not re.fullmatch(r"[0-9a-f]{64}", response_sha256):
+        raise ValueError("generation manifest requires response_sha256")
+    source_tree = str(payload.get("source_tree") or "")
+    if not re.fullmatch(r"[0-9a-f]{40}", source_tree):
+        raise ValueError("generation manifest requires a pinned source_tree")
     return {
         "profile": str(payload.get("mode") or "rapid"),
         "generation_wall_clock_seconds": float(elapsed),
@@ -1166,6 +1113,8 @@ def _benchmark_execution_manifest(case_run_root: Path) -> dict[str, Any] | None:
         "work_sufficiency": str(work_sufficiency.get("status") or "pending_audit"),
         "work_sufficiency_diagnostic": dict(work_sufficiency),
         "generator_artifact_root_sha256": artifact_root_sha256,
+        "generator_response_sha256": response_sha256,
+        "generator_source_tree": source_tree,
     }
 
 
@@ -1573,48 +1522,6 @@ def _append_compound_claim_diagnostic(
             },
         }
     )
-
-
-def _prepublication_compound_claim_diagnostics(
-    *,
-    claims: Sequence[Mapping[str, Any]],
-    gold_claims: Sequence[Mapping[str, Any]],
-) -> list[dict[str, Any]]:
-    diagnostics: list[dict[str, Any]] = []
-    for claim in claims:
-        statement = _semantic_statement(claim)
-        if not statement:
-            continue
-        candidate_refs = {
-            normalized
-            for raw_ref in claim.get("evidence_refs") or []
-            for normalized in [_normalized_evidence_ref(raw_ref)]
-            if normalized is not None
-        }
-        matched = {
-            str(gold.get("semantic_key") or "")
-            for gold in gold_claims
-            if str(gold.get("semantic_key") or "")
-            and _claim_evidence_requirement_satisfied(gold, candidate_refs)
-            and _condition_requirements_satisfied(
-                statement,
-                _semantic_statement(gold),
-            )
-            and _material_clause_supports(
-                statement,
-                _semantic_statement(gold),
-                minimum_overlap=0.25,
-                allow_counted_enumeration_summary=True,
-            )
-        }
-        if len(matched) < 2:
-            continue
-        _append_compound_claim_diagnostic(
-            diagnostics,
-            claim=claim,
-            matched_obligation_count=len(matched),
-        )
-    return diagnostics
 
 
 def _unmatched_claim_semantic_key(claim: Mapping[str, Any]) -> str:

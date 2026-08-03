@@ -14,16 +14,6 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.parse import unquote
 
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    StringConstraints,
-    ValidationError,
-    field_validator,
-    model_validator,
-)
-
 from app.services.quality_benchmark_semantic_judge import (
     materialize_semantic_evidence_ref,
 )
@@ -34,7 +24,15 @@ from app.services.quality_depth_evaluator import (
     EvidenceBindingCategory,
     depth_evidence_catalog_sha256,
 )
-
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 REGISTRY_SCHEMA_VERSION = "quality-benchmark-registry-v1"
 CASE_SCHEMA_VERSION = "quality-benchmark-case-v1"
@@ -79,6 +77,51 @@ BASELINE_PROJECT_STRATA = {
     "ucx": "rdma-roce",
     "perftest": "rdma-roce",
 }
+
+CORE_BREADTH_DIMENSIONS = (
+    "entrypoints",
+    "flows",
+    "branches",
+    "states",
+    "resources",
+    "boundaries",
+    "concurrency",
+    "errors",
+)
+
+
+def _coverage_universe_schema_constraints() -> list[dict[str, Any]]:
+    required_dimensions = [
+        {
+            "properties": {
+                "items": {
+                    "contains": {
+                        "properties": {
+                            "dimension": {"const": dimension},
+                            "applicability": {"const": "required"},
+                        },
+                        "required": ["dimension", "applicability"],
+                    },
+                    "minContains": 1,
+                }
+            }
+        }
+        for dimension in CORE_BREADTH_DIMENSIONS
+    ]
+    return [
+        *required_dimensions,
+        {
+            "properties": {
+                "items": {
+                    "contains": {
+                        "properties": {"critical": {"const": True}},
+                        "required": ["critical"],
+                    },
+                    "minContains": 1,
+                }
+            }
+        },
+    ]
 
 NonEmptyString = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 ProjectId = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9-]*$")]
@@ -279,6 +322,12 @@ class CoverageTruthItem(ContractModel):
 
 
 class CoverageUniverseTruth(ContractModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        strict=True,
+        json_schema_extra={"allOf": _coverage_universe_schema_constraints()},
+    )
     schema_version: Literal["quality-breadth-universe-v1"] | None = None
     case_id: NonEmptyString
     items: list[CoverageTruthItem] = Field(strict=False, min_length=1)
@@ -288,6 +337,19 @@ class CoverageUniverseTruth(ContractModel):
         item_ids = [item.item_id for item in self.items]
         if len(item_ids) != len(set(item_ids)):
             raise ValueError("coverage universe item ids must be unique")
+        required_dimensions = {
+            item.dimension for item in self.items if item.applicability == "required"
+        }
+        missing_dimensions = sorted(
+            set(CORE_BREADTH_DIMENSIONS) - required_dimensions
+        )
+        if missing_dimensions:
+            raise ValueError(
+                "coverage universe core dimensions require at least one required item: "
+                + ", ".join(missing_dimensions)
+            )
+        if not any(item.critical for item in self.items):
+            raise ValueError("coverage universe must identify at least one critical item")
         return self
 
 
@@ -308,6 +370,7 @@ class QualityBaselineCaseIdentity:
     domain: str
     tier: str
     source_revision: str
+    source_tree: str
     truth_package_version: str
     case_sha256: str
     truth_sha256: tuple[tuple[str, str, str], ...]
@@ -319,6 +382,7 @@ class QualityBaselineCaseIdentity:
             "domain": self.domain,
             "tier": self.tier,
             "source_revision": self.source_revision,
+            "source_tree": self.source_tree,
             "truth_package_version": self.truth_package_version,
             "case_sha256": self.case_sha256,
             "truth_sha256": {
@@ -468,6 +532,7 @@ def load_quality_baseline_corpus(
                 domain=BASELINE_PROJECT_STRATA[case.project_id],
                 tier=case.tier,
                 source_revision=project.commit,
+                source_tree=project.expected_tree,
                 truth_package_version=case.truth_package_version,
                 case_sha256=hashlib.sha256(case_path.read_bytes()).hexdigest(),
                 truth_sha256=tuple(
@@ -572,6 +637,13 @@ def resolve_quality_project(
     actual_origin = _read_git_metadata(
         resolved_project, "config", "--get", "remote.origin.url"
     )
+    source_status = _read_git_metadata(
+        resolved_project,
+        "status",
+        "--porcelain",
+        "--untracked-files=all",
+        allow_empty=True,
+    )
     if actual_commit != project.commit:
         raise QualityCorpusError(
             f"commit mismatch for {project.id}: expected {project.commit}, got {actual_commit}"
@@ -584,6 +656,10 @@ def resolve_quality_project(
     if actual_origin != project.origin:
         raise QualityCorpusError(
             f"origin mismatch for {project.id}: expected {project.origin}, got {actual_origin}"
+        )
+    if source_status:
+        raise QualityCorpusError(
+            f"project {project.id} requires a clean source tree"
         )
 
     return ResolvedQualityProject(
@@ -880,7 +956,9 @@ def _validate_depth_truth_package(
             ) from exc
 
 
-def _read_git_metadata(project: Path, *arguments: str) -> str:
+def _read_git_metadata(
+    project: Path, *arguments: str, allow_empty: bool = False
+) -> str:
     try:
         result = subprocess.run(
             ["git", "-C", str(project), *arguments],
@@ -894,7 +972,7 @@ def _read_git_metadata(project: Path, *arguments: str) -> str:
             f"cannot verify git metadata for {project}: {' '.join(arguments)}"
         ) from exc
     value = result.stdout.strip()
-    if not value:
+    if not value and not allow_empty:
         raise QualityCorpusError(
             f"empty git metadata for {project}: {' '.join(arguments)}"
         )

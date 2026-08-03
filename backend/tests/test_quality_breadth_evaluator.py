@@ -3,7 +3,6 @@ from __future__ import annotations
 from copy import deepcopy
 
 import pytest
-
 from app.services.quality_breadth_evaluator import (
     BreadthDimension,
     evaluate_breadth,
@@ -321,6 +320,45 @@ def test_supported_conditional_exclusion_is_complete_and_not_a_scenario_obligati
     realization = _metric(result, MetricName.SCENARIO_REALIZATION)
     assert (realization.numerator, realization.denominator) == (8, 8)
     assert _metric(result, MetricName.DISPOSITION_COMPLETENESS).miss_ids == ()
+
+
+def test_conditional_exclusion_requires_every_applicability_evidence_ref() -> None:
+    universe = _universe(
+        extra_items=[
+            {
+                "item_id": "BOUNDARY-CONDITIONAL-MULTI",
+                "dimension": "boundaries",
+                "critical": True,
+                "applicability": "conditional",
+                "evidence_refs": ["truth://BOUNDARY-CONDITIONAL"],
+                "applicability_evidence_refs": [
+                    "truth://PLATFORM",
+                    "truth://FEATURE-FLAG",
+                ],
+            }
+        ]
+    )
+    candidates, scenarios = _generated_for(universe)
+
+    result = evaluate_breadth(
+        universe,
+        scenario_candidates=_without_item(
+            candidates, "BOUNDARY-CONDITIONAL-MULTI"
+        ),
+        scenarios=_without_item(scenarios, "BOUNDARY-CONDITIONAL-MULTI"),
+        dispositions=[
+            {
+                "item_id": "BOUNDARY-CONDITIONAL-MULTI",
+                "disposition": "not_applicable",
+                "evidence_refs": ["truth://PLATFORM"],
+            }
+        ],
+    )
+
+    assert result.status is AxisStatus.FAIL
+    assert "BOUNDARY-CONDITIONAL-MULTI" in {
+        miss.item_id for miss in result.critical_misses
+    }
 
 
 def test_duplicate_scenarios_do_not_inflate_coverage() -> None:

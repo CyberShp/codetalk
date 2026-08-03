@@ -9,7 +9,6 @@ import subprocess
 from pathlib import Path
 
 import pytest
-
 from app.services.quality_baseline import (
     EVALUATOR_SOURCE_PATHS,
     BaselineError,
@@ -24,6 +23,7 @@ from tests.test_quality_baseline_policy import (
     _audit,
     _thresholds,
     _twelve_runs,
+    _work_disposition,
     _write_run,
 )
 
@@ -65,10 +65,20 @@ def _write_generator(root: Path, run: Path) -> Path:
     manifest = json.loads((run / "quality_evaluation_manifest.json").read_text())
     report = json.loads((run / "quality_evaluation_report.json").read_text())
     generator = root / str(manifest["case_id"])
+    response_bytes = (
+        json.dumps(
+            {"case_id": manifest["case_id"], "source": "retained-generator-response"},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode()
+    response_sha256 = hashlib.sha256(response_bytes).hexdigest()
     first = generator / "first_pass"
     final = generator / "final_after_auto_repair"
     first.mkdir(parents=True)
     final.mkdir()
+    (generator / "benchmark_response.json").write_bytes(response_bytes)
     (first / "candidate.json").write_text(
         json.dumps({"phase": "first", "case_id": manifest["case_id"]}) + "\n"
     )
@@ -92,7 +102,13 @@ def _write_generator(root: Path, run: Path) -> Path:
                 "mode": execution["profile"],
                 "model": manifest["versions"]["model"],
                 "codetalk_revision": manifest["versions"]["codetalk"],
+                "source_tree": next(
+                    case.source_tree
+                    for case in CORPUS.cases
+                    if case.case_id == manifest["case_id"]
+                ),
                 "elapsed_seconds": execution["generation_wall_clock_seconds"],
+                "response_sha256": response_sha256,
                 "artifact_hash_manifest": "artifact_hash_manifest.json",
             },
             sort_keys=True,
@@ -101,9 +117,17 @@ def _write_generator(root: Path, run: Path) -> Path:
         + "\n"
     )
     (generator / "workbench_audit.json").write_text(
-        json.dumps({"schema_version": "quality-benchmark-workbench-audit-v1"})
+        json.dumps(
+            {
+                "schema_version": "quality-benchmark-workbench-audit-v1",
+                "task_artifact_hashes": {
+                    "benchmark_response.json": response_sha256
+                },
+            }
+        )
         + "\n"
     )
+    manifest["execution"]["generator_response_sha256"] = response_sha256
     root_sha = _rewrite_generator_hash_manifest(generator)
     manifest["execution"]["generator_artifact_root_sha256"] = root_sha
     (run / "quality_evaluation_manifest.json").write_text(
@@ -198,6 +222,7 @@ def _evidence_fixture(
     tmp_path: Path,
     *,
     rapid_limit_override: float | None = None,
+    core_profile: str | None = None,
 ) -> dict[str, object]:
     repository, versions = _clean_repository(tmp_path / "repository")
     evidence = tmp_path / "evidence"
@@ -205,10 +230,20 @@ def _evidence_fixture(
         evidence / "core-runs",
         versions=versions,
         rapid_limit_override=rapid_limit_override,
+        profile_override=core_profile,
     )
     generators = _generators(evidence / "core-generators", runs)
+    for run in runs:
+        manifest = json.loads((run / "quality_evaluation_manifest.json").read_text())
+        if float(manifest["execution"]["wall_clock_seconds"]) < 300.0:
+            run_ref = str(manifest["run_ref"])
+            work_audit[run_ref] = _work_disposition(run_ref, run)
     rapid_runs, rapid_generators, deep_runs, deep_generators = _paired_evidence(
         evidence, versions
+    )
+    review_evidence = evidence / "independent-review.md"
+    review_evidence.write_text(
+        "Independent R1-R4 calibration review evidence.\n", encoding="utf-8"
     )
     return {
         "repository": repository,
@@ -222,7 +257,31 @@ def _evidence_fixture(
         "deep_runs": deep_runs,
         "deep_generators": deep_generators,
         "work_audit": work_audit,
+        "review_evidence": [review_evidence],
     }
+
+
+def _bound_audit(fixture: dict[str, object]) -> dict[str, object]:
+    evidence_path = Path(fixture["review_evidence"][0])
+    ref = (
+        "bundle-review-evidence://sha256/"
+        + hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+    )
+    audit = json.loads(json.dumps(_audit()))
+
+    def bind(value: object) -> None:
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                if key == "evidence_refs" and isinstance(nested, list):
+                    value[key] = [ref]
+                else:
+                    bind(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                bind(nested)
+
+    bind(audit)
+    return audit
 
 
 def _freeze(
@@ -237,7 +296,8 @@ def _freeze(
         registry_path=registry_path or fixture["registry"],
         repository_root=fixture["repository"],
         thresholds=_thresholds(),
-        calibration_audit=_audit(),
+        calibration_audit=_bound_audit(fixture),
+        review_evidence_files=fixture["review_evidence"],
         work_sufficiency_audit=fixture["work_audit"],
         rapid_run_directories=fixture["rapid_runs"],
         rapid_generator_directories=fixture["rapid_generators"],
@@ -270,6 +330,11 @@ def test_freezer_publishes_complete_read_only_self_contained_bundle(
         if path.is_file() and path.name != "baseline_manifest.json"
     }
     assert manifest["artifact_sha256"] == actual_hashes
+    retained_reviews = list((output / "review_evidence").iterdir())
+    assert len(retained_reviews) == 1
+    assert hashlib.sha256(retained_reviews[0].read_bytes()).hexdigest() == (
+        retained_reviews[0].name
+    )
     assert set(manifest["source_run_sha256"]) == {case.case_id for case in CORPUS.cases}
     encoded = "\n".join(
         path.read_text()
@@ -282,6 +347,56 @@ def test_freezer_publishes_complete_read_only_self_contained_bundle(
     if os.name != "nt":
         assert all(path.stat().st_mode & 0o222 == 0 for path in output.rglob("*"))
         assert output.stat().st_mode & 0o222 == 0
+
+
+def test_clean_identity_rejects_ignored_untracked_reviewer_authority(
+    tmp_path: Path,
+) -> None:
+    fixture = _evidence_fixture(tmp_path)
+    repository = Path(fixture["repository"])
+    relative = "benchmarks/quality/reviewer_authority.json"
+    _run_git(repository, "rm", "--cached", relative)
+    (repository / ".gitignore").write_text(relative + "\n", encoding="utf-8")
+    _run_git(repository, "add", ".gitignore")
+    _run_git(
+        repository,
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-qm",
+        "ignore reviewer authority",
+    )
+    assert _run_git(repository, "status", "--porcelain") == ""
+
+    with pytest.raises(BaselineError, match="evaluation identity file"):
+        load_clean_evaluation_identity(repository)
+
+
+def test_freezer_rejects_calibration_evidence_absent_from_bundle(
+    tmp_path: Path,
+) -> None:
+    fixture = _evidence_fixture(tmp_path)
+    audit = _bound_audit(fixture)
+    audit["false_passes"]["evidence_refs"] = [
+        "bundle-review-evidence://sha256/" + "f" * 64
+    ]
+
+    with pytest.raises(BaselineError, match="absent from the frozen bundle"):
+        freeze_baseline_output(
+            run_directories=fixture["runs"],
+            generator_directories=fixture["generators"],
+            registry_path=fixture["registry"],
+            repository_root=fixture["repository"],
+            thresholds=_thresholds(),
+            calibration_audit=audit,
+            review_evidence_files=fixture["review_evidence"],
+            work_sufficiency_audit=fixture["work_audit"],
+            rapid_run_directories=fixture["rapid_runs"],
+            rapid_generator_directories=fixture["rapid_generators"],
+            deep_run_directories=fixture["deep_runs"],
+            deep_generator_directories=fixture["deep_generators"],
+            output_directory=tmp_path / "unbound-review",
+        )
 
 
 def test_freezer_compares_generator_elapsed_to_generation_phase_time(
@@ -308,6 +423,101 @@ def test_freezer_compares_generator_elapsed_to_generation_phase_time(
     output = _freeze(fixture, tmp_path / "phase-timing")
 
     assert output.is_dir()
+
+
+@pytest.mark.parametrize("tamper_response_authority", [False, True])
+def test_freezer_binds_cached_reuse_to_retained_response_authority(
+    tmp_path: Path, tamper_response_authority: bool
+) -> None:
+    fixture = _evidence_fixture(tmp_path)
+    run = Path(fixture["runs"][0])
+    generator = Path(fixture["generators"][0])
+    response_sha256 = hashlib.sha256(
+        (generator / "benchmark_response.json").read_bytes()
+    ).hexdigest()
+    generation_path = generator / "generation_manifest.json"
+    generation = json.loads(generation_path.read_text())
+    generation["cache_reused"] = True
+    generation["response_sha256"] = response_sha256
+    generation["work_sufficiency"] = {
+        "status": "reused",
+        "cache_reused": True,
+        "reuse_source_sha256": response_sha256,
+        "reasons": [],
+    }
+    generation_path.write_text(json.dumps(generation))
+    workbench_path = generator / "workbench_audit.json"
+    workbench = json.loads(workbench_path.read_text())
+    workbench["task_artifact_hashes"] = {
+        "benchmark_response.json": (
+            "8" * 64 if tamper_response_authority else response_sha256
+        )
+    }
+    workbench_path.write_text(json.dumps(workbench))
+    root_sha256 = _rewrite_generator_hash_manifest(generator)
+
+    manifest_path = run / "quality_evaluation_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    execution = manifest["execution"]
+    execution["cache_reuse"] = True
+    execution["work_sufficiency"] = "reused"
+    execution["work_sufficiency_diagnostic"] = generation["work_sufficiency"]
+    execution["generator_response_sha256"] = response_sha256
+    execution["generator_artifact_root_sha256"] = root_sha256
+    manifest_path.write_text(json.dumps(manifest))
+    fixture["work_audit"][manifest["run_ref"]] = _work_disposition(
+        manifest["run_ref"], run
+    )
+
+    if tamper_response_authority:
+        with pytest.raises(BaselineError, match="retained workbench evidence"):
+            _freeze(fixture, tmp_path / "baseline")
+    else:
+        output = _freeze(fixture, tmp_path / "baseline")
+        assert output.is_dir()
+
+
+def test_freezer_rejects_coherently_rewritten_response_hash_declarations(
+    tmp_path: Path,
+) -> None:
+    fixture = _evidence_fixture(tmp_path)
+    run = Path(fixture["runs"][0])
+    generator = Path(fixture["generators"][0])
+    forged_sha256 = "7" * 64
+
+    generation_path = generator / "generation_manifest.json"
+    generation = json.loads(generation_path.read_text())
+    generation["cache_reused"] = True
+    generation["response_sha256"] = forged_sha256
+    generation["work_sufficiency"] = {
+        "status": "reused",
+        "cache_reused": True,
+        "reuse_source_sha256": forged_sha256,
+        "reasons": [],
+    }
+    generation_path.write_text(json.dumps(generation))
+    workbench_path = generator / "workbench_audit.json"
+    workbench = json.loads(workbench_path.read_text())
+    workbench["task_artifact_hashes"]["benchmark_response.json"] = forged_sha256
+    workbench_path.write_text(json.dumps(workbench))
+    root_sha256 = _rewrite_generator_hash_manifest(generator)
+
+    manifest_path = run / "quality_evaluation_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["execution"]["cache_reuse"] = True
+    manifest["execution"]["work_sufficiency"] = "reused"
+    manifest["execution"]["work_sufficiency_diagnostic"] = generation[
+        "work_sufficiency"
+    ]
+    manifest["execution"]["generator_response_sha256"] = forged_sha256
+    manifest["execution"]["generator_artifact_root_sha256"] = root_sha256
+    manifest_path.write_text(json.dumps(manifest))
+    fixture["work_audit"][manifest["run_ref"]] = _work_disposition(
+        manifest["run_ref"], run
+    )
+
+    with pytest.raises(BaselineError, match="retained response bytes"):
+        _freeze(fixture, tmp_path / "baseline")
 
 
 def test_freezer_rejects_generator_candidate_tamper(tmp_path: Path) -> None:
@@ -441,7 +651,8 @@ def test_freezer_refuses_partial_corpus_and_existing_destination(tmp_path: Path)
             registry_path=fixture["registry"],
             repository_root=fixture["repository"],
             thresholds=_thresholds(),
-            calibration_audit=_audit(),
+            calibration_audit=_bound_audit(fixture),
+            review_evidence_files=fixture["review_evidence"],
             work_sufficiency_audit=fixture["work_audit"],
             rapid_run_directories=fixture["rapid_runs"],
             rapid_generator_directories=fixture["rapid_generators"],
@@ -506,7 +717,7 @@ def test_freezer_requires_clean_codetalk_and_binds_evaluator_bytes(tmp_path: Pat
 def _write_cli_inputs(tmp_path: Path, fixture: dict[str, object]) -> dict[str, Path]:
     values = {
         "thresholds.json": _thresholds(),
-        "audit.json": _audit(),
+        "audit.json": _bound_audit(fixture),
         "work.json": fixture["work_audit"],
     }
     paths: dict[str, Path] = {}
@@ -531,6 +742,7 @@ def _cli_args(
         "--repository-root", str(fixture["repository"]),
         "--thresholds", str(inputs["thresholds.json"]),
         "--calibration-audit", str(inputs["audit.json"]),
+        "--review-evidence", str(Path(fixture["review_evidence"][0])),
         "--work-sufficiency-audit", str(inputs["work.json"]),
         "--output", str(output),
     ]
@@ -547,6 +759,27 @@ def test_freezer_cli_discovers_evidence_and_returns_zero_for_pass(
     assert capsys.readouterr().out.strip() == str(output.resolve())
     matrix = json.loads((output / "regression_matrix.json").read_text())
     assert matrix["rapid_vs_deep"]["evidence_kind"] == "paired_immutable_reports"
+    assert matrix["core_baseline_blocked"] is False
+
+
+def test_freezer_keeps_all_rapid_core_and_paired_profile_gates_independent(
+    tmp_path: Path,
+) -> None:
+    fixture = _evidence_fixture(tmp_path, core_profile="rapid")
+    output = _freeze(fixture, tmp_path / "baseline")
+
+    release = json.loads((output / "release_gate.json").read_text())
+    matrix = json.loads((output / "regression_matrix.json").read_text())
+
+    assert release["timing"] == {
+        "rapid": "pass",
+        "deep": "not_run",
+        "work_sufficiency": "pass",
+    }
+    assert release["release_gate"] == "pass"
+    assert matrix["rapid_vs_deep"]["status"] == "complete"
+    assert matrix["rapid_vs_deep"]["timing"]["rapid"]["gate"] == "pass"
+    assert matrix["rapid_vs_deep"]["timing"]["deep"]["gate"] == "pass"
     assert matrix["core_baseline_blocked"] is False
 
 

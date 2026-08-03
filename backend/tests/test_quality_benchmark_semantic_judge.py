@@ -92,6 +92,145 @@ def test_behavior_claim_batch_judge_reuses_bound_l2_validator_and_records_identi
     assert "pending_resets" not in json.dumps(result.metadata)
 
 
+def test_behavior_claim_batch_judge_reuses_completed_verdicts_within_one_case(
+    tmp_path: Path,
+) -> None:
+    from app.services.quality_benchmark_semantic_judge import (
+        BehaviorClaimBatchSemanticJudge,
+        SemanticJudgment,
+    )
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "storage.c").write_text(
+        "if (busy) {\n  pending_resets.append(req);\n}\n", encoding="utf-8"
+    )
+    request_ids: list[list[str]] = []
+
+    async def materializer(**kwargs):
+        request = kwargs["request"]
+        request_ids.append([item["claim_id"] for item in request["claims"]])
+        return {
+            "status": "completed",
+            "validator": {
+                "provider": "fixture-provider",
+                "runtime_id": "fixture-runtime",
+                "model": "judge-model-v2",
+                "reasoning_effort": "high",
+                "independent": True,
+            },
+            "response_models": ["judge-model-v2"],
+            "claims": [
+                {
+                    "claim_id": item["claim_id"],
+                    "binding": item["binding"],
+                    "status": "supports",
+                    "reason": "The bound source supports the claim.",
+                }
+                for item in request["claims"]
+            ],
+        }
+
+    first = _judgment()
+    second = SemanticJudgment(
+        judgment_id="accuracy-002",
+        axis="accuracy",
+        candidate_statement="The busy branch returns after queueing the request.",
+        oracle_statement="The busy branch queues the request before returning.",
+        observed_evidence_refs=("source://storage.c#L1-L3",),
+        required_evidence_refs=("source://storage.c#L1-L3",),
+    )
+    judge = BehaviorClaimBatchSemanticJudge(materializer=materializer)
+
+    first_result = judge.judge(
+        judgments=(first,),
+        source_dir=source,
+        generator_model="generator-model-v1",
+        judge_model="judge-model-v2",
+        mode="deep",
+        deadline_monotonic=time.monotonic() + 10,
+        snapshot_label="first_pass",
+    )
+    final_result = judge.judge(
+        judgments=(first, second),
+        source_dir=source,
+        generator_model="generator-model-v1",
+        judge_model="judge-model-v2",
+        mode="deep",
+        deadline_monotonic=time.monotonic() + 10,
+        snapshot_label="final_after_auto_repair",
+    )
+
+    assert first_result.verdicts == {"accuracy-001": "supports"}
+    assert final_result.verdicts == {
+        "accuracy-001": "supports",
+        "accuracy-002": "supports",
+    }
+    assert request_ids == [["accuracy-001"], ["accuracy-002"]]
+    assert final_result.metadata["cache_hit_count"] == 1
+    assert final_result.metadata["materialized_count"] == 1
+    assert len(final_result.metadata["combined_request_sha256"]) == 64
+    assert len(final_result.metadata["combined_result_sha256"]) == 64
+
+
+def test_semantic_cache_invalidates_when_source_tree_bytes_change(
+    tmp_path: Path,
+) -> None:
+    from app.services.quality_benchmark_semantic_judge import (
+        BehaviorClaimBatchSemanticJudge,
+    )
+
+    source = tmp_path / "source"
+    source.mkdir()
+    source_file = source / "storage.c"
+    source_file.write_text(
+        "if (busy) {\n  pending_resets.append(req);\n}\n", encoding="utf-8"
+    )
+    calls = 0
+
+    async def materializer(**kwargs):
+        nonlocal calls
+        calls += 1
+        return {
+            "status": "completed",
+            "validator": {
+                "provider": "fixture-provider",
+                "runtime_id": "fixture-runtime",
+                "model": "judge-model-v2",
+                "reasoning_effort": "high",
+                "independent": True,
+            },
+            "response_models": ["judge-model-v2"],
+            "claims": [
+                {
+                    "claim_id": item["claim_id"],
+                    "binding": item["binding"],
+                    "status": "supports",
+                    "reason": "The bound source supports the claim.",
+                }
+                for item in kwargs["request"]["claims"]
+            ],
+        }
+
+    judge = BehaviorClaimBatchSemanticJudge(materializer=materializer)
+    kwargs = {
+        "judgments": (_judgment(),),
+        "source_dir": source,
+        "generator_model": "generator-model-v1",
+        "judge_model": "judge-model-v2",
+        "mode": "deep",
+        "deadline_monotonic": time.monotonic() + 10,
+    }
+    judge.judge(snapshot_label="first_pass", **kwargs)
+    source_file.write_text(
+        "if (busy) {\n  return EBUSY;\n}\n", encoding="utf-8"
+    )
+    final = judge.judge(snapshot_label="final_after_auto_repair", **kwargs)
+
+    assert calls == 2
+    assert final.metadata["cache_hit_count"] == 0
+
+
 def test_semantic_request_keeps_observed_and_required_evidence_roles_separate(
     tmp_path: Path,
 ) -> None:
@@ -339,6 +478,7 @@ def test_default_materializer_uses_explicit_codex_harness_identity_without_ui_db
     source.mkdir()
     artifact_roots: list[Path] = []
     prepared = []
+    execute_calls = []
     sandbox_calls = []
 
     class FakeFacade:
@@ -351,7 +491,8 @@ def test_default_materializer_uses_explicit_codex_harness_identity_without_ui_db
             prepared.append(request)
             return SimpleNamespace(run_id="judge-run")
 
-        def execute(self, _session, **_kwargs):
+        def execute(self, _session, **kwargs):
+            execute_calls.append(kwargs)
             request = prepared[-1].task_bundle["validation_request"]
             (self.artifact_dir / "semantic_verdicts.json").write_text(
                 json.dumps(
@@ -416,10 +557,10 @@ def test_default_materializer_uses_explicit_codex_harness_identity_without_ui_db
             request=request,
             repo_path=source,
             generator_identity="agent-runtime:codex:gpt-5.6-sol",
-            timeout_seconds=10,
+            timeout_seconds=600,
             judge_model="gpt-5.5",
             mode="deep",
-            deadline_monotonic=time.monotonic() + 10,
+            deadline_monotonic=time.monotonic() + 600,
         )
     )
 
@@ -448,4 +589,5 @@ def test_default_materializer_uses_explicit_codex_harness_identity_without_ui_db
     ]
     assert sandbox_calls[0]["model"] == "gpt-5.5"
     assert sandbox_calls[0]["source_dir"] == source.resolve()
+    assert execute_calls[0]["idle_timeout_sec"] == 300.0
     assert not artifact_roots[0].exists()

@@ -20,12 +20,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from jsonschema import Draft202012Validator
-
 from app.services.quality_benchmark_generator import (
     _artifact_hash_manifest,
-    _generator_prompt,
     _generator_output_schema,
+    _generator_prompt,
     _materialize_candidate,
     _verify_artifact_hash_manifest,
     generate_quality_benchmark_artifacts,
@@ -34,6 +32,7 @@ from app.services.quality_benchmark_workbench import BenchmarkWorkbenchResult
 from app.services.workbench_workflow_runner import (
     _apply_benchmark_work_sufficiency,
 )
+from jsonschema import Draft202012Validator
 
 
 def test_generator_prompt_uses_explicit_public_analysis_target() -> None:
@@ -112,7 +111,9 @@ def _candidate_response() -> dict:
     }
 
 
-def _fake_workbench_result(tmp_path: Path) -> BenchmarkWorkbenchResult:
+def _fake_workbench_result(
+    tmp_path: Path, *, cache_reused: bool = False
+) -> BenchmarkWorkbenchResult:
     task_artifact = tmp_path / "task-artifact"
     agent_artifact = task_artifact / "agent_runs" / "analyze"
     agent_artifact.mkdir(parents=True)
@@ -130,15 +131,27 @@ def _fake_workbench_result(tmp_path: Path) -> BenchmarkWorkbenchResult:
         repair_attempt_count=0,
         terminal_block_reason=None,
         work_sufficiency={
-            "status": "sufficient",
+            "status": "reused" if cache_reused else "sufficient",
             "auto_continue": False,
             "elapsed_seconds": 10.0,
+            "cache_reused": cache_reused,
+            **(
+                {
+                    "reuse_source_sha256": hashlib.sha256(
+                        response_path.read_bytes()
+                    ).hexdigest()
+                }
+                if cache_reused
+                else {}
+            ),
             "reasons": [],
         },
     )
 
 
-def _benchmark_task_run(tmp_path: Path, response: dict) -> SimpleNamespace:
+def _benchmark_task_run(
+    tmp_path: Path, response: dict, *, cache_reused: bool = False
+) -> SimpleNamespace:
     artifact_dir = tmp_path / "benchmark-task"
     agent_dir = artifact_dir / "agent_runs" / "analyze"
     agent_dir.mkdir(parents=True)
@@ -155,7 +168,12 @@ def _benchmark_task_run(tmp_path: Path, response: dict) -> SimpleNamespace:
         task_bundle={"execution_profile": {"id": "rapid"}},
         artifact_dir=str(artifact_dir),
         created_at="",
-        agent_runs=[{"step_id": "analyze", "artifact_dir": str(agent_dir)}],
+        agent_runs=[{
+            "step_id": "analyze",
+            "artifact_dir": str(agent_dir),
+            "cache_reused": cache_reused,
+            **({"reuse_source": "accepted-prior-result"} if cache_reused else {}),
+        }],
     )
 
 
@@ -210,6 +228,29 @@ def test_cold_fast_benchmark_with_substantive_three_axis_work_is_accepted(
     assert diagnostic["auto_continue"] is False
     assert diagnostic["axis_evidence"]["claims"] == 4
     assert audit["status"] == "not_applicable"
+
+
+def test_cached_fast_benchmark_binds_reuse_to_actual_response_bytes(
+    tmp_path,
+) -> None:
+    response = _candidate_response()
+    task_run = _benchmark_task_run(tmp_path, response, cache_reused=True)
+    response_path = (
+        Path(task_run.agent_runs[0]["artifact_dir"]) / "benchmark_response.json"
+    )
+
+    _audit, diagnostic = _apply_benchmark_work_sufficiency(
+        audit={"status": "not_applicable", "issues": []},
+        task_run=task_run,
+        elapsed_seconds=20.0,
+        remaining_seconds=600.0,
+    )
+
+    assert diagnostic["status"] == "reused"
+    assert diagnostic["cache_reused"] is True
+    assert diagnostic["reuse_source_sha256"] == hashlib.sha256(
+        response_path.read_bytes()
+    ).hexdigest()
 
 
 def _candidate_with_encoded_secret_in_every_string(secret: str) -> tuple[dict, set[str]]:
@@ -397,6 +438,7 @@ def test_generator_executes_through_workbench_and_publishes_content_hash_manifes
     assert float(seen["deadline_monotonic"]) > time.monotonic()
     manifest = json.loads((output / "artifact_hash_manifest.json").read_text())
     assert set(manifest["artifacts"]) == {
+        "benchmark_response.json",
         "generation_manifest.json",
         "repair_summary.json",
         "versions.json",
@@ -416,7 +458,7 @@ def test_generator_executes_through_workbench_and_publishes_content_hash_manifes
     assert generation["runtime"] == "codetalk-workbench"
     assert generation["task_run_id"] == "task_run_test"
     assert generation["work_sufficiency"]["status"] == "sufficient"
-    assert versions["evaluator"] == "quality-evaluation-v4"
+    assert versions["evaluator"] == "quality-evaluation-v5"
     assert json.loads((output / "repair_summary.json").read_text()) == {
         "attempt_count": 0,
         "elapsed_seconds": pytest.approx(generation["elapsed_seconds"], abs=0.01),
@@ -428,6 +470,41 @@ def test_generator_executes_through_workbench_and_publishes_content_hash_manifes
     _verify_artifact_hash_manifest(output)
     for path in [output, *output.rglob("*")]:
         assert path.stat().st_mode & 0o222 == 0
+
+
+def test_generator_propagates_workbench_cache_reuse(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "storage.c").write_text("one\ntwo\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "app.services.quality_benchmark_generator.execute_quality_benchmark_workbench",
+        lambda **_kwargs: _fake_workbench_result(tmp_path, cache_reused=True),
+    )
+    output = tmp_path / "cached"
+
+    generate_quality_benchmark_artifacts(
+        case_id="cached-case",
+        source_dir=source,
+        output_dir=output,
+        model="test-model",
+        mode="rapid",
+        timeout_seconds=30,
+        codetalk_revision="test-revision",
+        truth_paths=_truth_paths(tmp_path),
+    )
+
+    generation = json.loads((output / "generation_manifest.json").read_text())
+    response_sha256 = hashlib.sha256(
+        json.dumps(_candidate_response()).encode("utf-8")
+    ).hexdigest()
+    assert generation["cache_reused"] is True
+    assert generation["work_sufficiency"]["status"] == "reused"
+    assert generation["work_sufficiency"]["reuse_source_sha256"] == response_sha256
+    audit = json.loads((output / "workbench_audit.json").read_text())
+    assert audit["task_artifact_hashes"]["benchmark_response.json"] == response_sha256
+    assert hashlib.sha256(
+        (output / "benchmark_response.json").read_bytes()
+    ).hexdigest() == response_sha256
 
 
 def test_generator_hash_manifest_includes_nested_same_name_file(tmp_path) -> None:

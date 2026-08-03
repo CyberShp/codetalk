@@ -1,0 +1,33 @@
+{
+  "schema_version": "quality-review-authority-v1",
+  "author_ids": [
+    "thread:019fc390-ac0a-7ae0-b1d0-769aa3bee986"
+  ],
+  "reviewers": [
+    {
+      "reviewer_id": "agent:019fc9c3-6cd9-75c2-9cc1-af1d0aa00ea8",
+      "role": "accuracy-auditor",
+      "assignments": ["calibration:false_passes", "calibration:false_failures"]
+    },
+    {
+      "reviewer_id": "agent:019fc9c3-6e3c-7f70-949b-21833175b36c",
+      "role": "breadth-auditor",
+      "assignments": ["calibration:false_failures", "calibration:missing_denominators"]
+    },
+    {
+      "reviewer_id": "agent:019fc9c3-6f91-7a22-9875-caab929e744b",
+      "role": "depth-auditor",
+      "assignments": ["calibration:missing_denominators", "calibration:unstable_evaluator"]
+    },
+    {
+      "reviewer_id": "agent:019fc9a2-4cad-7943-a79d-e3bfe21e0f14",
+      "role": "runtime-security-auditor",
+      "assignments": ["calibration:false_passes", "calibration:unstable_evaluator", "work_sufficiency"]
+    },
+    {
+      "reviewer_id": "agent:019fc9a2-4d20-7a73-b54c-47f394929a5c",
+      "role": "vision-guardian",
+      "assignments": ["final_vision"]
+    }
+  ]
+}

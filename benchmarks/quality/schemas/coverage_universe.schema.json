@@ -87,6 +87,193 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
+  "allOf": [
+    {
+      "properties": {
+        "items": {
+          "contains": {
+            "properties": {
+              "applicability": {
+                "const": "required"
+              },
+              "dimension": {
+                "const": "entrypoints"
+              }
+            },
+            "required": [
+              "dimension",
+              "applicability"
+            ]
+          },
+          "minContains": 1
+        }
+      }
+    },
+    {
+      "properties": {
+        "items": {
+          "contains": {
+            "properties": {
+              "applicability": {
+                "const": "required"
+              },
+              "dimension": {
+                "const": "flows"
+              }
+            },
+            "required": [
+              "dimension",
+              "applicability"
+            ]
+          },
+          "minContains": 1
+        }
+      }
+    },
+    {
+      "properties": {
+        "items": {
+          "contains": {
+            "properties": {
+              "applicability": {
+                "const": "required"
+              },
+              "dimension": {
+                "const": "branches"
+              }
+            },
+            "required": [
+              "dimension",
+              "applicability"
+            ]
+          },
+          "minContains": 1
+        }
+      }
+    },
+    {
+      "properties": {
+        "items": {
+          "contains": {
+            "properties": {
+              "applicability": {
+                "const": "required"
+              },
+              "dimension": {
+                "const": "states"
+              }
+            },
+            "required": [
+              "dimension",
+              "applicability"
+            ]
+          },
+          "minContains": 1
+        }
+      }
+    },
+    {
+      "properties": {
+        "items": {
+          "contains": {
+            "properties": {
+              "applicability": {
+                "const": "required"
+              },
+              "dimension": {
+                "const": "resources"
+              }
+            },
+            "required": [
+              "dimension",
+              "applicability"
+            ]
+          },
+          "minContains": 1
+        }
+      }
+    },
+    {
+      "properties": {
+        "items": {
+          "contains": {
+            "properties": {
+              "applicability": {
+                "const": "required"
+              },
+              "dimension": {
+                "const": "boundaries"
+              }
+            },
+            "required": [
+              "dimension",
+              "applicability"
+            ]
+          },
+          "minContains": 1
+        }
+      }
+    },
+    {
+      "properties": {
+        "items": {
+          "contains": {
+            "properties": {
+              "applicability": {
+                "const": "required"
+              },
+              "dimension": {
+                "const": "concurrency"
+              }
+            },
+            "required": [
+              "dimension",
+              "applicability"
+            ]
+          },
+          "minContains": 1
+        }
+      }
+    },
+    {
+      "properties": {
+        "items": {
+          "contains": {
+            "properties": {
+              "applicability": {
+                "const": "required"
+              },
+              "dimension": {
+                "const": "errors"
+              }
+            },
+            "required": [
+              "dimension",
+              "applicability"
+            ]
+          },
+          "minContains": 1
+        }
+      }
+    },
+    {
+      "properties": {
+        "items": {
+          "contains": {
+            "properties": {
+              "critical": {
+                "const": true
+              }
+            },
+            "required": [
+              "critical"
+            ]
+          },
+          "minContains": 1
+        }
+      }
+    }
+  ],
   "properties": {
     "case_id": {
       "minLength": 1,

@@ -25,8 +25,6 @@ from itertools import pairwise
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
-
 from app.services.quality_evaluation_contract import (
     AxisResult,
     AxisStatus,
@@ -38,6 +36,7 @@ from app.services.quality_evaluation_contract import (
     ValidationLayerOutcome,
     ValidationLayers,
 )
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 NonEmptyString = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 Sha256Digest = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
@@ -660,6 +659,7 @@ class _Assessment:
     item_id: str
     chain_id: str
     category: Literal["node", "edge", "check"]
+    critical: bool
     closed: bool
     matched: bool
     has_evidence: bool
@@ -1191,7 +1191,7 @@ def evaluate_depth(
     )
 
     status = AxisStatus.PASS
-    if critical_misses:
+    if l0_misses or any(not assessment.closed for assessment in assessments) or l3.misses:
         status = AxisStatus.FAIL
     elif limitations:
         status = AxisStatus.LIMITED
@@ -1391,6 +1391,7 @@ def _assess_chain(
                 ),
                 passed=observed is not None
                 and observed.status is ObligationStatus.CLOSED,
+                critical=node.critical,
                 missing_reason="required causal node is absent",
                 open_reason="required causal node remains open",
                 node_kind=node.kind,
@@ -1415,6 +1416,7 @@ def _assess_chain(
                 ),
                 passed=observed is not None
                 and observed.status is ObligationStatus.CLOSED,
+                critical=edge.critical,
                 missing_reason="required causal edge is absent",
                 open_reason="required causal edge remains open",
                 source_kind=node_kinds[edge.source_node_id],
@@ -1439,6 +1441,7 @@ def _assess_chain(
                     (),
                 ),
                 passed=observed is not None and observed.status is CheckStatus.PASS,
+                critical=check.critical,
                 missing_reason="required disconfirming check is absent",
                 open_reason="required disconfirming check did not pass",
             )
@@ -1457,6 +1460,7 @@ def _assess_observation(
     | None,
     trusted_ref_groups: tuple[frozenset[str], ...],
     passed: bool,
+    critical: bool,
     missing_reason: str,
     open_reason: str,
     node_kind: DepthNodeKind | None = None,
@@ -1495,6 +1499,7 @@ def _assess_observation(
         item_id=item_id,
         chain_id=chain_id,
         category=category,
+        critical=critical,
         closed=closed,
         matched=matched,
         has_evidence=has_evidence,
@@ -1518,7 +1523,7 @@ def _obligation_misses(
             evidence_refs=assessment.evidence_refs,
         )
         for assessment in assessments
-        if not assessment.closed
+        if not assessment.closed and assessment.critical
     )
 
 
@@ -1691,7 +1696,9 @@ def _layer_one_outcome(
         status=LayerStatus.FAIL if unsupported else LayerStatus.PASS,
         numerator=sum(assessment.has_evidence for assessment in matched),
         denominator=len(matched),
-        critical_miss_ids=tuple(assessment.item_id for assessment in unsupported),
+        critical_miss_ids=tuple(
+            assessment.item_id for assessment in unsupported if assessment.critical
+        ),
         evidence_refs=_unique_strings(
             ref for assessment in matched for ref in assessment.evidence_refs
         ),
@@ -1710,7 +1717,9 @@ def _layer_two_outcome(
         status=LayerStatus.FAIL if failed else LayerStatus.PASS,
         numerator=sum(assessment.closed for assessment in assessments),
         denominator=len(assessments),
-        critical_miss_ids=tuple(assessment.item_id for assessment in failed),
+        critical_miss_ids=tuple(
+            assessment.item_id for assessment in failed if assessment.critical
+        ),
         evidence_refs=_unique_strings(
             (
                 f"truth://{truth.case_id}/critical_chains",
