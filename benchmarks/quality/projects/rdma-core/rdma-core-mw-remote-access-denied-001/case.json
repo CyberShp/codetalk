@@ -3,11 +3,11 @@
   "case_id": "rdma-core-mw-remote-access-denied-001",
   "project_id": "rdma-core",
   "analysis_target": "rdma-core memory-window remote-access-denied behavior and its test observation path.",
-  "truth_package_version": "2",
+  "truth_package_version": "3",
   "tier": "S",
   "truth_package": {
     "gold_claims": {"path": "gold_claims.json", "sha256": "01677e7d953e1694d7264299b28b6166c1d35d6cf2821656b5235278e5eb0a5c"},
-    "coverage_universe": {"path": "coverage_universe.json", "sha256": "f629866d96ffe657f493864b1ebc9649b9141cd02bf0cd4ba5a9c152dfbf0caf"},
+    "coverage_universe": {"path": "coverage_universe.json", "sha256": "97312d3127819cc602ba03cc5dc6365ba5f4bbfa9aabe0dcccbee0ba4f452d0f"},
     "critical_chains": {"path": "critical_chains.json", "sha256": "56d1543904da477612754241c502dc77f3c2a14addafc9a71c3e1e728ded2c95"},
     "execution_oracles": {"path": "execution_oracles.json", "sha256": "43fe639cd6a27dc74cab90d00610e04ed48c002086ad9acec47570dc3ea70e8c"}
   },

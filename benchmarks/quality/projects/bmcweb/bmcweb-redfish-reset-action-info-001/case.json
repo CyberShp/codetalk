@@ -3,11 +3,11 @@
   "case_id": "bmcweb-redfish-reset-action-info-001",
   "project_id": "bmcweb",
   "analysis_target": "Redfish ComputerSystem.Reset ActionInfo host-transition validation; exclude Manager.Reset.",
-  "truth_package_version": "2",
+  "truth_package_version": "3",
   "tier": "S",
   "truth_package": {
     "gold_claims": {"path": "gold_claims.json", "sha256": "98015e1f4c75902b1685ed03b7f5739f6d4445cb0b3077545d1bbc22f65683cf"},
-    "coverage_universe": {"path": "coverage_universe.json", "sha256": "dec8ae1934e19362947acb24d28126b4128df1a4c9664383cd0df3bb07db7673"},
+    "coverage_universe": {"path": "coverage_universe.json", "sha256": "ad904ceeefd697b29b85fd2742c2ac983e255bf85306896a525d9244f76408df"},
     "critical_chains": {"path": "critical_chains.json", "sha256": "32d31e8bb5eedf9fd7b13cf749d0b9fc363e641ab5c6c4fbdec90643fb1ca95d"},
     "execution_oracles": {"path": "execution_oracles.json", "sha256": "594a4e49700564cbfcce5e43e1ebce4b94b2d64fa89c5fac256713d2d2df4762"}
   },

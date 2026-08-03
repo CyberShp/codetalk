@@ -61,6 +61,64 @@ EXPECTED_APPLICABLE_BREADTH_DIMENSIONS = {
     "perftest": {"protocol"},
 }
 
+CONFIRMED_COMPOUND_BREADTH_ITEM_IDS = {
+    "bmcweb-branch-dbus-error-disposition",
+    "bmcweb-state-allowable-values",
+    "bmcweb-error-fallback-vs-500",
+    "bmcweb-protocol-redfish-reset-action-info-methods",
+    "femu-bbssd:branches",
+    "femu-bbssd:states",
+    "femu-bbssd:errors",
+    "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:entrypoints",
+    "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:flows",
+    "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:states",
+    "mooncake-store-put-commit-readiness-recovery-001:entrypoints",
+    "mooncake-store-put-commit-readiness-recovery-001:flows",
+    "mooncake-store-put-commit-readiness-recovery-001:branches",
+    "mooncake-store-put-commit-readiness-recovery-001:states",
+    "mooncake-store-put-commit-readiness-recovery-001:boundaries",
+    "mooncake-store-put-commit-readiness-recovery-001:errors",
+    "nvme-csd:branches",
+    "nvme-csd:errors",
+    "open-cas:branches",
+    "open-cas:states",
+    "open-cas:resources",
+    "open-cas:boundaries",
+    "open-cas:concurrency",
+    "open-cas:errors",
+    "perftest-gid:branches",
+    "perftest-gid:boundaries",
+    "perftest-gid:errors",
+    "nvme-boundary-dbus-led-inventory",
+    "state-branch-boot-progress-mapping",
+    "state-current-host-state",
+    "rdma-mw:branches",
+    "rdma-mw:states",
+    "spdk-reset:branches",
+    "spdk-reset:states",
+    "spdk-reset:resources",
+    "spdk-reset:errors",
+    "ucx-roce:branches",
+    "ucx-roce:states",
+    "ucx-roce:boundaries",
+    "ucx-roce:errors",
+}
+
+EXPECTED_ATOMIC_BREADTH_ITEM_COUNTS = {
+    "bmcweb": 13,
+    "femu": 13,
+    "lmcache": 13,
+    "mooncake": 23,
+    "nvme-csd": 11,
+    "open-cas-linux": 22,
+    "perftest": 15,
+    "phosphor-nvme": 13,
+    "phosphor-state-manager": 12,
+    "rdma-core": 14,
+    "spdk": 14,
+    "ucx": 30,
+}
+
 SOURCE_ROOT = Path("/Volumes/Media/codetalk-quality-corpus/sources")
 
 
@@ -85,19 +143,30 @@ def test_all_twelve_pinned_projects_have_a_hash_verified_tier_s_case() -> None:
     assert len(cases) == len(EXPECTED_PROJECT_IDS)
 
 
-def test_all_registered_cases_expose_a_public_analysis_target_at_truth_version_two() -> None:
+def test_all_registered_cases_expose_atomic_truth_at_version_three() -> None:
     registry = load_quality_registry(REGISTRY_PATH)
     case_paths = sorted(PROJECTS_ROOT.glob("*/*/case.json"))
     cases = [load_quality_case(path, registry=registry) for path in case_paths]
 
-    assert registry.truth_package_version == "2"
-    assert all(case.truth_package_version == "2" for case in cases)
+    assert registry.truth_package_version == "3"
+    assert all(case.truth_package_version == "3" for case in cases)
     assert all(str(case.analysis_target).strip() for case in cases)
-    for case_path in case_paths:
+    item_ids = set()
+    item_count = 0
+    for case, case_path in zip(cases, case_paths, strict=True):
         universe = json.loads(
             (case_path.parent / "coverage_universe.json").read_text(encoding="utf-8")
         )
         assert all(str(item.get("statement") or "").strip() for item in universe["items"])
+        assert len(universe["items"]) == EXPECTED_ATOMIC_BREADTH_ITEM_COUNTS[
+            case.project_id
+        ]
+        item_ids.update(item["item_id"] for item in universe["items"])
+        item_count += len(universe["items"])
+
+    assert item_count == sum(EXPECTED_ATOMIC_BREADTH_ITEM_COUNTS.values())
+    assert len(item_ids) == item_count
+    assert item_ids.isdisjoint(CONFIRMED_COMPOUND_BREADTH_ITEM_IDS)
 
 
 @pytest.mark.parametrize("project_id", sorted(EXPECTED_PROJECT_IDS))

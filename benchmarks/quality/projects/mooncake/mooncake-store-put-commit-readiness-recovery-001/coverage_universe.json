@@ -2,51 +2,136 @@
   "case_id": "mooncake-store-put-commit-readiness-recovery-001",
   "items": [
     {
-      "item_id": "mooncake-store-put-commit-readiness-recovery-001:entrypoints",
+      "item_id": "mooncake-store-put-commit-readiness-recovery-001:entry-put-start",
       "dimension": "entrypoints",
       "critical": true,
       "applicability": "required",
-      "statement": "PutStart validates and allocates pending object metadata, PutEnd completes selected replicas only for the recorded client, and GetReplicaList returns only readable replicas or a readiness or absence error.",
+      "statement": "PutStart validates its write request before delegating creation of pending replica metadata.",
       "evidence_refs": [
-        "source://mooncake-store/src/master_service.cpp#PutStart:L3566-L3753",
-        "source://mooncake-store/src/master_service.cpp#PutEnd:L3756-L3793",
-        "source://mooncake-store/src/master_service.cpp#GetReplicaList:L2998-L3050"
+        "source://mooncake-store/src/master_service.cpp#L3566-L3584",
+        "source://mooncake-store/src/master_service.cpp#L3715-L3717"
       ]
     },
     {
-      "item_id": "mooncake-store-put-commit-readiness-recovery-001:flows",
+      "item_id": "mooncake-store-put-commit-readiness-recovery-001:entry-put-end",
+      "dimension": "entrypoints",
+      "critical": true,
+      "applicability": "required",
+      "statement": "PutEnd enters the commit path by taking the snapshot lock and acquiring writable metadata for the requested object.",
+      "evidence_refs": [
+        "source://mooncake-store/src/master_service.cpp#L3756-L3768"
+      ]
+    },
+    {
+      "item_id": "mooncake-store-put-commit-readiness-recovery-001:entry-get-replica-list",
+      "dimension": "entrypoints",
+      "critical": true,
+      "applicability": "required",
+      "statement": "GetReplicaList enters the read path by taking the snapshot lock and acquiring read-only metadata for the requested object.",
+      "evidence_refs": [
+        "source://mooncake-store/src/master_service.cpp#L2998-L3015"
+      ]
+    },
+    {
+      "item_id": "mooncake-store-put-commit-readiness-recovery-001:flow-put-start-to-readable",
       "dimension": "flows",
       "critical": true,
       "applicability": "required",
-      "statement": "The tests exercise PutStart creating a PROCESSING replica, pre-commit read and remove rejection, wrong-owner rejection, owner PutEnd completion, successful removal, and post-remove absence.",
+      "statement": "The commit lifecycle test moves an object from a PROCESSING PutStart result through owner PutEnd to a readable COMPLETE replica.",
       "evidence_refs": [
-        "test://mooncake-store/tests/master_service_test.cpp#PutStartEndFlow:L1689-L1740",
-        "test://mooncake-store/tests/master_service_test.cpp#RemoveObject:L2511-L2540"
+        "test://mooncake-store/tests/master_service_test.cpp#L1689-L1740"
       ]
     },
     {
-      "item_id": "mooncake-store-put-commit-readiness-recovery-001:branches",
+      "item_id": "mooncake-store-put-commit-readiness-recovery-001:flow-remove-to-absent",
+      "dimension": "flows",
+      "critical": true,
+      "applicability": "required",
+      "statement": "The removal lifecycle test commits an object, removes it successfully, and then observes the key as absent.",
+      "evidence_refs": [
+        "test://mooncake-store/tests/master_service_test.cpp#L2511-L2534"
+      ]
+    },
+    {
+      "item_id": "mooncake-store-put-commit-readiness-recovery-001:branch-get-metadata-absent",
       "dimension": "branches",
       "critical": true,
       "applicability": "required",
-      "statement": "GetReplicaList returns OBJECT_NOT_FOUND when metadata is absent or all replicas are removed and REPLICA_IS_NOT_READY when no replica is readable; PutEnd separately rejects missing metadata and a non-owner before selecting replicas to complete.",
+      "statement": "GetReplicaList returns OBJECT_NOT_FOUND when object metadata does not exist.",
       "evidence_refs": [
-        "source://mooncake-store/src/master_service.cpp#readable_replica_branch:L2998-L3050",
-        "source://mooncake-store/src/master_service.cpp#client_owner_branch:L3763-L3793"
+        "source://mooncake-store/src/master_service.cpp#L3011-L3013"
       ]
     },
     {
-      "item_id": "mooncake-store-put-commit-readiness-recovery-001:states",
+      "item_id": "mooncake-store-put-commit-readiness-recovery-001:branch-get-all-replicas-removed",
+      "dimension": "branches",
+      "critical": true,
+      "applicability": "required",
+      "statement": "GetReplicaList returns OBJECT_NOT_FOUND when every replica is in REMOVED state.",
+      "evidence_refs": [
+        "source://mooncake-store/src/master_service.cpp#L3026-L3031"
+      ]
+    },
+    {
+      "item_id": "mooncake-store-put-commit-readiness-recovery-001:branch-get-no-readable-replica",
+      "dimension": "branches",
+      "critical": true,
+      "applicability": "required",
+      "statement": "GetReplicaList returns REPLICA_IS_NOT_READY when no replica is readable and not all replicas are removed.",
+      "evidence_refs": [
+        "source://mooncake-store/src/master_service.cpp#L3026-L3033"
+      ]
+    },
+    {
+      "item_id": "mooncake-store-put-commit-readiness-recovery-001:branch-put-end-metadata-absent",
+      "dimension": "branches",
+      "critical": true,
+      "applicability": "required",
+      "statement": "PutEnd returns OBJECT_NOT_FOUND when writable metadata for the requested object does not exist.",
+      "evidence_refs": [
+        "source://mooncake-store/src/master_service.cpp#L3763-L3765"
+      ]
+    },
+    {
+      "item_id": "mooncake-store-put-commit-readiness-recovery-001:branch-put-end-wrong-owner",
+      "dimension": "branches",
+      "critical": true,
+      "applicability": "required",
+      "statement": "PutEnd returns ILLEGAL_CLIENT when the caller differs from the client recorded by PutStart.",
+      "evidence_refs": [
+        "source://mooncake-store/src/master_service.cpp#L3768-L3773"
+      ]
+    },
+    {
+      "item_id": "mooncake-store-put-commit-readiness-recovery-001:branch-put-end-select-replicas",
+      "dimension": "branches",
+      "critical": true,
+      "applicability": "required",
+      "statement": "An authorized PutEnd selects replicas by the requested replica type and valid-handle predicate before applying completion.",
+      "evidence_refs": [
+        "source://mooncake-store/src/master_service.cpp#L3775-L3792"
+      ]
+    },
+    {
+      "item_id": "mooncake-store-put-commit-readiness-recovery-001:state-owner-commit-complete",
       "dimension": "states",
       "critical": true,
       "applicability": "required",
-      "statement": "Owner PutEnd changes selected replicas to COMPLETE; removal erases object metadata and associated per-key state, after which the lifecycle tests observe the key as absent.",
+      "statement": "Authorized PutEnd changes each selected replica to COMPLETE.",
       "evidence_refs": [
-        "source://mooncake-store/src/master_service.cpp#replica_mark_complete:L3775-L3793",
-        "source://mooncake-store/src/master_service.cpp#metadata_release:L1887-L1954",
-        "source://mooncake-store/src/master_service.cpp#metadata_key_erase:L5398-L5400",
-        "test://mooncake-store/tests/master_service_test.cpp#processing_complete:L1702-L1740",
-        "test://mooncake-store/tests/master_service_test.cpp#post_remove_absent:L2511-L2534"
+        "source://mooncake-store/src/master_service.cpp#L3793-L3793",
+        "test://mooncake-store/tests/master_service_test.cpp#L1735-L1740"
+      ]
+    },
+    {
+      "item_id": "mooncake-store-put-commit-readiness-recovery-001:state-remove-erases-object",
+      "dimension": "states",
+      "critical": true,
+      "applicability": "required",
+      "statement": "A successful non-HA Remove erases object metadata, after which the key is observed as absent.",
+      "evidence_refs": [
+        "source://mooncake-store/src/master_service.cpp#L5398-L5400",
+        "test://mooncake-store/tests/master_service_test.cpp#L2531-L2534"
       ]
     },
     {
@@ -64,15 +149,24 @@
       ]
     },
     {
-      "item_id": "mooncake-store-put-commit-readiness-recovery-001:boundaries",
+      "item_id": "mooncake-store-put-commit-readiness-recovery-001:boundary-commit-readiness",
       "dimension": "boundaries",
       "critical": true,
       "applicability": "required",
-      "statement": "The lifecycle boundary is observable as PROCESSING before PutEnd, COMPLETE and readable after owner PutEnd, and OBJECT_NOT_FOUND after Remove.",
+      "statement": "The commit boundary changes GetReplicaList from REPLICA_IS_NOT_READY before PutEnd to a readable COMPLETE replica after owner PutEnd.",
       "evidence_refs": [
-        "test://mooncake-store/tests/master_service_test.cpp#precommit_boundary:L1709-L1716",
-        "test://mooncake-store/tests/master_service_test.cpp#postcommit_boundary:L1730-L1740",
-        "test://mooncake-store/tests/master_service_test.cpp#postremove_boundary:L2527-L2534"
+        "test://mooncake-store/tests/master_service_test.cpp#L1702-L1716",
+        "test://mooncake-store/tests/master_service_test.cpp#L1730-L1740"
+      ]
+    },
+    {
+      "item_id": "mooncake-store-put-commit-readiness-recovery-001:boundary-remove-absence",
+      "dimension": "boundaries",
+      "critical": true,
+      "applicability": "required",
+      "statement": "The removal boundary changes a committed object from removable to OBJECT_NOT_FOUND on the next read.",
+      "evidence_refs": [
+        "test://mooncake-store/tests/master_service_test.cpp#L2527-L2534"
       ]
     },
     {
@@ -88,17 +182,57 @@
       ]
     },
     {
-      "item_id": "mooncake-store-put-commit-readiness-recovery-001:errors",
+      "item_id": "mooncake-store-put-commit-readiness-recovery-001:error-get-object-not-found",
       "dimension": "errors",
       "critical": true,
       "applicability": "required",
-      "statement": "The lifecycle distinguishes absent objects, unreadable PROCESSING replicas, and wrong-client completion as OBJECT_NOT_FOUND, REPLICA_IS_NOT_READY, and ILLEGAL_CLIENT respectively, and verifies absence again after removal.",
+      "statement": "GetReplicaList reports OBJECT_NOT_FOUND when the requested object's metadata is absent.",
       "evidence_refs": [
-        "source://mooncake-store/src/master_service.cpp#replica_not_ready:L2998-L3050",
-        "source://mooncake-store/src/master_service.cpp#illegal_client:L3768-L3773",
-        "source://mooncake-store/src/master_service.cpp#object_not_found_after_remove:L5339-L5347",
-        "test://mooncake-store/tests/master_service_test.cpp#readiness_error_oracles:L1709-L1728",
-        "test://mooncake-store/tests/master_service_test.cpp#remove_error_oracles:L2531-L2539"
+        "source://mooncake-store/src/master_service.cpp#L2998-L3013"
+      ]
+    },
+    {
+      "item_id": "mooncake-store-put-commit-readiness-recovery-001:error-get-processing-not-ready",
+      "dimension": "errors",
+      "critical": true,
+      "applicability": "required",
+      "statement": "GetReplicaList reports REPLICA_IS_NOT_READY while the object's only replica remains PROCESSING.",
+      "evidence_refs": [
+        "source://mooncake-store/src/master_service.cpp#L3032-L3033",
+        "test://mooncake-store/tests/master_service_test.cpp#L1709-L1713"
+      ]
+    },
+    {
+      "item_id": "mooncake-store-put-commit-readiness-recovery-001:error-remove-processing-not-ready",
+      "dimension": "errors",
+      "critical": true,
+      "applicability": "required",
+      "statement": "Remove reports REPLICA_IS_NOT_READY while any object replica is not complete.",
+      "evidence_refs": [
+        "source://mooncake-store/src/master_service.cpp#L5362-L5365",
+        "test://mooncake-store/tests/master_service_test.cpp#L1714-L1716"
+      ]
+    },
+    {
+      "item_id": "mooncake-store-put-commit-readiness-recovery-001:error-put-end-illegal-client",
+      "dimension": "errors",
+      "critical": true,
+      "applicability": "required",
+      "statement": "PutEnd reports ILLEGAL_CLIENT when a client other than the PutStart owner attempts completion.",
+      "evidence_refs": [
+        "source://mooncake-store/src/master_service.cpp#L3769-L3773",
+        "test://mooncake-store/tests/master_service_test.cpp#L1718-L1722"
+      ]
+    },
+    {
+      "item_id": "mooncake-store-put-commit-readiness-recovery-001:error-remove-object-not-found",
+      "dimension": "errors",
+      "critical": true,
+      "applicability": "required",
+      "statement": "Remove reports OBJECT_NOT_FOUND when the requested object's metadata is absent.",
+      "evidence_refs": [
+        "source://mooncake-store/src/master_service.cpp#L5343-L5347",
+        "test://mooncake-store/tests/master_service_test.cpp#L2536-L2539"
       ]
     },
     {

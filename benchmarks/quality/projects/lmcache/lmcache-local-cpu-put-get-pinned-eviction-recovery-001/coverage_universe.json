@@ -2,26 +2,53 @@
   "case_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001",
   "items": [
     {
-      "item_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:entrypoints",
+      "item_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:entry-submit-put-task",
       "dimension": "entrypoints",
       "critical": true,
       "applicability": "required",
-      "statement": "submit_put_task inserts a new key synchronously under cpu_lock, get_blocking returns a lock-protected caller reference, and batched_allocate allocates directly or enters grouped eviction when capacity is exhausted.",
+      "statement": "submit_put_task synchronously inserts a previously absent key while holding cpu_lock.",
       "evidence_refs": [
-        "source://lmcache/v1/storage_backend/local_cpu_backend.py#submit_put_task:L150-L187",
-        "source://lmcache/v1/storage_backend/local_cpu_backend.py#get_blocking:L211-L223",
-        "source://lmcache/v1/storage_backend/local_cpu_backend.py#batched_allocate:L729-L864"
+        "source://lmcache/v1/storage_backend/local_cpu_backend.py#L150-L187"
       ]
     },
     {
-      "item_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:flows",
+      "item_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:entry-get-blocking",
+      "dimension": "entrypoints",
+      "critical": true,
+      "applicability": "required",
+      "statement": "get_blocking returns a caller-owned reference to a cached object while holding cpu_lock.",
+      "evidence_refs": [
+        "source://lmcache/v1/storage_backend/local_cpu_backend.py#L211-L223"
+      ]
+    },
+    {
+      "item_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:entry-batched-allocate",
+      "dimension": "entrypoints",
+      "critical": true,
+      "applicability": "required",
+      "statement": "batched_allocate first requests a direct allocation and enters grouped eviction only when capacity is unavailable.",
+      "evidence_refs": [
+        "source://lmcache/v1/storage_backend/local_cpu_backend.py#L729-L864"
+      ]
+    },
+    {
+      "item_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:flow-put-get-refcount",
       "dimension": "flows",
       "critical": true,
       "applicability": "required",
-      "statement": "The tests trace put, get, and remove reference-count changes and show a full pinned group blocking allocation until unpin permits eviction and allocator recovery.",
+      "statement": "The put/get/remove test observes the cached object's reference-count changes across insertion, caller acquisition, and caller release.",
       "evidence_refs": [
-        "test://tests/v1/storage_backend/test_local_cpu_backend.py#put_get_refcount_flow:L529-L547",
-        "test://tests/v1/storage_backend/test_local_cpu_backend.py#pinned_recovery_flow:L557-L606"
+        "test://tests/v1/storage_backend/test_local_cpu_backend.py#L529-L547"
+      ]
+    },
+    {
+      "item_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:flow-pinned-eviction-recovery",
+      "dimension": "flows",
+      "critical": true,
+      "applicability": "required",
+      "statement": "A pinned complete group blocks allocation until unpin allows that group to be evicted and replacement allocation to succeed.",
+      "evidence_refs": [
+        "test://tests/v1/storage_backend/test_local_cpu_backend.py#L557-L606"
       ]
     },
     {
@@ -36,14 +63,23 @@
       ]
     },
     {
-      "item_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:states",
+      "item_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:state-put-cache-ownership",
       "dimension": "states",
       "critical": true,
       "applicability": "required",
-      "statement": "A put increments the object's reference count, adds it to hot_cache, and updates policy; pinning keeps all layer keys resident, while unpinning allows their eviction on the next allocation.",
+      "statement": "A successful new put increments the MemoryObj reference count, stores the object in hot_cache, and records it in cache policy.",
       "evidence_refs": [
-        "source://lmcache/v1/storage_backend/local_cpu_backend.py#hot_cache_and_refcount:L162-L170",
-        "test://tests/v1/storage_backend/test_local_cpu_backend.py#state_observations:L579-L602"
+        "source://lmcache/v1/storage_backend/local_cpu_backend.py#L163-L170"
+      ]
+    },
+    {
+      "item_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:state-pin-unpin-evictability",
+      "dimension": "states",
+      "critical": true,
+      "applicability": "required",
+      "statement": "Pinning preserves every key in the layer group under pressure, while unpinning makes the group evictable on the next allocation.",
+      "evidence_refs": [
+        "test://tests/v1/storage_backend/test_local_cpu_backend.py#L579-L602"
       ]
     },
     {
