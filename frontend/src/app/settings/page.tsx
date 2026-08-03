@@ -78,6 +78,10 @@ const MANAGED_AGENT_TRANSPORTS = new Set<AgentRuntimeCreate["prompt_transport"]>
   "opencode_run_arg",
 ]);
 
+function userFacingLlmTestResult(message: string): string {
+  return String(message || "");
+}
+
 
 const agentTransportLabel = (transport: AgentRuntimeCreate["prompt_transport"]) => {
   switch (transport) {
@@ -1620,11 +1624,6 @@ export default function SettingsPage() {
 
         {showGeneral && (
           <div className="bg-surface-container rounded-xl border border-outline-variant/20 p-5 space-y-4">
-            {deploymentNetworkPolicy?.mode === "intranet" && (
-              <p className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-on-surface">
-                当前运行在公司内网环境。通用模型代理表单只影响模型客户端连接，CodeTalk 不额外配置出站边界。
-              </p>
-            )}
             <div>
               <label className="block text-xs font-medium text-on-surface-variant mb-1">
                 代理模式
