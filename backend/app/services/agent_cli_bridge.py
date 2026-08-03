@@ -551,7 +551,6 @@ async def stream_agent_runtime(
         process_kwargs["start_new_session"] = True
     sandbox_runtime = _sandbox_runtime(
         runtime=runtime,
-        context=network_context,
         command=command,
         read_paths=[
             *list(runtime.get("sandbox_read_paths") or []),
