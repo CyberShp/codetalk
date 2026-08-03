@@ -1271,6 +1271,7 @@ def _align_claim_semantics_from_evidence(
             continue
         # Candidate-authored validation status is never an evaluator oracle.
         claim["l2_status"] = "insufficient"
+        claim["semantic_key"] = _unmatched_claim_semantic_key(claim)
         candidate_refs = {
             normalized
             for raw_ref in claim.get("evidence_refs") or []
@@ -1317,6 +1318,13 @@ def _align_claim_semantics_from_evidence(
                     }
                 )
             continue
+        factual_truth = {
+            "statement": _semantic_statement(claim),
+            "evidence_refs": list(_axis_candidate_evidence_refs(claim)),
+        }
+        claim["l2_status"] = _validated_semantic_verdict(
+            adapter.claim_verdict(candidate=claim, truth=factual_truth)
+        )
         candidates = exclusive_matches or matches
         verdicts = [
             (
@@ -1330,14 +1338,31 @@ def _align_claim_semantics_from_evidence(
         ]
         supported = [entry for entry in verdicts if entry[2] == "supports"]
         if len(supported) == 1:
-            semantic_key, _, verdict = supported[0]
+            semantic_key, _, _ = supported[0]
             claim["semantic_key"] = semantic_key
-            claim["l2_status"] = verdict
         elif len(verdicts) == 1:
             semantic_key, _, verdict = verdicts[0]
-            claim["semantic_key"] = semantic_key
+            if verdict == "contradicts":
+                claim["semantic_key"] = semantic_key
             claim["l2_status"] = verdict
     return aligned
+
+
+def _unmatched_claim_semantic_key(claim: Mapping[str, Any]) -> str:
+    payload = {
+        "claim_id": str(claim.get("claim_id") or ""),
+        "statement": _semantic_statement(claim),
+        "evidence_refs": list(_axis_candidate_evidence_refs(claim)),
+    }
+    digest = hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return f"candidate-unmatched-{digest}"
 
 
 def _claim_evidence_requirement_satisfied(

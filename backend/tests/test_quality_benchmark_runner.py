@@ -730,6 +730,61 @@ def test_evaluator_aligns_public_source_evidence_without_leaking_truth_ids() -> 
     assert ledger["claims"][0]["semantic_key"] == "generator-wording"
 
 
+def test_accuracy_counts_source_supported_non_gold_claim_in_precision_only() -> None:
+    from app.services.quality_accuracy_evaluator import evaluate_accuracy
+    from app.services.quality_evaluation_contract import EvaluationScope
+
+    module = _runner()
+    gold = [{
+        "gold_id": "hidden-gold",
+        "semantic_key": "canonical.semantic.key",
+        "claim": "The reset queues a busy request.",
+        "critical": True,
+        "evidence_refs": ["source://lib/storage.c#L10-L20"],
+    }]
+    ledger = {
+        "schema_version": "claim-evidence-ledger-v3",
+        "claims": [{
+            "claim_id": "public-extra",
+            "claim": "Reset completion clears the channel resetting flag.",
+            "semantic_key": "canonical.semantic.key",
+            "critical": False,
+            "l1_status": "verified",
+            "evidence_refs": [{
+                "evidence_id": "EV-extra",
+                "path": "lib/storage.c",
+                "start_line": 30,
+                "end_line": 40,
+            }],
+        }],
+    }
+
+    aligned = module._align_claim_semantics_from_evidence(
+        ledger,
+        gold,
+        semantic_verdict_adapter=_IndependentAcceptingVerdictAdapter(),
+    )
+    result = evaluate_accuracy(
+        scope=EvaluationScope.INDEPENDENT_BENCHMARK,
+        claim_ledger=aligned,
+        evidence_cards=[{
+            "evidence_id": "EV-extra",
+            "path": "lib/storage.c",
+            "start_line": 30,
+            "end_line": 40,
+        }],
+        gold_claims=gold,
+    )
+    metrics = {metric.name.value: metric for metric in result.metrics}
+
+    assert aligned["claims"][0]["l2_status"] == "supports"
+    assert aligned["claims"][0]["semantic_key"] != "canonical.semantic.key"
+    assert metrics["claim_precision"].numerator == 1
+    assert metrics["claim_precision"].denominator == 1
+    assert metrics["gold_recall"].numerator == 0
+    assert metrics["gold_recall"].denominator == 1
+
+
 @pytest.mark.parametrize(
     ("gold_range", "candidate_range"),
     [
@@ -805,8 +860,11 @@ def test_accuracy_prefilter_rejects_tiny_containment_and_partial_overlap(
         semantic_verdict_adapter=_IndependentAcceptingVerdictAdapter(),
     )
 
-    assert aligned["claims"][0]["semantic_key"] == "generator-wording"
-    assert aligned["claims"][0]["l2_status"] == "insufficient"
+    assert aligned["claims"][0]["semantic_key"] not in {
+        "generator-wording",
+        "canonical.semantic.key",
+    }
+    assert aligned["claims"][0]["l2_status"] == "supports"
 
 
 def test_evaluator_rejects_a_contradiction_even_when_it_cites_the_exact_gold_range() -> None:
@@ -969,8 +1027,11 @@ def test_accuracy_requires_the_complete_gold_evidence_set_before_support() -> No
         semantic_verdict_adapter=_IndependentAcceptingVerdictAdapter(),
     )
 
-    assert aligned["claims"][0]["semantic_key"] == "generator-wording"
-    assert aligned["claims"][0]["l2_status"] == "insufficient"
+    assert aligned["claims"][0]["semantic_key"] not in {
+        "generator-wording",
+        "mooncake.owner.commit",
+    }
+    assert aligned["claims"][0]["l2_status"] == "supports"
 
 
 def test_accuracy_rejects_candidate_that_cites_unique_evidence_for_two_claims() -> None:
@@ -1009,7 +1070,8 @@ def test_accuracy_rejects_candidate_that_cites_unique_evidence_for_two_claims() 
         semantic_diagnostic_sink=diagnostics,
     )
 
-    assert aligned["claims"][0]["semantic_key"] == "generator-wording"
+    assert aligned["claims"][0]["semantic_key"] != "generator-wording"
+    assert aligned["claims"][0]["semantic_key"].startswith("candidate-unmatched-")
     assert aligned["claims"][0]["l2_status"] == "insufficient"
     assert diagnostics == [{
         "axis": "accuracy",
