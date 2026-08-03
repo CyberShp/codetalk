@@ -3269,6 +3269,13 @@ class WorkbenchWorkflowRunner:
             if deadline_monotonic is not None
             else float(settings.external_agent_quality_repair_timeout_seconds)
         )
+        if remaining_seconds <= 0:
+            return {
+                "attempted": False,
+                "recordable": True,
+                "reason": "workflow_deadline_exceeded",
+                "remaining_seconds": 0.0,
+            }
         minimum_remaining_seconds = float(
             settings.staged_quality_repair_min_remaining_seconds
         )

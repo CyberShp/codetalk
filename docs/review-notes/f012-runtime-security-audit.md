@@ -181,3 +181,115 @@ Closure: **confirmed**.
 ## Release Decision
 
 R4 runtime/security review no longer blocks F012. Release remains blocked by `baseline_status: pending`; that separate gate must provide representative rapid/deep timing, under-five-minute outcomes, multi-domain quality results, and frozen calibration evidence before final release approval.
+
+## Repair Summary Contract Focused Re-review
+
+### Latest Verdict
+
+**REJECT.** The production filtering behavior is correct and fail-closed, but the submitted regression test does not cover the real failure boundary. This latest verdict supersedes the earlier R4 release decision only for the current `repair_summary` contract change; the four previously closed runtime/security findings remain closed.
+
+Scope was limited to:
+
+- `backend/app/services/quality_benchmark_runner.py`
+- `backend/tests/test_quality_benchmark_runner.py`
+
+### Evidence
+
+```text
+PYTHONPATH=. .venv/bin/python -m pytest -q tests/test_quality_benchmark_runner.py
+
+40 passed in 0.13s
+```
+
+R4 also invoked the production `main()` boundary with five malformed `repair_summary.json` payloads while recording whether `run_quality_benchmark_case()` was reached:
+
+```text
+non-object JSON: ValueError; evaluator_called=false
+missing attempt_count: ValidationError; evaluator_called=false
+invalid attempt_count string: ValidationError; evaluator_called=false
+negative attempt_count: ValidationError; evaluator_called=false
+invalid terminal_block_reason object: ValidationError; evaluator_called=false
+```
+
+A positive production-CLI probe used a summary containing both provenance objects. The source file SHA-256 was unchanged after `main()`, its five keys remained present, and the evaluator received only:
+
+```json
+{
+  "attempt_count": 1,
+  "elapsed_seconds": 12.5,
+  "terminal_block_reason": null
+}
+```
+
+### Findings
+
+#### Provenance preservation: confirmed
+
+`main()` reads `repair_summary.json` and constructs a separate evaluator projection. It does not rewrite the source generation audit artifact. The positive probe retained `first_provenance` and `final_provenance` byte-for-byte while excluding them from the strict evaluator contract.
+
+#### CLI filter boundary: confirmed fail-closed
+
+`_evaluation_repair_summary()` first requires a JSON object, explicitly selects only the three evaluator-owned fields, and validates that projection with `RepairSummary`. Extra generation-audit fields cannot cross the boundary, while missing, malformed, negative, or wrong-typed contract fields stop execution before evaluation or public projection.
+
+#### P1: regression test does not cover actual CLI rejection
+
+The only new regression extends the successful CLI test with provenance fields and asserts the filtered evaluator payload. It does not supply any malformed summary, assert an exception, or prove that `run_quality_benchmark_case()` and `_publish_task_run_projection()` remain uncalled on rejection. Consequently, the code's fail-closed behavior is verified only by this independent ad hoc probe, not protected by the committed suite.
+
+This is release-blocking for the focused change because its purpose is a trust-boundary contract repair and the requested real-failure regression is absent.
+
+### Necessary Modification
+
+Add a parameterized production-CLI regression covering at least non-object JSON, missing required fields, invalid/negative numeric fields, and invalid `terminal_block_reason`. Each case must assert failure before `run_quality_benchmark_case()` and `_publish_task_run_projection()` are called. Extend the positive provenance case to assert that the original `repair_summary.json` content or hash is unchanged after CLI filtering.
+
+## Repair Summary Contract Final Re-review
+
+### Final Verdict
+
+**ACCEPT.** The previously required regression coverage is now present and green. This final verdict supersedes the focused REJECT immediately above; no release-blocking finding remains for the `repair_summary` CLI contract change.
+
+### Current Diff Review
+
+- The positive CLI test retains generation-only `first_provenance` and `final_provenance`, captures the original `repair_summary.json` bytes, verifies the evaluator receives only the strict three-field projection, and asserts the original bytes remain unchanged after evaluation and publication.
+- The new parameterized test enters through production `main()` for seven invalid payload classes: non-object JSON, missing field, negative attempt count, negative elapsed time, forbidden string-to-integer coercion, empty terminal reason, and wrong terminal-reason type.
+- Both `run_quality_benchmark_case()` and `_publish_task_run_projection()` are replaced by a fail sentinel. Every invalid payload raises before either trust-boundary consumer is reached.
+- The related expired-deadline fix checks `remaining_seconds <= 0` before the minimum-remaining-time branch, preserving `workflow_deadline_exceeded` rather than misclassifying an expired deadline as merely insufficient time.
+
+### Verification
+
+```text
+PYTHONPATH=. .venv/bin/python -m pytest -q \
+  tests/test_quality_benchmark_runner.py tests/test_quality_auto_repair.py
+
+62 passed in 1.05s
+```
+
+```text
+PYTHONPATH=. .venv/bin/python -m pytest -q -vv \
+  tests/test_quality_benchmark_runner.py::test_cli_rejects_invalid_generator_repair_summary_before_evaluation \
+  tests/test_quality_benchmark_runner.py::test_cli_case_selector_executes_runner_and_publishes_public_task_report \
+  tests/test_quality_auto_repair.py::test_external_repair_records_an_expired_absolute_deadline
+
+9 passed in 0.10s
+```
+
+The nine cases are the seven parameterized failures, the positive provenance/bytes-preservation path, and the expired-deadline priority regression.
+
+```text
+PYTHONPATH=. .venv/bin/python -m pytest -q \
+  tests/test_quality_auto_repair.py \
+  tests/test_quality_truth_isolation.py \
+  tests/test_quality_benchmark_generator.py \
+  tests/test_quality_evaluations_api.py \
+  tests/test_quality_benchmark_runner.py \
+  tests/test_quality_depth_evaluator.py
+
+214 passed in 12.25s
+```
+
+### Closure
+
+1. Provenance remains complete in the generation audit artifact: **confirmed**.
+2. The CLI projection is strict and fail-closed before evaluator/publication: **confirmed**.
+3. Committed regressions now cover both the valid provenance-bearing path and representative real CLI failures: **confirmed**.
+
+No further modification is required for this focused change. `baseline_status: pending` remains a separate F012 release gate.

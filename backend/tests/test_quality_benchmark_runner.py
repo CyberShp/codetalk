@@ -1320,9 +1320,18 @@ def test_cli_case_selector_executes_runner_and_publishes_public_task_report(
     (run_artifacts / "first_pass").mkdir(parents=True)
     (run_artifacts / "final_after_auto_repair").mkdir()
     (run_artifacts / "repair_summary.json").write_text(
-        '{"attempt_count":0,"elapsed_seconds":0,"terminal_block_reason":null}',
+        json.dumps(
+            {
+                "attempt_count": 0,
+                "elapsed_seconds": 0,
+                "terminal_block_reason": None,
+                "first_provenance": {"attempt": 0},
+                "final_provenance": {"attempt": 0},
+            }
+        ),
         encoding="utf-8",
     )
+    repair_summary_bytes = (run_artifacts / "repair_summary.json").read_bytes()
     (run_artifacts / "versions.json").write_text(
         '{"model":"m","codetalk":"c","evaluator":"e"}', encoding="utf-8"
     )
@@ -1365,8 +1374,74 @@ def test_cli_case_selector_executes_runner_and_publishes_public_task_report(
         == module._quality_generation_timeout("rapid")
     )
     assert calls[0]["judge_model"] == "gpt-5.5"
+    assert calls[0]["repair_summary"] == {
+        "attempt_count": 0,
+        "elapsed_seconds": 0,
+        "terminal_block_reason": None,
+    }
+    assert (run_artifacts / "repair_summary.json").read_bytes() == repair_summary_bytes
     assert calls[1]["deadline_monotonic"] == calls[0]["deadline_monotonic"]
     assert calls[1]["task_run_dir"] == run_artifacts
+
+
+@pytest.mark.parametrize(
+    "repair_summary",
+    [
+        [],
+        {"elapsed_seconds": 0, "terminal_block_reason": None},
+        {"attempt_count": -1, "elapsed_seconds": 0, "terminal_block_reason": None},
+        {"attempt_count": 0, "elapsed_seconds": -1, "terminal_block_reason": None},
+        {"attempt_count": "0", "elapsed_seconds": 0, "terminal_block_reason": None},
+        {"attempt_count": 0, "elapsed_seconds": 0, "terminal_block_reason": ""},
+        {"attempt_count": 0, "elapsed_seconds": 0, "terminal_block_reason": 7},
+    ],
+    ids=(
+        "non-object",
+        "missing-field",
+        "negative-attempt-count",
+        "negative-elapsed-seconds",
+        "coerced-attempt-count",
+        "empty-terminal-reason",
+        "invalid-terminal-reason-type",
+    ),
+)
+def test_cli_rejects_invalid_generator_repair_summary_before_evaluation(
+    tmp_path, monkeypatch, repair_summary
+) -> None:
+    module = _runner()
+    case_path = tmp_path / "case.json"
+    case_path.write_text("{}", encoding="utf-8")
+    run_artifacts = tmp_path / "run"
+    (run_artifacts / "first_pass").mkdir(parents=True)
+    (run_artifacts / "final_after_auto_repair").mkdir()
+    (run_artifacts / "repair_summary.json").write_text(
+        json.dumps(repair_summary), encoding="utf-8"
+    )
+    source_root = tmp_path / "sources"
+    source_root.mkdir()
+
+    monkeypatch.setattr(module, "load_quality_registry", lambda _: _Registry())
+    monkeypatch.setattr(module, "_select_case_paths", lambda **_: [case_path])
+
+    def unexpected_call(**_kwargs):
+        pytest.fail("invalid repair metadata reached evaluation or publication")
+
+    monkeypatch.setattr(module, "run_quality_benchmark_case", unexpected_call)
+    monkeypatch.setattr(module, "_publish_task_run_projection", unexpected_call)
+
+    with pytest.raises(ValueError):
+        module.main(
+            [
+                "--case",
+                str(case_path),
+                "--source-root",
+                str(source_root),
+                "--run-artifacts",
+                str(run_artifacts),
+                "--output",
+                str(tmp_path / "output"),
+            ]
+        )
 
 
 def test_manifest_wall_clock_is_measured_from_runner_start_not_generator_elapsed(

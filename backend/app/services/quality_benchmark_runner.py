@@ -810,9 +810,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             final_artifacts=case_run_root / "final_after_auto_repair",
             output_dir=output_root,
             run_ref=case_id,
-            repair_summary=_mapping(
-                _read_json(case_run_root / "repair_summary.json"),
-                "repair_summary",
+            repair_summary=_evaluation_repair_summary(
+                _read_json(case_run_root / "repair_summary.json")
             ),
             versions=_mapping(
                 _read_json(case_run_root / "versions.json"), "versions"
@@ -836,6 +835,17 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _quality_generation_timeout(mode: str) -> int:
     return 5400 if mode == "deep" else 900
+
+
+def _evaluation_repair_summary(value: Any) -> dict[str, Any]:
+    payload = _mapping(value, "repair_summary")
+    return RepairSummary.model_validate(
+        {
+            "attempt_count": payload.get("attempt_count"),
+            "elapsed_seconds": payload.get("elapsed_seconds"),
+            "terminal_block_reason": payload.get("terminal_block_reason"),
+        }
+    ).model_dump(mode="json")
 
 
 def _quality_case_truth_paths(
