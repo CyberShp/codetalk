@@ -16,90 +16,11 @@ from app.services.agent_provider_settings import (
     read_agent_provider_settings_from_db,
 )
 from app.services.external_agent_discovery import redact_agent_diagnostic_text
-from app.services.network_policy import (
-    NetworkEgressBlocked,
-    effective_network_mode,
-    resolve_agent_network_context,
-)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/settings", tags=["设置管理"])
 
-
-def _network_policy_migration_preview() -> dict[str, object]:
-    """Keep the old response contract while reporting the target runtime model."""
-    return {
-        "contract_version": 1,
-        "source": "codetalk_runtime",
-        "effective_mode": effective_network_mode(),
-        "read_only": True,
-        "automatic_write": False,
-        "admin_confirmation_required": False,
-        "admin_guidance": None,
-    }
-
-
-def _deployment_network_policy_snapshot() -> dict[str, object]:
-    """Return a compatibility summary for CodeTalk's non-blocking runtime model."""
-
-    cli_context = resolve_agent_network_context(requires_network=True)
-    return {
-        "mode": effective_network_mode(),
-        "policy_id": "codetalk-passthrough",
-        "boundary": "none",
-        "approved_proxy_configured": False,
-        "approved_proxy_config_id": None,
-        "approved_no_proxy": False,
-        "approved_ca_configured": False,
-        "deployment_egress_policy_id": None,
-        "telemetry": "managed_by_environment",
-        "remote_tracing": "managed_by_environment",
-        "hosted_mcp": "managed_by_environment",
-        "cli_network_ready": True,
-        "cli_block_reason": None,
-        "cli_remediation": cli_context.remediation,
-        "source": "codetalk_runtime",
-        "migration_preview": _network_policy_migration_preview(),
-    }
-
-
-def _llm_connection_failure_code(error: Exception | str) -> str:
-    """Return a stable, non-sensitive diagnostic code for a failed probe."""
-    raw = redact_agent_diagnostic_text(str(error))
-    normalized = raw.lower()
-    if "内网部署策略未批准" in raw:
-        return "network_policy_blocked"
-    if isinstance(error, NetworkEgressBlocked) or "出站策略拒绝" in raw:
-        technical = re.search(r"([a-z][a-z0-9_]+)$", raw)
-        return technical.group(1) if technical else "network_policy_blocked"
-    if "未知的 api_type" in raw:
-        return "unsupported_api_type"
-    if "403" in normalized:
-        return "http_403"
-    if any(marker in normalized for marker in ("certificate", "ssl", "cert_verify")):
-        return "tls_ca_verification_failed"
-    if "proxy" in normalized or "代理" in raw:
-        return "approved_proxy_connection_failed"
-    return "model_connection_failed"
-
-
-def _format_llm_connection_failure(error: Exception | str) -> str:
-    """Make probe errors actionable without echoing endpoint credentials."""
-    code = _llm_connection_failure_code(error)
-    if code in {
-        "network_policy_blocked",
-    }:
-        return "模型连接被运行环境拒绝。CodeTalk 不拦截模型地址，请检查模型配置、凭据或公司网络。"
-    if code == "http_403":
-        return "模型服务拒绝访问。请检查模型地址、代理和凭据。"
-    if code == "tls_ca_verification_failed":
-        return "CA 证书校验失败。请检查当前运行环境的证书配置。"
-    if code == "approved_proxy_connection_failed":
-        return "代理连接失败。请检查当前运行环境的代理配置。"
-    if code == "unsupported_api_type":
-        return "不支持的模型接口类型。请在模型设置中选择受支持的接口类型。"
-    return "模型连接失败。请检查模型配置、凭据或当前网络。"
 
 
 # --- LLM Config schemas ---
@@ -330,10 +251,6 @@ async def test_llm_connection(
 
 # --- General settings endpoints ---
 
-@router.get("/network-policy")
-async def get_deployment_network_policy():
-    """Expose a deployment-owned policy snapshot without mutable secrets."""
-    return _deployment_network_policy_snapshot()
 
 _GENERAL_KEYS = ("proxy_mode", "proxy_url", "ssl_cert_path",
                  "active_chat_model_id", "active_embedding_model_id",

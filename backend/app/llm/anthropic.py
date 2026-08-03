@@ -14,10 +14,6 @@ from app.llm.base import (
     async_retry,
     current_finish_reason,
 )
-from app.services.network_policy import (
-    NetworkEgressBlocked,
-    require_runtime_model_request_url,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -25,24 +21,24 @@ _ANTHROPIC_VERSION = "2023-06-01"
 
 
 def _runtime_network_error(error: Exception) -> RuntimeError:
-    """Translate transport failures without copying sensitive endpoint details."""
-    if isinstance(error, NetworkEgressBlocked):
-        match = re.search(r"([a-z][a-z0-9_]+)$", str(error))
-        code = match.group(1) if match else "network_policy_blocked"
-        return RuntimeError(
-            "内网部署策略未批准该模型端点，请联系管理员配置批准的模型服务后重试。"
-            f"技术代码：{code}"
-        )
+    """Translate transport failures without inventing deployment policy."""
     if isinstance(error, httpx.HTTPStatusError) and error.response.status_code == 403:
         return RuntimeError(
-            "模型服务拒绝访问，请检查部署批准的模型地址、代理和凭据。技术代码：http_403"
+            "模型服务拒绝访问，请检查模型地址、API Key 和模型权限。技术代码：http_403"
         )
     text = str(error).lower()
     if isinstance(error, httpx.ProxyError) or "proxy" in text:
-        return RuntimeError("批准代理连接失败，请联系管理员检查部署代理配置。技术代码：approved_proxy_connection_failed")
+        return RuntimeError(
+            "代理连接失败，请检查通用设置中的代理模式和代理地址。技术代码：proxy_connection_failed"
+        )
     if "certificate" in text or "cert_verify" in text or "ssl" in text:
-        return RuntimeError("企业 CA 证书校验失败，请联系管理员配置部署 CA 证书。技术代码：tls_ca_verification_failed")
-    return RuntimeError("模型连接失败，请检查模型配置或联系管理员。技术代码：model_connection_failed")
+        return RuntimeError(
+            "TLS 证书校验失败，请检查通用设置中的 PEM 证书路径，"
+            "或检查模型服务返回的证书链。技术代码：tls_ca_verification_failed"
+        )
+    return RuntimeError(
+        "模型连接失败，请检查模型地址、凭据和当前网络。技术代码：model_connection_failed"
+    )
 
 
 class AnthropicClient(BaseLLMClient):
@@ -57,14 +53,10 @@ class AnthropicClient(BaseLLMClient):
         proxy_url: str | None = None,
         ssl_cert_path: str | None = None,
         force_direct: bool = False,
-        enforce_network_policy: bool = False,
-        configured_model_endpoint: bool = False,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._model = model
-        self._enforce_network_policy = enforce_network_policy
-        self._configured_model_endpoint = configured_model_endpoint
 
         verify = ssl_cert_path if ssl_cert_path else True
         pool_limits = httpx.Limits(keepalive_expiry=30)
@@ -137,7 +129,6 @@ class AnthropicClient(BaseLLMClient):
             "stream": True,
         }
         url = f"{self._base_url}/v1/messages"
-        self._require_approved_model_endpoint(url)
         logger.info("Anthropic streaming call: model=%s", self._model)
 
         try:
@@ -193,7 +184,6 @@ class AnthropicClient(BaseLLMClient):
         }
 
         url = f"{self._base_url}/v1/messages"
-        self._require_approved_model_endpoint(url)
         logger.info("Anthropic API call: model=%s, max_tokens=%d", self._model, max_tokens)
 
         try:
@@ -279,10 +269,3 @@ class AnthropicClient(BaseLLMClient):
     async def close(self) -> None:
         """Close the underlying HTTP client."""
         await self._client.aclose()
-
-    def _require_approved_model_endpoint(self, url: str) -> None:
-        if self._enforce_network_policy:
-            try:
-                require_runtime_model_request_url(url)
-            except NetworkEgressBlocked as exc:
-                raise _runtime_network_error(exc) from exc

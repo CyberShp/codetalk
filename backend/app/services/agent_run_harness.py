@@ -37,7 +37,7 @@ from app.services.agent_sandbox import (
     prepare_isolated_runtime_tmp as _prepare_isolated_runtime_tmp,
     prepare_agent_sandbox,
 )
-from app.services.network_policy import resolve_agent_network_context
+from app.services.runtime_environment import resolve_agent_network_context
 from app.services.harness_facade import normalize_provider_event
 from app.services.agent_runtimes import resolve_agent_runtime_environment
 from app.services.agent_invocation_contract import (
@@ -1102,7 +1102,10 @@ class AgentRunHarness:
         prompt_file_path: str | None = None
         if (
             prompt_transport not in {"stdin", "codex_exec_json"}
-            and len(stdin_payload.encode("utf-8")) > _MAX_ARG_PROMPT_BYTES
+            and (
+                os.name == "nt"
+                or len(stdin_payload.encode("utf-8")) > _MAX_ARG_PROMPT_BYTES
+            )
         ):
             with tempfile.NamedTemporaryFile(
                 mode="w",

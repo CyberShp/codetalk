@@ -110,35 +110,8 @@ export interface GeneralSettings {
   behavior_claim_audit_model_id: string;
 }
 
-export interface DeploymentNetworkMigrationPreview {
-  contract_version: number;
-  source: "codetalk_runtime" | "network_mode" | "legacy_intranet_network_mode";
-  effective_mode: "developer" | "intranet" | "strict_compliance";
-  read_only: true;
-  automatic_write: false;
-  admin_confirmation_required: boolean;
-  admin_guidance: string | null;
-}
 
 /** CodeTalk runtime network posture. Security is owned by the surrounding environment. */
-export interface DeploymentNetworkPolicy {
-  mode: "developer" | "intranet" | "strict_compliance";
-  policy_id: string;
-  boundary: "none" | "approved_proxy_gateway" | "deployment_egress_policy";
-  approved_proxy_configured: boolean;
-  approved_proxy_config_id: string | null;
-  approved_no_proxy: boolean;
-  approved_ca_configured: boolean;
-  deployment_egress_policy_id: string | null;
-  telemetry: string;
-  remote_tracing: string;
-  hosted_mcp: string;
-  cli_network_ready: boolean;
-  cli_block_reason: string | null;
-  cli_remediation: string | null;
-  source: "codetalk_runtime" | "deployment";
-  migration_preview: DeploymentNetworkMigrationPreview;
-}
 
 export type AgentRuntimePromptTransport =
   | "stdin"

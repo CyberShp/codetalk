@@ -26,8 +26,6 @@ import type {
   AgentRuntimeCreate,
   AgentProviderSettings,
   ApiType,
-  DeploymentNetworkMigrationPreview,
-  DeploymentNetworkPolicy,
 } from "@/lib/types";
 
 const EMPTY_LLM_FORM: LLMConfigCreate = {
@@ -80,159 +78,6 @@ const MANAGED_AGENT_TRANSPORTS = new Set<AgentRuntimeCreate["prompt_transport"]>
   "opencode_run_arg",
 ]);
 
-const NETWORK_MODE_LABEL: Record<DeploymentNetworkPolicy["mode"], string> = {
-  developer: "运行环境直连",
-  intranet: "运行环境直连",
-  strict_compliance: "运行环境直连",
-};
-
-const NETWORK_MODE_DESCRIPTION: Record<DeploymentNetworkPolicy["mode"], string> = {
-  developer: "CodeTalk 不做出站审批或安全边界配置；模型和 Agent 按当前运行环境直接连接。",
-  intranet: "CodeTalk 不做出站审批或安全边界配置；模型和 Agent 按当前运行环境直接连接。",
-  strict_compliance: "CodeTalk 不做出站审批或安全边界配置；模型和 Agent 按当前运行环境直接连接。",
-};
-
-const NETWORK_BOUNDARY_LABEL: Record<DeploymentNetworkPolicy["boundary"], string> = {
-  none: "不由 CodeTalk 管理",
-  approved_proxy_gateway: "不由 CodeTalk 管理",
-  deployment_egress_policy: "不由 CodeTalk 管理",
-};
-
-function networkReasonLabel(reason: string | null) {
-  const normalized = String(reason || "").trim();
-  const labels: Record<string, string> = {
-    boundary_not_configured: "CodeTalk 不要求配置出站边界",
-    approved_proxy_not_configured: "CodeTalk 不要求配置企业代理",
-    deployment_egress_policy_missing: "CodeTalk 不要求配置部署出站策略",
-    strict_compliance_os_network_isolation_missing: "CodeTalk 不要求操作系统网络隔离",
-    intranet_agent_egress_not_enforced: "CodeTalk 不要求 Agent 受控出站边界",
-    intranet_egress_boundary_required: "CodeTalk 不要求批准的 Agent 出站边界",
-    approved_proxy_configuration_missing: "CodeTalk 不要求代理地址或配置 ID",
-    strict_compliance_os_isolation_required: "CodeTalk 不要求操作系统网络隔离",
-    strict_compliance_egress_boundary_required: "CodeTalk 不要求精细出站边界",
-    legacy_intranet_egress_not_certified: "CodeTalk 不要求旧版内网出站认证",
-    legacy_sandbox_network_disabled: "CodeTalk 不用沙箱配置阻断 Agent 网络",
-  };
-  return labels[normalized] || "CodeTalk 不拦截 CLI Agent 网络访问";
-}
-
-function userFacingLlmTestResult(message: string) {
-  if (/运行时出站策略拒绝|host_not_allowlisted|direct_address_not_allowlisted/.test(message)) {
-    return "模型连接被当前运行环境拒绝。CodeTalk 不拦截模型地址，请检查模型配置、凭据或公司网络。";
-  }
-  return message;
-}
-
-function NetworkMigrationPreview({ migration }: {
-  migration: DeploymentNetworkMigrationPreview | null | undefined;
-}) {
-  if (!migration || migration.contract_version !== 1) {
-    return (
-      <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-on-surface">
-        <p className="font-medium">运行环境状态暂不可读</p>
-        <p className="mt-1">这不会影响模型或 Agent 使用；CodeTalk 不要求用户配置网络边界。</p>
-      </div>
-    );
-  }
-
-  if (!migration.admin_confirmation_required) {
-    return (
-      <p className="border-t border-outline-variant/15 pt-3 text-xs leading-5 text-on-surface-variant">
-        CodeTalk 不管理出站安全边界，也不会把模型或 Agent 启动卡在网络策略配置上。
-      </p>
-    );
-  }
-
-  return (
-    <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-on-surface">
-      <p className="font-medium">运行环境网络</p>
-      <p className="mt-1">{migration.admin_guidance || "CodeTalk 不要求迁移或配置出站边界。"}</p>
-    </div>
-  );
-}
-
-function DeploymentNetworkPolicyPanel({ policy, error }: {
-  policy: DeploymentNetworkPolicy | null;
-  error: string | null;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const mode = policy ? NETWORK_MODE_LABEL[policy.mode] : "状态未知";
-
-  return (
-    <section className="mb-6 rounded-xl border border-outline-variant/20 bg-surface-container" aria-label="运行环境网络">
-      <button
-        type="button"
-        onClick={() => setExpanded((value) => !value)}
-        aria-expanded={expanded}
-        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
-      >
-        <span>
-            <span className="flex items-center gap-2 text-sm font-semibold text-on-surface">
-              <Globe size={17} />
-              运行环境网络
-            </span>
-            <span className="mt-1 block text-xs text-on-surface-variant">
-              CodeTalk 不要求配置出站边界；模型和 Agent 按当前公司内网环境运行。
-            </span>
-        </span>
-        <span className="flex items-center gap-2 text-xs text-on-surface-variant">
-          {mode}
-          {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-        </span>
-      </button>
-
-      {expanded && (
-        <div data-testid="deployment-network-policy" className="border-t border-outline-variant/15 px-4 py-4">
-          {policy ? (
-            <div className="space-y-3 text-sm">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <p className="font-medium text-on-surface">{NETWORK_MODE_LABEL[policy.mode]}</p>
-                  <p className="mt-1 max-w-3xl text-xs leading-5 text-on-surface-variant">
-                    {NETWORK_MODE_DESCRIPTION[policy.mode]}
-                  </p>
-                </div>
-                <span className="rounded-full border border-outline-variant/20 bg-surface px-2.5 py-1 font-data text-[11px] text-on-surface-variant">
-                  {policy.policy_id || "codetalk-passthrough"}
-                </span>
-              </div>
-
-              <div className="grid gap-x-6 gap-y-3 border-t border-outline-variant/15 pt-3 sm:grid-cols-2 xl:grid-cols-3">
-                <PolicyStatus label="模型访问" value="直接使用模型配置" detail="CodeTalk 不做 Host、CIDR 或 API Path 出站审批。" />
-                <PolicyStatus label="CLI Agent" value={policy.cli_network_ready ? "直接运行" : "运行环境返回不可用"} detail={policy.cli_network_ready ? "CodeTalk 不因网络策略阻断 Agent 探测或执行。" : networkReasonLabel(policy.cli_block_reason)} tone={policy.cli_network_ready ? "ok" : "warn"} />
-                <PolicyStatus label="进程启动" value="直接启动" detail="Agent 按当前进程环境启动，CodeTalk 不额外包裹执行器。" />
-                <PolicyStatus label="代理配置" value="沿用运行环境" detail="如需要代理、CA 或内网访问，请由当前运行环境提供。" />
-                <PolicyStatus label="出站边界" value={NETWORK_BOUNDARY_LABEL[policy.boundary]} detail="公司内网和终端管控负责网络安全，CodeTalk 不要求用户配置。" />
-                <PolicyStatus label="运行审计" value="保留基础记录" detail="仅记录是否请求网络、模型配置结果和 Agent 启动状态，不做安全裁决。" />
-              </div>
-              <NetworkMigrationPreview migration={policy.migration_preview} />
-            </div>
-          ) : (
-            <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-sm text-on-surface">
-              无法读取运行环境状态。{error || "这不会影响模型或 Agent 使用；CodeTalk 不要求网络边界配置。"}
-            </div>
-          )}
-        </div>
-      )}
-    </section>
-  );
-}
-
-function PolicyStatus({ label, value, detail, tone = "neutral" }: {
-  label: string;
-  value: string;
-  detail: string;
-  tone?: "ok" | "warn" | "neutral";
-}) {
-  const color = tone === "ok" ? "text-emerald-700" : tone === "warn" ? "text-amber-700" : "text-on-surface";
-  return (
-    <div className="min-w-0">
-      <p className="text-xs text-on-surface-variant">{label}</p>
-      <p className={`mt-1 text-sm font-medium ${color}`}>{value}</p>
-      <p className="mt-1 text-xs leading-5 text-on-surface-variant">{detail}</p>
-    </div>
-  );
-}
 
 const agentTransportLabel = (transport: AgentRuntimeCreate["prompt_transport"]) => {
   switch (transport) {
@@ -462,8 +307,6 @@ export default function SettingsPage() {
   const [showAgentAdvanced, setShowAgentAdvanced] = useState(false);
   const [showWorkbenchCliSettings, setShowWorkbenchCliSettings] = useState(false);
   const [showLlmSettings, setShowLlmSettings] = useState(false);
-  const [deploymentNetworkPolicy, setDeploymentNetworkPolicy] = useState<DeploymentNetworkPolicy | null>(null);
-  const [deploymentNetworkPolicyError, setDeploymentNetworkPolicyError] = useState<string | null>(null);
   const [customProvidersJson, setCustomProvidersJson] = useState("[]");
   const [savingAgentProviders, setSavingAgentProviders] = useState(false);
   const deletingAgentRuntimeRef = useRef<Set<string>>(new Set());
@@ -472,7 +315,7 @@ export default function SettingsPage() {
     setLoading(true);
     setError(null);
     try {
-      const [llmList, generalData, agentProviderData, runtimeData, networkPolicyResult] = await Promise.all([
+      const [llmList, generalData, agentProviderData, runtimeData] = await Promise.all([
         api.settings.listLLM(),
         api.settings.getGeneral().catch(
           () =>
@@ -489,19 +332,11 @@ export default function SettingsPage() {
           () => ({ ...DEFAULT_AGENT_PROVIDER_SETTINGS }) as AgentProviderSettings,
         ),
         api.settings.listAgentRuntimes().catch(() => ({ items: [] as AgentRuntime[] })),
-        api.settings.getNetworkPolicy()
-          .then((policy) => ({ policy, error: null as string | null }))
-          .catch((networkError: unknown) => ({
-            policy: null,
-            error: networkError instanceof Error ? networkError.message : "请检查后端部署配置。",
-          })),
       ]);
       setConfigs(llmList);
       setGeneral(generalData);
       setAgentProviders(agentProviderData);
       setAgentRuntimes(runtimeData.items);
-      setDeploymentNetworkPolicy(networkPolicyResult.policy);
-      setDeploymentNetworkPolicyError(networkPolicyResult.error);
       setCustomProvidersJson(JSON.stringify(agentProviderData.external_agent_custom_providers, null, 2));
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "加载设置失败");
@@ -818,10 +653,6 @@ export default function SettingsPage() {
         </div>
       )}
 
-      <DeploymentNetworkPolicyPanel
-        policy={deploymentNetworkPolicy}
-        error={deploymentNetworkPolicyError}
-      />
 
       <div className="mb-6 rounded-xl border border-outline-variant/20 bg-surface-container p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">

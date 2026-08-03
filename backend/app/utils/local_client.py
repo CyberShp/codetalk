@@ -13,7 +13,7 @@ Usage:
 
 import httpx
 
-from app.services.network_policy import require_runtime_url
+from app.services.runtime_environment import require_runtime_url
 
 
 def local_http_client(

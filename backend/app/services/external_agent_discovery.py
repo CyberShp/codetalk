@@ -31,7 +31,7 @@ from app.services.agent_sandbox import (
     filtered_agent_environment,
     prepare_agent_sandbox,
 )
-from app.services.network_policy import AgentNetworkContext, resolve_agent_network_context
+from app.services.runtime_environment import AgentNetworkContext, resolve_agent_network_context
 
 AgentStatus = Literal[
     "ok",
@@ -1835,6 +1835,8 @@ def _agent_process_invocation_candidates(
     if primary_transport != "argv":
         return candidates
     stdin_argv = _strip_prompt_arg_transport_tokens(provider, argv)
+    if os.name == "nt" and stdin_argv != primary_argv:
+        return [(stdin_argv, prompt.encode("utf-8"), "stdin", "windows_argv_limit")]
     if stdin_argv != primary_argv:
         candidates.append((stdin_argv, prompt.encode("utf-8"), "stdin", primary_transport))
     return candidates

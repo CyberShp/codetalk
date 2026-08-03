@@ -31,7 +31,6 @@ from app.services.input_consumption import (
     build_input_consumption_ledger,
     scope_input_consumption_ledger,
 )
-from app.services.network_policy import IntranetNetworkPolicy
 from app.services.test_semantic_library import TestSemanticLibraryStore
 from app.services.workbench_artifact_manifest import write_task_artifact_manifest
 from app.services.workbench_skills import resolve_workbench_skill_instructions
@@ -359,11 +358,6 @@ class WorkbenchTaskRunPreparer:
             workflow_snapshot,
             execution_profile_id=execution_profile_id,
         )
-        network_policy = IntranetNetworkPolicy(
-            policy_id=settings.intranet_network_policy_id,
-            allowed_hosts=set(settings.intranet_allowed_hosts),
-            allowed_cidrs=set(settings.intranet_allowed_cidrs),
-        ).snapshot()
         stage_specs = [] if is_v3_contract else legacy_execution.default_test_activity_stage_specs(
             profile_id=str(execution_profile["id"])
         )
@@ -636,7 +630,6 @@ class WorkbenchTaskRunPreparer:
             ],
             "execution_profile": execution_profile,
             "task_context": task_context_payload,
-            "network_policy": network_policy,
             "input_consumption": input_consumption,
             "workspace_id": workspace_id,
             "repo_path": repo_path,

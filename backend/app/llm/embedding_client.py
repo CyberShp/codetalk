@@ -9,7 +9,6 @@ import httpx
 
 from app.llm.base import async_retry
 from app.llm.endpoint import normalize_openai_compat_base_url
-from app.services.network_policy import require_runtime_model_request_url
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +52,7 @@ class EmbeddingClient:
         else:
             self._client = httpx.AsyncClient(
                 verify=verify,
-                trust_env=False,
+                trust_env=True,
                 timeout=httpx.Timeout(120, connect=15),
                 limits=pool_limits,
             )
@@ -81,7 +80,6 @@ class EmbeddingClient:
 
         payload = {"input": texts, "model": self._model}
         url = f"{self._base_url}/v1/embeddings"
-        require_runtime_model_request_url(url)
 
         logger.info("Embedding %d texts via %s (model=%s)", len(texts), url, self._model)
         resp = await self._client.post(url, headers=headers, json=payload)

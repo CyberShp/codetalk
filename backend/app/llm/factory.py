@@ -12,7 +12,6 @@ from app.llm.anthropic import AnthropicClient
 from app.llm.base import BaseLLMClient
 from app.llm.endpoint import normalize_openai_compat_base_url
 from app.llm.openai_compat import OpenAICompatClient
-from app.services.network_policy import NetworkEgressBlocked, require_runtime_model_request_url
 
 logger = logging.getLogger(__name__)
 
@@ -32,35 +31,25 @@ async def _load_general_settings(db: aiosqlite.Connection) -> dict[str, str]:
 def _resolve_proxy(
     general: dict[str, str],
 ) -> tuple[str | None, str | None, bool]:
-    """Determine proxy/SSL/direct-connect from general settings.
+    """Resolve model transport exclusively from General Settings.
 
-    Returns (proxy_url, ssl_cert_path, force_direct).
-    force_direct=True → httpx uses trust_env=False to bypass system proxy.
+    ``proxy_mode=none`` is an explicit direct connection and therefore disables
+    environment proxy discovery.  ``ssl_cert_path`` is optional: when omitted,
+    HTTPX uses its normal platform/default CA store.
     """
-    if settings.network_policy_v2_enabled:
-        # Settings-table values are ordinary user preferences.  They must not
-        # become an egress boundary or a source of proxy credentials in the
-        # deployment-owned network policy.
-        approved_proxy = str(settings.approved_proxy_url or "").strip()
-        approved_proxy_id = str(settings.approved_proxy_config_id or "").strip()
-        proxy_url = approved_proxy if approved_proxy and approved_proxy_id else None
-        ssl_cert = str(settings.approved_ca_bundle_path or "").strip() or None
-        return proxy_url, ssl_cert, proxy_url is None
+    mode = str(general.get("proxy_mode") or "none").strip().lower()
+    ssl_cert_path = str(general.get("ssl_cert_path") or "").strip() or None
 
-    ssl_cert = general.get("ssl_cert_path") or None
-    if settings.intranet_network_mode:
-        # Model requests have their own explicit endpoint admission. Do not let
-        # environment or user-configured proxies turn that narrow route into a
-        # general external transport.
-        return None, ssl_cert, True
-    mode = general.get("proxy_mode", "none")
     if mode == "none":
-        return None, ssl_cert, True
+        return None, ssl_cert_path, True
     if mode == "custom":
-        url = general.get("proxy_url", "")
-        return (url or None), ssl_cert, False
-    # "system" — let httpx discover system proxy via environment
-    return None, ssl_cert, False
+        proxy_url = str(general.get("proxy_url") or "").strip() or None
+        return proxy_url, ssl_cert_path, False
+    if mode == "system":
+        return None, ssl_cert_path, False
+
+    logger.warning("Unknown proxy_mode=%r; falling back to direct mode", mode)
+    return None, ssl_cert_path, True
 
 
 def _model_request_url(api_type: str, base_url: str) -> str:
@@ -88,13 +77,6 @@ def _create_runtime_llm_client(
     if api_type not in {"anthropic", "openai_compat"}:
         raise ValueError(f"未知的 api_type: {api_type}")
 
-    request_url = _model_request_url(api_type, base_url)
-    try:
-        require_runtime_model_request_url(request_url)
-    except NetworkEgressBlocked as exc:
-        raise RuntimeError(
-            "内网部署策略未批准该模型端点，请联系管理员配置批准的模型服务后重试。"
-        ) from exc
     proxy_url, ssl_cert, force_direct = _resolve_proxy(general)
     kwargs = {
         "base_url": base_url,
@@ -103,8 +85,6 @@ def _create_runtime_llm_client(
         "proxy_url": proxy_url,
         "ssl_cert_path": ssl_cert,
         "force_direct": force_direct,
-        "enforce_network_policy": True,
-        "configured_model_endpoint": True,
     }
     if api_type == "anthropic":
         return AnthropicClient(**kwargs)

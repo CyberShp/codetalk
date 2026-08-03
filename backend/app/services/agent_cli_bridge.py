@@ -28,7 +28,7 @@ from app.services.agent_sandbox import (
     prepare_isolated_runtime_tmp,
     prepare_agent_sandbox,
 )
-from app.services.network_policy import (
+from app.services.runtime_environment import (
     resolve_agent_network_context,
     scrub_intranet_agent_environment,
 )
@@ -569,6 +569,10 @@ async def stream_agent_runtime(
     prompt_argument = _prompt_argument_or_file_bootstrap(
         prompt,
         prompt_file_path=prompt_file_path,
+        force_file=(
+            os.name == "nt"
+            and prompt_transport in {"argv_last", "claude_print_arg", "opencode_run_arg"}
+        ),
     )
     write_prompt_to_stdin = False
     if prompt_transport == "argv_last":
@@ -992,8 +996,13 @@ def _command_runtime_read_paths(command: str) -> list[str]:
     return []
 
 
-def _prompt_argument_or_file_bootstrap(prompt: str, *, prompt_file_path: str | None) -> str:
-    if len(str(prompt or "").encode("utf-8")) <= MAX_AGENT_ARG_PROMPT_BYTES:
+def _prompt_argument_or_file_bootstrap(
+    prompt: str,
+    *,
+    prompt_file_path: str | None,
+    force_file: bool = False,
+) -> str:
+    if not force_file and len(str(prompt or "").encode("utf-8")) <= MAX_AGENT_ARG_PROMPT_BYTES:
         return prompt
     if not prompt_file_path:
         raise AgentRuntimeError(

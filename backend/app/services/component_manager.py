@@ -20,7 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.services.network_policy import require_runtime_url
+from app.services.runtime_environment import require_runtime_url
 from app.models.component_config import ComponentConfig
 from app.schemas.component_config import (
     ComponentContract,

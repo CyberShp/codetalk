@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 import httpx
 
 from app.config import settings
-from app.services.network_policy import NetworkEgressBlocked, require_runtime_url
+from app.services.runtime_environment import NetworkEgressBlocked, require_runtime_url
 
 logger = logging.getLogger(__name__)
 _REPO_ROOT = Path(__file__).resolve().parents[3]

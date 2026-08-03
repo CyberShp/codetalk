@@ -16,7 +16,7 @@ from app.database import async_session
 from app.models.llm_config import LLMConfig
 from app.models.repository import Repository
 from app.models.task import AnalysisTask, ToolRun
-from app.services.network_policy import require_runtime_model_request_url
+from app.services.runtime_environment import require_runtime_model_request_url
 from app.services import source_manager
 from app.utils.repo_paths import to_tool_repo_path
 
