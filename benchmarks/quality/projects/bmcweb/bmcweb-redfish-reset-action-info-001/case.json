@@ -6,7 +6,7 @@
   "truth_package_version": "4",
   "tier": "S",
   "truth_package": {
-    "gold_claims": {"path": "gold_claims.json", "sha256": "98015e1f4c75902b1685ed03b7f5739f6d4445cb0b3077545d1bbc22f65683cf"},
+    "gold_claims": {"path": "gold_claims.json", "sha256": "4f6bd0a97ab1e2a55271762992767562fa0579277fc4fd57686c243aa308a1c9"},
     "coverage_universe": {"path": "coverage_universe.json", "sha256": "4e281f055d8668eaee642402dabc268f33215c0f4d0080c06c3f830b69f7504c"},
     "critical_chains": {"path": "critical_chains.json", "sha256": "8dcc942e899369fe0aa8cf607fee495b236bc9d9fc7350eb2d481b7aed5ca93b"},
     "execution_oracles": {"path": "execution_oracles.json", "sha256": "e7e8d788d3f2698558013c486f8032c6425ee29960cf2fd59ee60774ab9eadb9"}

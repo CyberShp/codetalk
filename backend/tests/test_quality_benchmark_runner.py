@@ -557,10 +557,15 @@ def test_real_snapshot_default_path_runs_batch_judge_for_all_three_axes(tmp_path
     assert snapshot.accuracy.status.value == "pass"
     assert snapshot.breadth.status.value == "pass"
     assert snapshot.depth.status.value == "pass"
-    assert len(semantic_judge.calls) == 1
+    assert len(semantic_judge.calls) == 2
     assert {
         judgment.axis for judgment in semantic_judge.calls[0]["judgments"]
     } == {"accuracy", "breadth", "depth"}
+    assert semantic_judge.calls[1]["mode"] == "deep"
+    assert semantic_judge.calls[1]["snapshot_label"] == (
+        "first_pass_decisive_verification"
+    )
+    assert len(audit_sink) == 2
     assert audit_sink[0]["judge"]["model"] == "fixture-independent-judge"
     assert all(
         audit_sink[0]["candidate_count_by_axis"][axis] > 0
@@ -570,6 +575,32 @@ def test_real_snapshot_default_path_runs_batch_judge_for_all_three_axes(tmp_path
         "accuracy": "completed",
         "breadth": "completed",
         "depth": "completed",
+    }
+
+
+def test_semantic_consensus_fails_closed_on_any_decisive_disagreement() -> None:
+    module = _runner()
+
+    assert module._consensus_semantic_verdicts(
+        {
+            "agreed-support": "supports",
+            "agreed-contradiction": "contradicts",
+            "support-disagreement": "supports",
+            "contradiction-disagreement": "contradicts",
+            "first-insufficient": "insufficient",
+        },
+        {
+            "agreed-support": "supports",
+            "agreed-contradiction": "contradicts",
+            "support-disagreement": "insufficient",
+            "contradiction-disagreement": "supports",
+        },
+    ) == {
+        "agreed-support": "supports",
+        "agreed-contradiction": "contradicts",
+        "support-disagreement": "insufficient",
+        "contradiction-disagreement": "insufficient",
+        "first-insufficient": "insufficient",
     }
 
 

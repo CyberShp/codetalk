@@ -34,7 +34,7 @@
       "critical": true,
       "applicability": "applicable",
       "claim": "For any other D-Bus error, afterGetAllowedHostTransitions records an internal error and returns before constructing or publishing the Parameters array.",
-      "evidence_refs": ["source://redfish-core/lib/systems.hpp#L3526-L3549"],
+      "evidence_refs": ["source://redfish-core/lib/systems.hpp#L3526-L3531"],
       "applicability_evidence_refs": ["source://redfish-core/lib/systems.hpp#L3526-L3531"]
     },
     {

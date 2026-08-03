@@ -357,35 +357,54 @@ def evaluate_artifact_snapshot(
         batch_judge = semantic_judge or BehaviorClaimBatchSemanticJudge(
             judge_model=judge_model
         )
+        semantic_source_dir = (
+            Path(source_dir).resolve()
+            if source_dir is not None
+            else Path(".__quality_source_unavailable__")
+        )
         result = batch_judge.judge(
             judgments=recorder.judgments,
-            source_dir=(
-                Path(source_dir).resolve()
-                if source_dir is not None
-                else Path(".__quality_source_unavailable__")
-            ),
+            source_dir=semantic_source_dir,
             generator_model=str(generator_model),
             judge_model=str(judge_model),
             mode=str(mode),
             deadline_monotonic=effective_deadline,
             snapshot_label=str(snapshot_label),
         )
-        if semantic_audit_sink is not None:
-            semantic_audit_sink.append(
-                {
-                    **dict(result.metadata),
-                    **_semantic_axis_audit_metadata(
-                        judgments=recorder.judgments,
-                        result_status=str(
-                            result.metadata.get("status") or "unavailable"
-                        ),
-                        diagnostics=semantic_diagnostics,
-                    ),
-                    "diagnostics": semantic_diagnostics,
-                    "limitations": list(result.limitations),
-                }
+        _append_semantic_result_audit(
+            semantic_audit_sink,
+            result=result,
+            judgments=recorder.judgments,
+            diagnostics=semantic_diagnostics,
+        )
+        decisive_judgments = tuple(
+            judgment
+            for judgment in recorder.judgments
+            if result.verdicts.get(judgment.judgment_id)
+            in {"supports", "contradicts"}
+        )
+        consensus_verdicts = dict(result.verdicts)
+        if decisive_judgments:
+            verification = batch_judge.judge(
+                judgments=decisive_judgments,
+                source_dir=semantic_source_dir,
+                generator_model=str(generator_model),
+                judge_model=str(judge_model),
+                mode="deep",
+                deadline_monotonic=effective_deadline,
+                snapshot_label=f"{snapshot_label}_decisive_verification",
             )
-        adapter = _ResolvedBatchSemanticVerdictAdapter(result.verdicts)
+            _append_semantic_result_audit(
+                semantic_audit_sink,
+                result=verification,
+                judgments=decisive_judgments,
+                diagnostics=(),
+            )
+            consensus_verdicts = _consensus_semantic_verdicts(
+                result.verdicts,
+                verification.verdicts,
+            )
+        adapter = _ResolvedBatchSemanticVerdictAdapter(consensus_verdicts)
     aligned_claim_ledger = _align_claim_semantics_from_evidence(
         _mapping(claim_ledger, "claim_ledger"),
         _items(gold_claims),
@@ -458,6 +477,48 @@ def _semantic_axis_audit_metadata(
         },
         "repair_status_by_axis": repair_status_by_axis,
     }
+
+
+def _append_semantic_result_audit(
+    sink: list[dict[str, Any]] | None,
+    *,
+    result: Any,
+    judgments: Sequence[SemanticJudgment],
+    diagnostics: Sequence[Mapping[str, Any]],
+) -> None:
+    if sink is None:
+        return
+    sink.append(
+        {
+            **dict(result.metadata),
+            **_semantic_axis_audit_metadata(
+                judgments=judgments,
+                result_status=str(result.metadata.get("status") or "unavailable"),
+                diagnostics=diagnostics,
+            ),
+            "diagnostics": list(diagnostics),
+            "limitations": list(result.limitations),
+        }
+    )
+
+
+def _consensus_semantic_verdicts(
+    first: Mapping[str, SemanticVerdict],
+    verification: Mapping[str, SemanticVerdict],
+) -> dict[str, SemanticVerdict]:
+    consensus: dict[str, SemanticVerdict] = {}
+    for judgment_id, raw_first in first.items():
+        first_verdict = _validated_semantic_verdict(raw_first)
+        if first_verdict == "insufficient":
+            consensus[judgment_id] = "insufficient"
+            continue
+        verified = _validated_semantic_verdict(
+            verification.get(judgment_id, "insufficient")
+        )
+        consensus[judgment_id] = (
+            first_verdict if verified == first_verdict else "insufficient"
+        )
+    return consensus
 
 
 def _run_evaluator_owned_depth_oracle(

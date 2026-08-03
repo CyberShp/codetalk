@@ -15,6 +15,7 @@ from app.services.quality_benchmark_corpus import (
 )
 from app.services.quality_benchmark_runner import (
     _align_breadth_evidence_refs,
+    _align_claim_semantics_from_evidence,
     _align_depth_candidate_from_evidence,
     _axis_oracle_statement,
     _normalized_evidence_ref,
@@ -417,6 +418,19 @@ class _AlwaysSupportsSemanticAdapter:
         return "supports"
 
 
+class _BmcUnexpectedErrorSemanticAdapter:
+    def claim_verdict(self, *, candidate, truth):
+        semantic_key = str(truth.get("semantic_key") or "")
+        if not semantic_key:
+            return "supports"
+        claim_id = str(candidate.get("claim_id") or "")
+        return {
+            "correct-error": "supports",
+            "successful-discovery": "insufficient",
+            "reversed-error": "contradicts",
+        }[claim_id]
+
+
 class _SelectiveBatchSemanticJudge:
     """Deterministic batch double that rejects every explicitly reversed observation."""
 
@@ -666,13 +680,15 @@ def _dynamic_snapshot(
         semantic_audit_sink=audits,
         snapshot_label="dynamic",
     )
-    assert len(judge.calls) == 1
+    assert len(judge.calls) == 2
     assert {item.axis for item in judge.calls[0]["judgments"]} == {
         "accuracy",
         "breadth",
         "depth",
     }
+    assert judge.calls[1]["mode"] == "deep"
     assert audits[0]["status"] == "completed"
+    assert audits[1]["status"] == "completed"
     return snapshot
 
 
@@ -817,6 +833,76 @@ def test_bmc_precise_get_route_reaches_breadth_semantic_judgment() -> None:
     assert aligned["items"][0]["evidence_refs"] == [
         "source://redfish-core/lib/systems.hpp#L3649-L3652"
     ]
+
+
+def test_bmc_unexpected_error_gold_separates_success_and_reversed_paths() -> None:
+    registry = load_quality_registry(REGISTRY_PATH)
+    case_path = next(PROJECTS_ROOT.glob("bmcweb/*/case.json"))
+    case = load_quality_case(case_path, registry=registry)
+    gold_payload = json.loads(
+        (case_path.parent / case.truth_package.gold_claims.path).read_text()
+    )
+    gold = [
+        item
+        for item in gold_payload["claims"]
+        if item["gold_id"] == "bmcweb-gold-004"
+    ]
+    ledger = {
+        "claims": [
+            {
+                "claim_id": "correct-error",
+                "claim": (
+                    "An unexpected D-Bus error records internal error and returns "
+                    "before Parameters are published."
+                ),
+                "evidence_refs": [{
+                    "path": "redfish-core/lib/systems.hpp",
+                    "start_line": 3526,
+                    "end_line": 3531,
+                }],
+            },
+            {
+                "claim_id": "successful-discovery",
+                "claim": (
+                    "Successful discovery translates transitions and publishes "
+                    "the Parameters array."
+                ),
+                "evidence_refs": [{
+                    "path": "redfish-core/lib/systems.hpp",
+                    "start_line": 3533,
+                    "end_line": 3549,
+                }],
+            },
+            {
+                "claim_id": "reversed-error",
+                "claim": (
+                    "An unexpected D-Bus error skips internal error and publishes "
+                    "the Parameters array."
+                ),
+                "evidence_refs": [{
+                    "path": "redfish-core/lib/systems.hpp",
+                    "start_line": 3526,
+                    "end_line": 3531,
+                }],
+            },
+        ]
+    }
+
+    aligned = _align_claim_semantics_from_evidence(
+        ledger,
+        gold,
+        semantic_verdict_adapter=_BmcUnexpectedErrorSemanticAdapter(),
+    )
+    claims = {item["claim_id"]: item for item in aligned["claims"]}
+
+    assert claims["correct-error"]["semantic_key"] == gold[0]["semantic_key"]
+    assert claims["correct-error"]["l2_status"] == "supports"
+    assert claims["successful-discovery"]["semantic_key"].startswith(
+        "candidate-unmatched-"
+    )
+    assert claims["successful-discovery"]["l2_status"] == "supports"
+    assert claims["reversed-error"]["semantic_key"] == gold[0]["semantic_key"]
+    assert claims["reversed-error"]["l2_status"] == "contradicts"
 
 
 def test_bmc_precise_get_route_and_validation_reach_depth_semantic_judgment() -> None:
