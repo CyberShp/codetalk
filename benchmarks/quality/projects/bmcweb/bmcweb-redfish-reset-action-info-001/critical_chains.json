@@ -1,6 +1,6 @@
 {
   "case_id": "bmcweb-redfish-reset-action-info-001",
-  "evidence_catalog_sha256": "d28a3d7b1c0b4d3748a6b8b2cffa763d250693316990b9b48d7f643aabf79aeb",
+  "evidence_catalog_sha256": "5e6840a4c6e7563d3818001f1a348978300231eee9c0ba6db87209e5e4678f7d",
   "execution_tier": "S",
   "chains": [
     {

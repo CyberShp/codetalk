@@ -52,6 +52,13 @@
         "obligation_id": "bounded-input"
       },
       {
+        "evidence_ref": "source://module/bdev/nvme/bdev_nvme.c#L3173-L3182:node-handler-observes-ebusy",
+        "evidence_group": "handler-ebusy-observation",
+        "chain_id": "spdk-reset-chain",
+        "category": "node",
+        "obligation_id": "bounded-input"
+      },
+      {
         "evidence_ref": "source://module/bdev/nvme/bdev_nvme.c#L3452-L3455:node-reset-dispatch",
         "chain_id": "spdk-reset-chain",
         "category": "node",

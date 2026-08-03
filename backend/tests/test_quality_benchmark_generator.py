@@ -416,7 +416,7 @@ def test_generator_executes_through_workbench_and_publishes_content_hash_manifes
     assert generation["runtime"] == "codetalk-workbench"
     assert generation["task_run_id"] == "task_run_test"
     assert generation["work_sufficiency"]["status"] == "sufficient"
-    assert versions["evaluator"] == "quality-evaluation-v3"
+    assert versions["evaluator"] == "quality-evaluation-v4"
     assert json.loads((output / "repair_summary.json").read_text()) == {
         "attempt_count": 0,
         "elapsed_seconds": pytest.approx(generation["elapsed_seconds"], abs=0.01),

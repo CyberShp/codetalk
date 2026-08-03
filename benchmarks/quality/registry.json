@@ -1,6 +1,6 @@
 {
   "schema_version": "quality-benchmark-registry-v1",
-  "truth_package_version": "5",
+  "truth_package_version": "6",
   "projects": [
     {
       "id": "spdk",

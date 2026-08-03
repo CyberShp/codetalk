@@ -15,9 +15,9 @@
       "semantic_key": "bmcweb.reset_action_info.always.starts.with.forceoff.powercycle.nmi",
       "critical": true,
       "applicability": "applicable",
-      "claim": "afterGetAllowedHostTransitions initializes every allowable ResetType list with ForceOff, PowerCycle, and Nmi before processing either an error or the returned D-Bus transitions.",
-      "evidence_refs": ["source://redfish-core/lib/systems.hpp#L3500-L3510"],
-      "applicability_evidence_refs": ["source://redfish-core/lib/systems.hpp#L3500-L3510"]
+      "claim": "The allowable ResetType list is initialized with ForceOff, PowerCycle, and Nmi.",
+      "evidence_refs": ["source://redfish-core/lib/systems.hpp#L3505-L3510"],
+      "applicability_evidence_refs": ["source://redfish-core/lib/systems.hpp#L3505-L3510"]
     },
     {
       "gold_id": "bmcweb-gold-003a",

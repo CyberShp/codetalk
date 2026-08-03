@@ -3,7 +3,7 @@
   "case_id": "phosphor-nvme-present-power-not-good-001",
   "project_id": "phosphor-nvme",
   "analysis_target": "phosphor-nvme device-present and power-not-good state transition behavior.",
-  "truth_package_version": "5",
+  "truth_package_version": "6",
   "tier": "S",
   "truth_package": {
     "gold_claims": {"path": "gold_claims.json", "sha256": "93d3aae5208cf33d0ef1bdab6368678c7022e7dd14ee5db67f234d84dd3c72d5"},

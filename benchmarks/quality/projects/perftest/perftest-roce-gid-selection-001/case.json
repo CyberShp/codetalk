@@ -3,7 +3,7 @@
   "case_id": "perftest-roce-gid-selection-001",
   "project_id": "perftest",
   "analysis_target": "perftest RoCE GID selection, validation, and fallback behavior.",
-  "truth_package_version": "5",
+  "truth_package_version": "6",
   "tier": "S",
   "truth_package": {
     "gold_claims": {"path": "gold_claims.json", "sha256": "5c55c4a39a36842e87ac95fe16aefceb4ee978a126b6b00162a7d9fae1a2bbe3"},

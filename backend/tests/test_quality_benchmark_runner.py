@@ -44,6 +44,20 @@ class _GoldVerdictAdapter:
         return self.verdicts[semantic_key]
 
 
+class _BranchAwareBreadthVerdictAdapter:
+    def claim_verdict(self, *, candidate, truth):
+        return "supports"
+
+    def breadth_verdict(self, *, candidate, truth):
+        narrative = str(candidate.get("narrative") or "").lower()
+        item_id = str(truth.get("item_id") or "")
+        marker = "missing" if item_id == "missing-branch" else "unexpected"
+        return "supports" if marker in narrative else "insufficient"
+
+    def depth_verdict(self, *, candidate, truth, binding):
+        return "supports"
+
+
 class _DeterministicBatchSemanticJudge:
     """Batch-level test double for the production judge boundary."""
 
@@ -504,10 +518,15 @@ def test_real_snapshot_default_path_runs_batch_judge_for_all_three_axes(tmp_path
     _write_json(artifacts / "evidence_cards.json", [_card("EV-C-1")])
     _write_json(artifacts / "quality_accuracy_policy.json", {"l3_validation": _l3()})
     candidates, scenarios = _generated_for(universe)
+    universe_statements = {
+        item["item_id"]: item["statement"] for item in universe["items"]
+    }
     for item in candidates["items"]:
-        item["narrative"] = "The cited behavior covers this source-backed obligation."
+        item_id = item["coverage_item_ids"][0]
+        item["narrative"] = universe_statements[item_id]
     for item in scenarios["items"]:
-        item["narrative"] = "The scenario realizes this source-backed obligation."
+        item_id = item["coverage_item_ids"][0]
+        item["narrative"] = universe_statements[item_id]
     _write_json(
         artifacts / "quality_breadth.json",
         {
@@ -517,6 +536,16 @@ def test_real_snapshot_default_path_runs_batch_judge_for_all_three_axes(tmp_path
         },
     )
     depth_payload = depth_candidate(truth)
+    depth_statements = {
+        (chain["chain_id"], category, item[id_field]): item["statement"]
+        for chain in truth["chains"]
+        for category, field, id_field in (
+            ("node", "nodes", "node_id"),
+            ("edge", "edges", "edge_id"),
+            ("check", "disconfirming_checks", "check_id"),
+        )
+        for item in chain[field]
+    }
     depth_refs = {}
     for binding in catalog.bindings:
         if binding.category.value == "l3":
@@ -531,7 +560,9 @@ def test_real_snapshot_default_path_runs_batch_judge_for_all_three_axes(tmp_path
             ("check", "disconfirming_checks", "check_id"),
         ):
             for item in chain[field]:
-                item["narrative"] = "The cited behavior closes this obligation."
+                item["narrative"] = depth_statements[
+                    (chain["chain_id"], category, item[id_field])
+                ]
                 item["evidence_refs"] = depth_refs[
                     (chain["chain_id"], category, item[id_field])
                 ]
@@ -568,7 +599,10 @@ def test_real_snapshot_default_path_runs_batch_judge_for_all_three_axes(tmp_path
     )
     assert len(audit_sink) == 2
     assert audit_sink[0]["decision_role"] == "diagnostic_screening"
-    assert audit_sink[1]["decision_role"] == "authoritative_adjudication"
+    assert audit_sink[1]["decision_role"] == "high_effort_adjudication"
+    assert audit_sink[1]["decision_policy"] == (
+        "high_effort_material_guard"
+    )
     assert audit_sink[1]["screening_disagreement_count"] == 0
     assert audit_sink[1]["screening_disagreements"] == []
     assert len(audit_sink[1]["verdict_trace"]) == len(
@@ -586,9 +620,12 @@ def test_real_snapshot_default_path_runs_batch_judge_for_all_three_axes(tmp_path
     )
     assert audit_sink[0]["judge"]["model"] == "fixture-independent-judge"
     assert all(
-        audit_sink[0]["candidate_count_by_axis"][axis] > 0
+        audit_sink[0]["judgment_count_by_axis"][axis] > 0
         for axis in ("accuracy", "breadth", "depth")
     )
+    assert audit_sink[0]["candidate_count_by_axis"] == audit_sink[0][
+        "judgment_count_by_axis"
+    ]
     assert audit_sink[0]["status_by_axis"] == {
         "accuracy": "completed",
         "breadth": "completed",
@@ -620,6 +657,187 @@ def test_high_effort_semantic_adjudication_is_authoritative_and_fail_closed() ->
         "authoritative-contradiction": "contradicts",
         "missing-adjudication": "insufficient",
     }
+
+
+def test_high_effort_insufficient_is_not_overridden_by_screening_support() -> None:
+    module = _runner()
+    judgment = module.SemanticJudgment(
+        judgment_id="defaults",
+        axis="accuracy",
+        candidate_statement=(
+            "ForceOff, PowerCycle, and Nmi are inserted before processing the D-Bus result."
+        ),
+        oracle_statement=(
+            "The allowable ResetType list is initialized with ForceOff, PowerCycle, and "
+            "Nmi before processing the returned D-Bus transitions."
+        ),
+        observed_evidence_refs=("source://systems.hpp#L3505-L3510",),
+        required_evidence_refs=("source://systems.hpp#L3505-L3510",),
+    )
+
+    assert module._authoritative_semantic_verdicts(
+        {"defaults": "supports"},
+        {"defaults": "insufficient"},
+        judgments=(judgment,),
+    ) == {"defaults": "insufficient"}
+
+
+def test_calibrated_resolution_fails_closed_when_high_adjudication_is_missing() -> None:
+    module = _runner()
+    judgment = module.SemanticJudgment(
+        judgment_id="missing-high",
+        axis="accuracy",
+        candidate_statement="The reset handler appends the EBUSY request and returns.",
+        oracle_statement="The reset handler appends the EBUSY request and returns.",
+        observed_evidence_refs=("source://reset.c#L10-L20",),
+        required_evidence_refs=("source://reset.c#L10-L20",),
+    )
+
+    assert module._authoritative_semantic_verdicts(
+        {"missing-high": "supports"},
+        {},
+        judgments=(judgment,),
+    ) == {"missing-high": "insufficient"}
+
+
+def test_high_support_is_not_overruled_by_screening_contradiction() -> None:
+    module = _runner()
+    judgment = module.SemanticJudgment(
+        judgment_id="high-support",
+        axis="accuracy",
+        candidate_statement="The reset handler appends the EBUSY request and returns.",
+        oracle_statement="The reset handler appends the EBUSY request and returns.",
+        observed_evidence_refs=("source://reset.c#L10-L20",),
+        required_evidence_refs=("source://reset.c#L10-L20",),
+    )
+
+    assert module._authoritative_semantic_verdicts(
+        {"high-support": "contradicts"},
+        {"high-support": "supports"},
+        judgments=(judgment,),
+    ) == {"high-support": "supports"}
+
+
+@pytest.mark.parametrize(
+    ("candidate", "oracle"),
+    [
+        (
+            "An EBUSY reset appends the request to pending_resets.",
+            "An EBUSY reset appends the request to pending_resets and returns.",
+        ),
+        (
+            "Completion drains waiters into their continuation.",
+            "Each waiter receives success or failure from the controller result.",
+        ),
+        (
+            "Completion removes and resumes each waiter.",
+            "Completion assigns the result before it removes and resumes each waiter.",
+        ),
+        (
+            "When controller reset selection returns EBUSY, the request is appended to "
+            "pending_resets.",
+            "After appending the EBUSY request to pending_resets, the reset handler returns.",
+        ),
+        (
+            "ForceOff is inserted into ResetType.",
+            "ResetType is initialized with ForceOff, PowerCycle, and Nmi.",
+        ),
+        (
+            "The callback records an internal error.",
+            "The callback records an internal error and returns before publishing Parameters.",
+        ),
+        (
+            "The request contains reset types.",
+            "The request rejects invalid reset types.",
+        ),
+        (
+            "On failure, the reset completes.",
+            "On success, the reset completes.",
+        ),
+        (
+            "The timeout is 5 seconds.",
+            "The timeout is 90 seconds.",
+        ),
+        (
+            "One queued request resumes.",
+            "Every queued request resumes.",
+        ),
+        (
+            "The handler releases the lock before writing the result.",
+            "The handler writes the result before releasing the lock.",
+        ),
+        (
+            "The handler continues the request.",
+            "After authorization succeeds, the handler continues the request.",
+        ),
+        (
+            "When rc != 0, completion resumes.",
+            "When rc == 0, completion resumes.",
+        ),
+        (
+            "The handler appends the reset request.",
+            "When reset selection returns EBUSY, the handler appends the reset request.",
+        ),
+        (
+            "The caller publishes the result.",
+            "The handler publishes the result.",
+        ),
+        (
+            "For an unexpected property, fallback values are appended.",
+            "For a missing property, fallback values are appended.",
+        ),
+        (
+            "When the property is present, fallback values are appended.",
+            "When the property is missing, fallback values are appended.",
+        ),
+        (
+            "The request proceeds.",
+            "The request proceeds only when authorized.",
+        ),
+        (
+            "The route dispatches the request.",
+            "The route requires ConfigureComponents privilege before dispatching the request.",
+        ),
+        (
+            "The result is published.",
+            "The handler publishes the result.",
+        ),
+        (
+            "The handler dispatches before validating the request.",
+            "The handler validates before dispatching the request.",
+        ),
+        (
+            "The handler retries before logging the error.",
+            "The handler logs the error before retrying.",
+        ),
+        (
+            "When the reset fails, completion resumes.",
+            "When the reset succeeds, completion resumes.",
+        ),
+        (
+            "The handler returns.",
+            "When the queue is empty, the handler returns.",
+        ),
+    ],
+)
+def test_calibrated_resolution_rejects_partial_material_clause_false_passes(
+    candidate, oracle
+) -> None:
+    module = _runner()
+    judgment = module.SemanticJudgment(
+        judgment_id="partial",
+        axis="depth",
+        candidate_statement=candidate,
+        oracle_statement=oracle,
+        observed_evidence_refs=("source://reset.c#L10-L20",),
+        required_evidence_refs=("source://reset.c#L10-L20",),
+    )
+
+    assert module._authoritative_semantic_verdicts(
+        {"partial": "supports"},
+        {"partial": "supports"},
+        judgments=(judgment,),
+    ) == {"partial": "insufficient"}
 
 
 def test_semantic_screening_disagreements_are_addressable() -> None:
@@ -656,6 +874,62 @@ def test_semantic_screening_disagreements_are_addressable() -> None:
             "adjudication": "insufficient",
         },
     )
+
+
+@pytest.mark.parametrize("replacement", ["at most 4096", "no more than 4096"])
+def test_material_guard_accepts_natural_language_comparison_equivalence(
+    replacement,
+) -> None:
+    module = _runner()
+    oracle = (
+        "This Tier S case is bounded to get_request_size(req) <= 4096; the "
+        "implementation computes req_size and copies it into a 4096-byte stack buffer "
+        "without enforcing that bound."
+    )
+    paraphrase = oracle.replace(
+        "get_request_size(req) <= 4096",
+        f"get_request_size(req) is {replacement}",
+    )
+
+    assert module._material_clause_supports(paraphrase, oracle) is True
+
+
+def test_material_guard_accepts_nonzero_as_not_equal_zero() -> None:
+    module = _runner()
+
+    assert module._material_clause_supports(
+        "Completion fails when rc is nonzero.",
+        "Completion fails when rc != 0.",
+    ) is True
+
+
+@pytest.mark.parametrize(
+    ("candidate", "oracle"),
+    [
+        (
+            "For bad-request-descriptor, expect a complete fallback ResetType parameter "
+            "rather than an error.",
+            "A missing AllowedHostTransitions property adds the five fallback ResetTypes "
+            "to the response values.",
+        ),
+        (
+            "For an unexpected D-Bus error, expect HTTP internal-server-error and no "
+            "normal parameter completion.",
+            "A D-Bus error other than the recognized missing-property errors emits "
+            "InternalError and returns before Parameters are published.",
+        ),
+        (
+            "Known property-unavailable errors use fallback values; other errors emit "
+            "internalError and return.",
+            "Missing-property errors append fallback reset types, while unexpected D-Bus "
+            "errors take the internal-error branch.",
+        ),
+    ],
+)
+def test_material_guard_accepts_real_bmc_probe_paraphrases(candidate, oracle) -> None:
+    module = _runner()
+
+    assert module._material_clause_supports(candidate, oracle) is True
 
 
 def test_cli_selectors_are_mutually_exclusive() -> None:
@@ -1084,6 +1358,203 @@ def test_accuracy_prefilter_rejects_disproportionately_broad_range() -> None:
     assert aligned["claims"][0]["l2_status"] == "supports"
 
 
+def test_accuracy_prefilter_accepts_atomic_range_with_twelve_context_lines() -> None:
+    module = _runner()
+    gold = [{
+        "gold_id": "hidden-remove",
+        "semantic_key": "pending.remove",
+        "claim": "The completion loop removes the pending reset from the queue.",
+        "evidence_refs": ["source://module/reset.c#L2152-L2154"],
+    }]
+    ledger = {
+        "claims": [{
+            "claim_id": "public-remove",
+            "claim": "The completion loop removes the pending reset from the queue.",
+            "evidence_refs": [{
+                "path": "module/reset.c",
+                "start_line": 2143,
+                "end_line": 2157,
+            }],
+        }],
+    }
+
+    aligned = module._align_claim_semantics_from_evidence(
+        ledger,
+        gold,
+        semantic_verdict_adapter=_IndependentAcceptingVerdictAdapter(),
+    )
+
+    assert aligned["claims"][0]["semantic_key"] == "pending.remove"
+
+
+def test_accuracy_prefilter_rejects_atomic_range_with_thirteen_context_lines() -> None:
+    module = _runner()
+
+    assert module._bounded_evidence_match(
+        ("range", "module/reset.c", 2142, 2157),
+        ("range", "module/reset.c", 2152, 2154),
+    ) is False
+
+
+def test_prepublication_compound_probe_flags_multi_owner_evidence_and_wording() -> None:
+    module = _runner()
+    shared = "source://systems.hpp#L3514-L3525"
+    gold = [
+        {
+            "gold_id": "missing",
+            "semantic_key": "missing.property",
+            "claim": "A missing property appends the five fallback reset types.",
+            "evidence_refs": [shared],
+        },
+        {
+            "gold_id": "unreachable",
+            "semantic_key": "unreachable.property",
+            "claim": "An unreachable property appends the five fallback reset types.",
+            "evidence_refs": [shared],
+        },
+    ]
+    claim = {
+        "claim_id": "compound",
+        "claim": "A missing or unreachable property adds the five fallback reset types.",
+        "evidence_refs": [{
+            "path": "systems.hpp",
+            "start_line": 3512,
+            "end_line": 3525,
+        }],
+    }
+
+    diagnostics = module._prepublication_compound_claim_diagnostics(
+        claims=(claim,),
+        gold_claims=gold,
+    )
+
+    assert diagnostics == [{
+        "axis": "accuracy",
+        "code": "compound_claim_requires_split",
+        "candidate_id": "compound",
+        "matched_obligation_count": 2,
+        "repairable": True,
+        "repair": {
+            "artifact": "claim_ledger.json",
+            "operation": "split_candidate_statement",
+        },
+    }]
+
+
+def test_prepublication_compound_probe_does_not_flag_atomic_shared_evidence() -> None:
+    module = _runner()
+    shared = "source://reset.c#L10-L20"
+    gold = [
+        {
+            "gold_id": "append",
+            "semantic_key": "queue.append",
+            "claim": "When reset selection returns EBUSY, the request is appended.",
+            "evidence_refs": [shared],
+        },
+        {
+            "gold_id": "return",
+            "semantic_key": "handler.return",
+            "claim": "After appending the request, the reset handler returns.",
+            "evidence_refs": [shared],
+        },
+    ]
+    claim = {
+        "claim_id": "atomic-append",
+        "claim": "When reset selection returns EBUSY, the request is appended.",
+        "evidence_refs": [{"path": "reset.c", "start_line": 10, "end_line": 20}],
+    }
+
+    assert module._prepublication_compound_claim_diagnostics(
+        claims=(claim,),
+        gold_claims=gold,
+    ) == []
+
+
+@pytest.mark.parametrize(
+    "claim_text",
+    [
+        "A missing property adds fallbacks. An unreachable property adds fallbacks.",
+        "A missing property adds fallbacks; an unreachable property adds fallbacks.",
+    ],
+)
+def test_prepublication_compound_probe_is_not_punctuation_bypassable(claim_text) -> None:
+    module = _runner()
+    shared = "source://reset.c#L10-L20"
+    gold = [
+        {
+            "gold_id": "missing",
+            "semantic_key": "property.missing",
+            "claim": "A missing property adds fallbacks.",
+            "evidence_refs": [shared],
+        },
+        {
+            "gold_id": "unreachable",
+            "semantic_key": "property.unreachable",
+            "claim": "An unreachable property adds fallbacks.",
+            "evidence_refs": [shared],
+        },
+    ]
+    claim = {
+        "claim_id": "compound",
+        "claim": claim_text,
+        "evidence_refs": [{"path": "reset.c", "start_line": 10, "end_line": 20}],
+    }
+
+    diagnostics = module._prepublication_compound_claim_diagnostics(
+        claims=(claim,),
+        gold_claims=gold,
+    )
+
+    assert [item["candidate_id"] for item in diagnostics] == ["compound"]
+
+
+def test_compound_split_successors_pass_prepublication_regate() -> None:
+    module = _runner()
+    shared = "source://systems.hpp#L3514-L3525"
+    gold = [
+        {
+            "gold_id": "missing",
+            "semantic_key": "property.missing",
+            "claim": "For a bad_request_descriptor error, fallback values are appended.",
+            "evidence_refs": [shared],
+        },
+        {
+            "gold_id": "unreachable",
+            "semantic_key": "property.unreachable",
+            "claim": "For a host_unreachable error, fallback values are appended.",
+            "evidence_refs": [shared],
+        },
+    ]
+    split_claims = (
+        {
+            "claim_id": "missing-only",
+            "claim": "A missing property appends fallback values.",
+            "evidence_refs": [{
+                "path": "systems.hpp", "start_line": 3514, "end_line": 3525,
+            }],
+        },
+        {
+            "claim_id": "unreachable-only",
+            "claim": "An unreachable host appends fallback values.",
+            "evidence_refs": [{
+                "path": "systems.hpp", "start_line": 3514, "end_line": 3525,
+            }],
+        },
+        {
+            "claim_id": "successful-read",
+            "claim": "A successful property read appends translated values.",
+            "evidence_refs": [{
+                "path": "systems.hpp", "start_line": 3514, "end_line": 3525,
+            }],
+        },
+    )
+
+    assert module._prepublication_compound_claim_diagnostics(
+        claims=split_claims,
+        gold_claims=gold,
+    ) == []
+
+
 @pytest.mark.parametrize("candidate_range", [(3178, 3182), (3155, 3175)])
 def test_accuracy_prefilter_rejects_tiny_containment_and_partial_overlap(
     candidate_range,
@@ -1390,7 +1861,7 @@ def test_axis_audit_separates_no_candidates_from_required_compound_repair() -> N
         }],
     )
 
-    assert metadata["candidate_count_by_axis"] == {
+    assert metadata["judgment_count_by_axis"] == {
         "accuracy": 0,
         "breadth": 0,
         "depth": 0,
@@ -1638,6 +2109,145 @@ def test_breadth_reversed_narrative_does_not_close_by_source_range_alone() -> No
     (aligned,) = module._align_breadth_evidence_refs(universe, candidates)
 
     assert aligned["items"][0]["evidence_refs"] == []
+
+
+def test_breadth_scenario_is_judged_with_linked_candidate_narratives_and_evidence() -> None:
+    module = _runner()
+    universe = {
+        "items": [{
+            "item_id": "fallback-state",
+            "dimension": "states",
+            "critical": True,
+            "applicability": "required",
+            "statement": (
+                "The missing-property path combines three default reset types with five "
+                "fallback reset types."
+            ),
+            "evidence_refs": [
+                "source://systems.hpp#L3505-L3510",
+                "source://systems.hpp#L3514-L3525",
+            ],
+        }],
+    }
+    candidates = {
+        "items": [
+            {
+                "candidate_id": "defaults",
+                "narrative": "Always include the three default reset types.",
+                "evidence_refs": ["source://systems.hpp#L3505-L3510"],
+            },
+            {
+                "candidate_id": "fallback",
+                "narrative": "A missing property adds all five fallback reset types.",
+                "evidence_refs": ["source://systems.hpp#L3512-L3525"],
+            },
+        ]
+    }
+    scenarios = {
+        "items": [{
+            "scenario_id": "missing-property",
+            "candidate_ids": ["defaults", "fallback"],
+            "narrative": "The response contains the complete fallback list.",
+            "evidence_refs": ["test://system_test.cpp#L37-L64"],
+            "status": "READY",
+        }]
+    }
+
+    _aligned_candidates, aligned_scenarios = module._align_breadth_evidence_refs(
+        universe,
+        candidates,
+        scenarios,
+        semantic_verdict_adapter=_IndependentAcceptingVerdictAdapter(),
+    )
+
+    assert aligned_scenarios["items"][0]["evidence_refs"] == [
+        "source://systems.hpp#L3505-L3510",
+        "source://systems.hpp#L3514-L3525",
+    ]
+
+
+def test_unrelated_scenario_cannot_borrow_linked_candidate_evidence() -> None:
+    module = _runner()
+    universe = {
+        "items": [{
+            "item_id": "fallback-state",
+            "statement": "A missing property adds the fallback reset types.",
+            "evidence_refs": ["source://systems.hpp#L3514-L3525"],
+        }],
+    }
+    candidates = {
+        "items": [{
+            "candidate_id": "fallback",
+            "narrative": "A missing property adds the fallback reset types.",
+            "evidence_refs": ["source://systems.hpp#L3514-L3525"],
+        }],
+    }
+    scenarios = {
+        "items": [{
+            "scenario_id": "unrelated",
+            "candidate_ids": ["fallback"],
+            "narrative": "Measure unrelated request latency under steady load.",
+            "evidence_refs": ["test://latency_test.cpp#L10-L20"],
+            "status": "READY",
+        }],
+    }
+
+    _aligned_candidates, aligned_scenarios = module._align_breadth_evidence_refs(
+        universe,
+        candidates,
+        scenarios,
+        semantic_verdict_adapter=_IndependentAcceptingVerdictAdapter(),
+    )
+
+    assert aligned_scenarios["items"][0]["evidence_refs"] == []
+
+
+def test_linked_recovery_candidate_does_not_substitute_wrong_scenario_branch() -> None:
+    module = _runner()
+    universe = {
+        "items": [
+            {
+                "item_id": "missing-branch",
+                "statement": "A missing property produces fallback reset types.",
+                "evidence_refs": ["source://systems.hpp#L10-L15"],
+            },
+            {
+                "item_id": "unexpected-branch",
+                "statement": "An unexpected error produces an internal error.",
+                "evidence_refs": ["source://systems.hpp#L16-L20"],
+            },
+        ],
+    }
+    candidates = {
+        "items": [{
+            "candidate_id": "recovery",
+            "narrative": "Missing properties recover; unexpected errors fail.",
+            "evidence_refs": [
+                "source://systems.hpp#L10-L15",
+                "source://systems.hpp#L16-L20",
+            ],
+        }],
+    }
+    scenarios = {
+        "items": [{
+            "scenario_id": "missing-only",
+            "candidate_ids": ["recovery"],
+            "narrative": "A missing property returns fallback reset types.",
+            "evidence_refs": ["test://system_test.cpp#L37-L64"],
+            "status": "READY",
+        }],
+    }
+
+    _aligned_candidates, aligned_scenarios = module._align_breadth_evidence_refs(
+        universe,
+        candidates,
+        scenarios,
+        semantic_verdict_adapter=_BranchAwareBreadthVerdictAdapter(),
+    )
+
+    assert aligned_scenarios["items"][0]["evidence_refs"] == [
+        "source://systems.hpp#L10-L15"
+    ]
 
 
 def test_one_public_breadth_observation_can_close_independently_judged_obligations() -> None:

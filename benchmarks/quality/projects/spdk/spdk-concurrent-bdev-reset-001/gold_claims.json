@@ -8,7 +8,7 @@
       "applicability": "applicable",
       "claim": "When bdev_nvme_get_reset_ctrlr_fn returns -EBUSY, the app-thread reset handler appends the bdev I/O to pending_resets.",
       "evidence_refs": [
-        "source://module/bdev/nvme/bdev_nvme.c#L3162-L3181"
+        "source://module/bdev/nvme/bdev_nvme.c#L3173-L3180"
       ]
     },
     {

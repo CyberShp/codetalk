@@ -205,13 +205,13 @@ def test_all_twelve_pinned_projects_have_a_hash_verified_tier_s_case() -> None:
     assert len(cases) == len(EXPECTED_PROJECT_IDS)
 
 
-def test_all_registered_cases_expose_atomic_truth_at_version_five() -> None:
+def test_all_registered_cases_expose_atomic_truth_at_version_six() -> None:
     registry = load_quality_registry(REGISTRY_PATH)
     case_paths = sorted(PROJECTS_ROOT.glob("*/*/case.json"))
     cases = [load_quality_case(path, registry=registry) for path in case_paths]
 
-    assert registry.truth_package_version == "5"
-    assert all(case.truth_package_version == "5" for case in cases)
+    assert registry.truth_package_version == "6"
+    assert all(case.truth_package_version == "6" for case in cases)
     assert all(str(case.analysis_target).strip() for case in cases)
     item_ids = set()
     item_count = 0
@@ -808,7 +808,8 @@ def _dynamic_snapshot(
     assert audits[0]["status"] == "completed"
     assert audits[0]["decision_role"] == "diagnostic_screening"
     assert audits[1]["status"] == "completed"
-    assert audits[1]["decision_role"] == "authoritative_adjudication"
+    assert audits[1]["decision_role"] == "high_effort_adjudication"
+    assert audits[1]["decision_policy"] == "high_effort_material_guard"
     return snapshot
 
 

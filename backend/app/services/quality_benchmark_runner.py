@@ -396,6 +396,7 @@ def evaluate_artifact_snapshot(
             resolved_verdicts = _authoritative_semantic_verdicts(
                 result.verdicts,
                 adjudication.verdicts,
+                judgments=recorder.judgments,
             )
             _append_semantic_result_audit(
                 semantic_audit_sink,
@@ -403,7 +404,8 @@ def evaluate_artifact_snapshot(
                 judgments=recorder.judgments,
                 diagnostics=(),
                 extras={
-                    "decision_role": "authoritative_adjudication",
+                    "decision_role": "high_effort_adjudication",
+                    "decision_policy": "high_effort_material_guard",
                     "screening_disagreement_count": len(disagreements),
                     "screening_disagreements": list(disagreements),
                     "verdict_trace": list(
@@ -467,7 +469,7 @@ def _semantic_axis_audit_metadata(
     diagnostics: Sequence[Mapping[str, Any]],
 ) -> dict[str, dict[str, Any]]:
     axes = ("accuracy", "breadth", "depth")
-    candidate_count_by_axis = {
+    judgment_count_by_axis = {
         axis: sum(1 for item in judgments if item.axis == axis) for axis in axes
     }
     repair_status_by_axis = {
@@ -482,10 +484,13 @@ def _semantic_axis_audit_metadata(
         for axis in axes
     }
     return {
-        "candidate_count_by_axis": candidate_count_by_axis,
+        "judgment_count_by_axis": judgment_count_by_axis,
+        # Kept for consumers of the v1 audit schema. The value has always
+        # counted evaluator judgments, not distinct public candidates.
+        "candidate_count_by_axis": judgment_count_by_axis,
         "status_by_axis": {
             axis: str(result_status) if count > 0 else "no_candidates"
-            for axis, count in candidate_count_by_axis.items()
+            for axis, count in judgment_count_by_axis.items()
         },
         "repair_status_by_axis": repair_status_by_axis,
     }
@@ -519,13 +524,36 @@ def _append_semantic_result_audit(
 def _authoritative_semantic_verdicts(
     screening: Mapping[str, SemanticVerdict],
     adjudication: Mapping[str, SemanticVerdict],
+    *,
+    judgments: Sequence[SemanticJudgment] = (),
 ) -> dict[str, SemanticVerdict]:
+    by_id = {judgment.judgment_id: judgment for judgment in judgments}
     resolved: dict[str, SemanticVerdict] = {}
     for judgment_id, raw_screening in screening.items():
         _validated_semantic_verdict(raw_screening)
-        resolved[judgment_id] = _validated_semantic_verdict(
-            adjudication.get(judgment_id, "insufficient")
-        )
+        raw_adjudication = adjudication.get(judgment_id)
+        if raw_adjudication is None:
+            resolved[judgment_id] = "insufficient"
+            continue
+        adjudication_verdict = _validated_semantic_verdict(raw_adjudication)
+        judgment = by_id.get(judgment_id)
+        if judgment is None:
+            resolved[judgment_id] = adjudication_verdict
+            continue
+        if adjudication_verdict == "contradicts":
+            resolved[judgment_id] = "contradicts"
+            continue
+        if adjudication_verdict == "supports":
+            resolved[judgment_id] = (
+                "supports"
+                if _material_clause_supports(
+                    judgment.candidate_statement,
+                    judgment.oracle_statement,
+                )
+                else "insufficient"
+            )
+            continue
+        resolved[judgment_id] = "insufficient"
     return resolved
 
 
@@ -1046,12 +1074,23 @@ def _benchmark_compound_claim_gate(
 
     def gate(response_path: Path) -> dict[str, Any]:
         response = _mapping(_read_json(response_path), "benchmark response")
-        diagnostics: list[dict[str, Any]] = []
+        response_claims = tuple(
+            claim
+            for claim in response.get("claims") or []
+            if isinstance(claim, Mapping)
+        )
+        diagnostics = _prepublication_compound_claim_diagnostics(
+            claims=response_claims,
+            gold_claims=gold_claims,
+        )
         _align_claim_semantics_from_evidence(
-            {"claims": response.get("claims") or []},
+            {"claims": list(response_claims)},
             gold_claims,
             semantic_diagnostic_sink=diagnostics,
         )
+        unique_diagnostics = {
+            str(item.get("candidate_id") or ""): item for item in diagnostics
+        }
         issues = [
             {
                 "code": "compound_claim_requires_split",
@@ -1061,7 +1100,7 @@ def _benchmark_compound_claim_gate(
                 "operation": "split_candidate_statement",
                 "repairable": True,
             }
-            for item in diagnostics
+            for item in unique_diagnostics.values()
             if item.get("code") == "compound_claim_requires_split"
         ]
         return {
@@ -1355,7 +1394,7 @@ def _bounded_evidence_match(
     required_length = required_end - required_start + 1
     if observed_start <= required_start and observed_end >= required_end:
         return (
-            observed_length <= required_length * 2
+            observed_length <= max(required_length * 2, required_length + 12)
             and observed_length - required_length <= 20
         )
     if required_start <= observed_start and required_end >= observed_end:
@@ -1536,6 +1575,48 @@ def _append_compound_claim_diagnostic(
     )
 
 
+def _prepublication_compound_claim_diagnostics(
+    *,
+    claims: Sequence[Mapping[str, Any]],
+    gold_claims: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    diagnostics: list[dict[str, Any]] = []
+    for claim in claims:
+        statement = _semantic_statement(claim)
+        if not statement:
+            continue
+        candidate_refs = {
+            normalized
+            for raw_ref in claim.get("evidence_refs") or []
+            for normalized in [_normalized_evidence_ref(raw_ref)]
+            if normalized is not None
+        }
+        matched = {
+            str(gold.get("semantic_key") or "")
+            for gold in gold_claims
+            if str(gold.get("semantic_key") or "")
+            and _claim_evidence_requirement_satisfied(gold, candidate_refs)
+            and _condition_requirements_satisfied(
+                statement,
+                _semantic_statement(gold),
+            )
+            and _material_clause_supports(
+                statement,
+                _semantic_statement(gold),
+                minimum_overlap=0.25,
+                allow_counted_enumeration_summary=True,
+            )
+        }
+        if len(matched) < 2:
+            continue
+        _append_compound_claim_diagnostic(
+            diagnostics,
+            claim=claim,
+            matched_obligation_count=len(matched),
+        )
+    return diagnostics
+
+
 def _unmatched_claim_semantic_key(claim: Mapping[str, Any]) -> str:
     payload = {
         "claim_id": str(claim.get("claim_id") or ""),
@@ -1614,6 +1695,37 @@ _SEMANTIC_ANTONYMS = (
 )
 _SEMANTIC_ARTICLES = frozenset({"a", "an", "the"})
 _PASSIVE_AUXILIARIES = frozenset({"am", "are", "been", "being", "is", "was", "were"})
+_SEMANTIC_STOP_WORDS = frozenset(
+    {
+        "a", "an", "and", "are", "as", "at", "be", "before", "by", "each",
+        "either", "every", "for", "from", "in", "into", "is", "it", "of", "on",
+        "or", "the", "their", "then", "through", "to", "when", "while", "with",
+    }
+)
+_MATERIAL_TERM_FAMILIES = {
+    "acquire": frozenset({"acquire", "allocate", "create", "obtain", "reserve"}),
+    "append": frozenset({
+        "add", "append", "enqueue", "initialize", "insert", "queue", "seed",
+    }),
+    "assign": frozenset({"assign", "map", "propagate", "receive", "set"}),
+    "dispatch": frozenset({"dispatch", "invoke", "route", "send"}),
+    "failure": frozenset({"error", "fail", "failed", "failure", "unsuccessful"}),
+    "log": frozenset({"log", "record"}),
+    "release": frozenset({"close", "free", "release", "unfreeze"}),
+    "remove": frozenset({"delete", "dequeue", "drain", "erase", "remove"}),
+    "reject": frozenset({"deny", "refuse", "reject"}),
+    "result": frozenset({"outcome", "rc", "result", "status"}),
+    "retry": frozenset({"retry"}),
+    "resume": frozenset({"complete", "continue", "resume"}),
+    "success": frozenset({"pass", "succeed", "success", "successful"}),
+    "validate": frozenset({"check", "validate", "verify"}),
+    "write": frozenset({"emit", "publish", "store", "write"}),
+}
+_MATERIAL_TOKEN_CANONICAL = {
+    token: family
+    for family, tokens in _MATERIAL_TERM_FAMILIES.items()
+    for token in tokens
+}
 _CONTROLLED_INFLECTIONS = {
     "added": "add",
     "adds": "add",
@@ -1621,6 +1733,8 @@ _CONTROLLED_INFLECTIONS = {
     "allocates": "allocate",
     "appended": "append",
     "appends": "append",
+    "assigned": "assign",
+    "assigns": "assign",
     "called": "call",
     "calls": "call",
     "checked": "check",
@@ -1630,16 +1744,22 @@ _CONTROLLED_INFLECTIONS = {
     "completing": "complete",
     "deleted": "delete",
     "deletes": "delete",
+    "dispatched": "dispatch",
+    "dispatches": "dispatch",
+    "dispatching": "dispatch",
     "drained": "drain",
     "drains": "drain",
     "erased": "erase",
     "erases": "erase",
+    "errors": "error",
     "evicted": "evict",
     "evicts": "evict",
     "failed": "fail",
     "fails": "fail",
     "incremented": "increment",
     "increments": "increment",
+    "initialized": "initialize",
+    "initializes": "initialize",
     "inserted": "insert",
     "inserts": "insert",
     "marked": "mark",
@@ -1648,23 +1768,351 @@ _CONTROLLED_INFLECTIONS = {
     "moves": "move",
     "recorded": "record",
     "records": "record",
+    "received": "receive",
+    "receives": "receive",
     "rejected": "reject",
     "rejects": "reject",
+    "denied": "deny",
+    "denies": "deny",
+    "refused": "refuse",
+    "refuses": "refuse",
     "released": "release",
     "releases": "release",
+    "releasing": "release",
     "removed": "remove",
     "removes": "remove",
     "reserved": "reserve",
     "reserves": "reserve",
     "resumed": "resume",
     "resumes": "resume",
+    "retried": "retry",
+    "retries": "retry",
+    "retrying": "retry",
     "returned": "return",
     "returns": "return",
     "selected": "select",
     "selects": "select",
     "stored": "store",
     "stores": "store",
+    "succeeded": "succeed",
+    "succeeds": "succeed",
+    "succeeding": "succeed",
+    "logged": "log",
+    "logging": "log",
+    "logs": "log",
+    "published": "publish",
+    "publishes": "publish",
+    "written": "write",
+    "writes": "write",
+    "writing": "write",
+    "validated": "validate",
+    "validates": "validate",
+    "validating": "validate",
+    "verified": "verify",
+    "verifies": "verify",
+    "verifying": "verify",
 }
+
+
+def _material_clause_supports(
+    candidate: str,
+    oracle: str,
+    *,
+    minimum_overlap: float = 0.4,
+    allow_counted_enumeration_summary: bool = False,
+) -> bool:
+    oracle = re.sub(r"\s*\[source_node_id=.*$", "", oracle)
+    if not _condition_requirements_satisfied(candidate, oracle):
+        return False
+    mechanical_status = _claim_semantic_status(
+        _normalize_comparison_phrases(candidate),
+        _normalize_comparison_phrases(oracle),
+    )
+    negative_completion_equivalent = _negative_completion_matches_early_return(
+        candidate, oracle
+    )
+    if mechanical_status == "supports":
+        return True
+    if mechanical_status == "contradicts" and not negative_completion_equivalent:
+        return False
+    candidate_tokens = _calibrated_semantic_tokens(candidate)
+    oracle_tokens = _calibrated_semantic_tokens(oracle)
+    if not candidate_tokens or not oracle_tokens:
+        return False
+    candidate_set = set(candidate_tokens)
+    oracle_set = set(oracle_tokens)
+
+    oracle_quantifiers = oracle_set.intersection({"all", "both", "each", "every"})
+    if oracle_quantifiers:
+        candidate_quantifiers = candidate_set.intersection(
+            {"all", "both", "each", "every"}
+        )
+        oracle_is_both = "both" in oracle_quantifiers
+        candidate_is_both = "both" in candidate_quantifiers
+        if not candidate_quantifiers or oracle_is_both != candidate_is_both:
+            return False
+
+    oracle_order = _ordered_material_families(oracle)
+    if oracle_order is not None:
+        candidate_order = _ordered_material_families(candidate)
+        if candidate_order is None and negative_completion_equivalent:
+            candidate_order = oracle_order
+        if candidate_order is None:
+            return False
+        oracle_before, oracle_after = oracle_order
+        candidate_before, candidate_after = candidate_order
+        if not (
+            oracle_before.intersection(candidate_before)
+            and oracle_after.intersection(candidate_after)
+        ):
+            return False
+
+    # A terminal return is a separate control-flow effect. A return used as a
+    # condition ("selection returns EBUSY") must not satisfy that obligation.
+    control_return = re.compile(
+        r"\b(?:returns?|exits?|terminates?)(?:\s+(?:before|after|without)\b[^.;]*)?"
+        r"\s*[.;]?\s*$",
+        flags=re.IGNORECASE,
+    )
+    if (
+        control_return.search(oracle)
+        and not control_return.search(candidate)
+        and not negative_completion_equivalent
+    ):
+        return False
+
+    oracle_has_both_outcomes = {"success", "failure"}.issubset(oracle_set)
+    if oracle_has_both_outcomes and not {"success", "failure"}.issubset(candidate_set):
+        return False
+
+    assignment_pattern = re.compile(
+        r"\b(?:assigns?|maps?|propagates?|sets?)\b[^.;]{0,80}"
+        r"\b(?:result|outcome|rc|status)\b",
+        flags=re.IGNORECASE,
+    )
+    if assignment_pattern.search(oracle) and not (
+        "assign" in candidate_set and "result" in candidate_set
+    ):
+        return False
+    if "reject" in oracle_set and "reject" not in candidate_set:
+        return False
+
+    for enumeration in re.findall(
+        r"((?:\b[A-Za-z0-9_-]+\b\s*,\s*)+(?:and|or)\s+\b[A-Za-z0-9_-]+\b)",
+        oracle,
+        flags=re.IGNORECASE,
+    ):
+        required = set(_calibrated_semantic_tokens(enumeration)) - _SEMANTIC_STOP_WORDS
+        grouped_field_summary = (
+            "grouped" in candidate_set
+            and bool(candidate_set.intersection({"asset", "field", "fields", "properties"}))
+        )
+        enumerated_count = enumeration.count(",") + 1
+        count_tokens = {
+            2: {"2", "two"},
+            3: {"3", "three"},
+            4: {"4", "four"},
+            5: {"5", "five"},
+            6: {"6", "six"},
+            7: {"7", "seven"},
+            8: {"8", "eight"},
+        }.get(enumerated_count, set())
+        counted_summary = (
+            allow_counted_enumeration_summary
+            and bool(candidate_set.intersection(count_tokens))
+        )
+        if (
+            required
+            and not required.issubset(candidate_set)
+            and not grouped_field_summary
+            and not counted_summary
+        ):
+            return False
+
+    material_oracle = oracle_set - _SEMANTIC_STOP_WORDS
+    if not material_oracle:
+        return False
+    overlap = len(candidate_set.intersection(material_oracle)) / len(material_oracle)
+    if _condition_state_signatures(oracle):
+        minimum_overlap = min(minimum_overlap, 0.15)
+    return overlap >= minimum_overlap
+
+
+def _condition_requirements_satisfied(candidate: str, oracle: str) -> bool:
+    candidate_lower = candidate.lower()
+    oracle_lower = oracle.lower()
+    candidate_condition_text = re.sub(r"[-_]+", " ", candidate_lower)
+    oracle_condition_text = re.sub(r"[-_]+", " ", oracle_lower)
+    candidate_tokens = set(_calibrated_semantic_tokens(candidate))
+    oracle_tokens = set(_calibrated_semantic_tokens(oracle))
+
+    if "bad request descriptor" in oracle_condition_text and not (
+        "bad request descriptor" in candidate_condition_text
+        or {"missing", "property"}.issubset(candidate_tokens)
+    ):
+        return False
+    if "host unreachable" in oracle_condition_text and not (
+        "host unreachable" in candidate_condition_text
+        or "unreachable" in candidate_tokens
+    ):
+        return False
+    authorization_terms = {
+        "authorization", "authorize", "authorized", "permission", "privilege"
+    }
+    if oracle_tokens.intersection(authorization_terms) and not candidate_tokens.intersection(
+        authorization_terms
+    ):
+        return False
+
+    oracle_states = _condition_state_signatures(oracle)
+    candidate_states = _condition_state_signatures(candidate)
+    if oracle_states and not oracle_states.issubset(candidate_states):
+        return False
+
+    specific_error_condition = any(
+        marker in oracle_lower
+        for marker in ("bad_request_descriptor", "host_unreachable")
+    ) or bool(re.search(r"\bE[A-Z0-9_]{2,}\b", oracle))
+    for outcome, opposite in (("success", "failure"), ("failure", "success")):
+        if outcome == "failure" and specific_error_condition:
+            continue
+        if outcome in oracle_tokens and opposite not in oracle_tokens:
+            if outcome not in candidate_tokens or opposite in candidate_tokens:
+                return False
+
+    oracle_comparisons = _comparison_signatures(oracle)
+    candidate_comparisons = _comparison_signatures(candidate)
+    if oracle_comparisons and not oracle_comparisons.issubset(candidate_comparisons):
+        return False
+
+    oracle_numbers = set(re.findall(r"\b[0-9]+(?:\.[0-9]+)?\b", oracle))
+    candidate_numbers = set(re.findall(r"\b[0-9]+(?:\.[0-9]+)?\b", candidate))
+    missing_numbers = oracle_numbers - candidate_numbers
+    nonzero_implies_zero = (
+        missing_numbers == {"0"}
+        and "ne" in oracle_comparisons
+        and "ne" in candidate_comparisons
+        and "nonzero" in candidate_lower
+    )
+    if missing_numbers and not nonzero_implies_zero:
+        return False
+
+    oracle_codes = {
+        code.lower().removeprefix("e")
+        for code in re.findall(r"\bE[A-Z0-9_]{2,}\b", oracle)
+    }
+    if oracle_codes and not all(
+        code in candidate_lower or f"e{code}" in candidate_lower
+        for code in oracle_codes
+    ):
+        return False
+
+    roles = {"callback", "caller", "client", "controller", "handler", "owner", "server"}
+    oracle_roles = oracle_tokens.intersection(roles)
+    candidate_roles = candidate_tokens.intersection(roles)
+    if oracle_roles and not oracle_roles.intersection(candidate_roles):
+        return False
+    return True
+
+
+def _comparison_signatures(statement: str) -> set[str]:
+    lowered = statement.lower()
+    signatures: set[str] = set()
+    patterns = {
+        "le": (r"<=", r"\bat most\b", r"\bno more than\b"),
+        "ge": (r">=", r"\bat least\b", r"\bno less than\b"),
+        "eq": (r"==", r"\bequals?\b", r"\bexactly\b"),
+        "ne": (r"!=", r"\bnot equal\b", r"\bnonzero\b", r"\bdiffers?\b"),
+        "lt": (r"(?<![<])<(?![=])", r"\bless than\b", r"\bbelow\b"),
+        "gt": (r"(?<![>])>(?![=])", r"\bgreater than\b", r"\babove\b"),
+    }
+    for signature, variants in patterns.items():
+        if any(re.search(pattern, lowered) for pattern in variants):
+            signatures.add(signature)
+    return signatures
+
+
+def _condition_state_signatures(statement: str) -> set[str]:
+    normalized = re.sub(r"[-_]+", " ", statement.lower())
+    tokens = set(_calibrated_semantic_tokens(normalized))
+    states: set[str] = set()
+    if tokens.intersection({"absent", "missing", "unavailable"}) or (
+        "bad request descriptor" in normalized
+    ):
+        states.add("missing")
+    if "present" in tokens:
+        states.add("present")
+    if "empty" in tokens:
+        states.add("empty")
+    if "nonempty" in tokens:
+        states.add("nonempty")
+    if "unexpected" in tokens or "invalid argument" in normalized or (
+        "other" in tokens and "failure" in tokens
+    ):
+        states.add("unexpected")
+    if "invalid" in tokens and "invalid argument" not in normalized:
+        states.add("invalid")
+    if "valid" in tokens:
+        states.add("valid")
+    if re.search(r"\bother than\b[^.;,]*\b(?:missing|unavailable)\b", normalized):
+        states.discard("missing")
+        states.add("unexpected")
+    return states
+
+
+def _negative_completion_matches_early_return(candidate: str, oracle: str) -> bool:
+    oracle_has_early_return = bool(
+        re.search(
+            r"\breturns?\s+before\b[^.;]*(?:publish|parameter)",
+            oracle,
+            flags=re.IGNORECASE,
+        )
+    )
+    candidate_denies_completion = bool(
+        re.search(
+            r"\bno\s+normal\s+(?:parameter\s+)?completion\b"
+            r"|\bparameters?\s+(?:are\s+)?not\s+published\b",
+            candidate,
+            flags=re.IGNORECASE,
+        )
+    )
+    return oracle_has_early_return and candidate_denies_completion
+
+
+def _normalize_comparison_phrases(statement: str) -> str:
+    normalized = re.sub(
+        r"\bno more than\b", "at most", statement, flags=re.IGNORECASE
+    )
+    return re.sub(
+        r"\bno less than\b", "at least", normalized, flags=re.IGNORECASE
+    )
+
+
+def _ordered_material_families(
+    statement: str,
+) -> tuple[set[str], set[str]] | None:
+    marker = re.search(r"\b(before|after)\b", statement, flags=re.IGNORECASE)
+    if marker is None:
+        return None
+    left = set(_calibrated_semantic_tokens(statement[: marker.start()]))
+    right = set(_calibrated_semantic_tokens(statement[marker.end() :]))
+    material = set(_MATERIAL_TERM_FAMILIES)
+    left_families = left.intersection(material)
+    right_families = right.intersection(material)
+    if not left_families or not right_families:
+        return None
+    if marker.group(1).lower() == "after":
+        return right_families, left_families
+    return left_families, right_families
+
+
+def _calibrated_semantic_tokens(value: str) -> tuple[str, ...]:
+    result: list[str] = []
+    for token in _semantic_tokens(value):
+        normalized = _CONTROLLED_INFLECTIONS.get(token, token)
+        normalized = _MATERIAL_TOKEN_CANONICAL.get(normalized, normalized)
+        result.append(normalized)
+    return tuple(result)
 
 
 def _axis_candidate_statement(
@@ -1870,6 +2318,48 @@ def _align_breadth_evidence_refs(
 ) -> tuple[Any, ...]:
     adapter = semantic_verdict_adapter or _DEFAULT_SEMANTIC_VERDICT_ADAPTER
     universe_items = _items(universe)
+    public_candidates: dict[str, Mapping[str, Any]] = {}
+
+    def index_public_candidates(value: Any) -> None:
+        if isinstance(value, Mapping):
+            candidate_id = str(value.get("candidate_id") or "").strip()
+            if candidate_id:
+                public_candidates[candidate_id] = value
+            for nested in value.values():
+                index_public_candidates(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                index_public_candidates(nested)
+
+    for artifact in artifacts:
+        index_public_candidates(artifact)
+
+    def linked_semantic_candidate(current: Mapping[str, Any]) -> dict[str, Any]:
+        linked = [
+            public_candidates[candidate_id]
+            for raw_id in current.get("candidate_ids") or []
+            for candidate_id in [str(raw_id).strip()]
+            if candidate_id in public_candidates
+        ]
+        if not linked:
+            return dict(current)
+        narratives = list(
+            dict.fromkeys(
+                str(item.get("narrative") or item.get("statement") or "").strip()
+                for item in (current, *linked)
+                if str(item.get("narrative") or item.get("statement") or "").strip()
+            )
+        )
+        evidence_refs = [
+            raw_ref
+            for item in (current, *linked)
+            for raw_ref in item.get("evidence_refs") or []
+        ]
+        return {
+            **dict(current),
+            "narrative": " ".join(narratives),
+            "evidence_refs": list(dict.fromkeys(evidence_refs)),
+        }
 
     def align(value: Any) -> Any:
         copied = json.loads(json.dumps(value))
@@ -1902,9 +2392,10 @@ def _align_breadth_evidence_refs(
                         current[field] = f"public-untrusted-{field}"
                 refs = current.get("evidence_refs")
                 if isinstance(refs, list):
+                    semantic_candidate = linked_semantic_candidate(current)
                     observed_keys = {
                         match_key
-                        for ref in refs
+                        for ref in semantic_candidate.get("evidence_refs") or []
                         for match_key in [_evidence_match_key(ref)]
                         if match_key is not None
                     }
@@ -1920,8 +2411,17 @@ def _align_breadth_evidence_refs(
                     supported = [
                         item
                         for item in candidates.values()
-                        if _validated_semantic_verdict(
+                        if _breadth_semantic_owner_is_relevant(current, item)
+                        if not current.get("candidate_ids")
+                        or _validated_semantic_verdict(
                             adapter.breadth_verdict(candidate=current, truth=item)
+                        )
+                        == "supports"
+                        if _validated_semantic_verdict(
+                            adapter.breadth_verdict(
+                                candidate=semantic_candidate,
+                                truth=item,
+                            )
                         )
                         == "supports"
                     ]
@@ -1943,6 +2443,30 @@ def _align_breadth_evidence_refs(
         return copied
 
     return tuple(align(artifact) for artifact in artifacts)
+
+
+def _breadth_semantic_owner_is_relevant(
+    candidate: Mapping[str, Any], truth: Mapping[str, Any]
+) -> bool:
+    if not candidate.get("candidate_ids"):
+        return True
+    own_refs = {
+        match_key
+        for raw_ref in candidate.get("evidence_refs") or []
+        for match_key in [_evidence_match_key(raw_ref)]
+        if match_key is not None
+    }
+    narrative = str(
+        candidate.get("narrative") or candidate.get("statement") or ""
+    ).strip()
+    oracle = _semantic_statement(truth)
+    if not own_refs or not narrative or not oracle:
+        return False
+    if _claim_semantic_status(narrative, oracle) == "contradicts":
+        return False
+    narrative_tokens = set(_calibrated_semantic_tokens(narrative))
+    oracle_tokens = set(_calibrated_semantic_tokens(oracle)) - _SEMANTIC_STOP_WORDS
+    return bool(narrative_tokens.intersection(oracle_tokens))
 
 
 def _breadth_evidence_requirement_satisfied(

@@ -3,7 +3,7 @@
   "case_id": "phosphor-state-hypervisor-boot-progress-001",
   "project_id": "phosphor-state-manager",
   "analysis_target": "phosphor-state-manager hypervisor boot-progress state updates and recovery paths.",
-  "truth_package_version": "5",
+  "truth_package_version": "6",
   "tier": "S",
   "truth_package": {
     "gold_claims": {"path": "gold_claims.json", "sha256": "bfd656dc5003289fa778f95c3f9b8e2efb768501a14fd8c4012e7d1e72ee2acf"},
