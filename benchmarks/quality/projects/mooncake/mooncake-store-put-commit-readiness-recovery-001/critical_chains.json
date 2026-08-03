@@ -1,0 +1,43 @@
+{
+  "case_id": "mooncake-store-put-commit-readiness-recovery-001",
+  "evidence_catalog_sha256": "9ea96fe0a68907ed20eb151be66757ffb0e7479065543df64b638790d3b5e7ef",
+  "execution_tier": "S",
+  "chains": [
+    {
+      "chain_id": "mooncake-store-put-commit-readiness-recovery-001:put-commit-remove-lifecycle",
+      "nodes": [
+        {"node_id": "client-starts-put-then-completes-and-removes-object", "kind": "trigger", "statement": "The bounded client flow starts a put, completes it, and later removes the same object.", "critical": true},
+        {"node_id": "mounted-segment-valid-key-owner-and-distinct-client", "kind": "precondition_input", "statement": "The flow uses a mounted segment, valid key and owning client, plus a distinct non-owner client for rejection checks.", "critical": true},
+        {"node_id": "put-start-entry", "kind": "entry", "statement": "The lifecycle enters MasterService::PutStart for the object key and owner.", "critical": true},
+        {"node_id": "allocate-and-insert-metadata-call-chain", "kind": "call_chain", "statement": "PutStart reserves tenant quota, allocates replicas, and inserts object metadata.", "critical": true},
+        {"node_id": "replica-storage-and-object-metadata-allocated", "kind": "resource_acquisition", "statement": "PutStart acquires replica storage and a metadata record for the new object.", "critical": true},
+        {"node_id": "metadata-records-put-client-and-tenant-ownership", "kind": "resource_ownership", "statement": "The inserted metadata records the initiating client and tenant as owners of the pending put.", "critical": true},
+        {"node_id": "new-replica-enters-processing-state", "kind": "state_resource_mutation", "statement": "The newly inserted replica metadata is published in PROCESSING state.", "critical": true},
+        {"node_id": "processing-object-is-not-readable-or-removable", "kind": "downstream_effect", "statement": "GetReplicaList and Remove reject the PROCESSING object as not ready.", "critical": true},
+        {"node_id": "not-ready-and-wrong-client-errors-propagate", "kind": "error_propagation", "statement": "The service returns REPLICA_IS_NOT_READY for premature access and ILLEGAL_CLIENT for a non-owner PutEnd.", "critical": true},
+        {"node_id": "owning-client-put-end-recovers-object-to-complete", "kind": "cleanup_recovery", "statement": "PutEnd from the recorded owner changes the matching replica from PROCESSING to COMPLETE.", "critical": true},
+        {"node_id": "remove-erases-replicas-metadata-and-quota-ownership", "kind": "resource_release", "statement": "The non-HA Remove path erases replica metadata and releases tracked storage and tenant quota accounting.", "critical": true},
+        {"node_id": "subsequent-get-observes-object-not-found", "kind": "external_observation", "statement": "After removal, GetReplicaList observes OBJECT_NOT_FOUND for the key.", "critical": true},
+        {"node_id": "put-readiness-and-remove-object-tests", "kind": "executable_oracle", "statement": "The PutStartEndFlow and RemoveObject tests cover readiness, owner completion, removal, and final absence.", "critical": true}
+      ],
+      "edges": [
+        {"edge_id": "lifecycle-trigger-establishes-bounded-inputs", "source_node_id": "client-starts-put-then-completes-and-removes-object", "target_node_id": "mounted-segment-valid-key-owner-and-distinct-client", "statement": "The client lifecycle is exercised with a mounted segment, valid ownership, and a distinct non-owner identity.", "critical": true},
+        {"edge_id": "bounded-inputs-reach-put-start", "source_node_id": "mounted-segment-valid-key-owner-and-distinct-client", "target_node_id": "put-start-entry", "statement": "Those valid inputs permit the owner request to enter PutStart.", "critical": true},
+        {"edge_id": "put-start-invokes-allocation-chain", "source_node_id": "put-start-entry", "target_node_id": "allocate-and-insert-metadata-call-chain", "statement": "PutStart delegates to quota reservation, replica allocation, and metadata insertion.", "critical": true},
+        {"edge_id": "allocation-chain-acquires-replica-and-metadata", "source_node_id": "allocate-and-insert-metadata-call-chain", "target_node_id": "replica-storage-and-object-metadata-allocated", "statement": "The allocation chain creates replica storage and its object metadata record.", "critical": true},
+        {"edge_id": "created-metadata-establishes-owner", "source_node_id": "replica-storage-and-object-metadata-allocated", "target_node_id": "metadata-records-put-client-and-tenant-ownership", "statement": "The created metadata binds the pending object to its initiating client and tenant.", "critical": true},
+        {"edge_id": "owned-replica-is-published-as-processing", "source_node_id": "metadata-records-put-client-and-tenant-ownership", "target_node_id": "new-replica-enters-processing-state", "statement": "The owner-scoped metadata records the new replica in PROCESSING state.", "critical": true},
+        {"edge_id": "processing-state-blocks-get-and-remove", "source_node_id": "new-replica-enters-processing-state", "target_node_id": "processing-object-is-not-readable-or-removable", "statement": "PROCESSING state makes both GetReplicaList and Remove return not-ready errors.", "critical": true},
+        {"edge_id": "blocked-operations-and-owner-mismatch-return-errors", "source_node_id": "processing-object-is-not-readable-or-removable", "target_node_id": "not-ready-and-wrong-client-errors-propagate", "statement": "Premature operations propagate not-ready, while completion by a different client propagates ILLEGAL_CLIENT.", "critical": true},
+        {"edge_id": "preserved-owner-can-complete-pending-put", "source_node_id": "not-ready-and-wrong-client-errors-propagate", "target_node_id": "owning-client-put-end-recovers-object-to-complete", "statement": "Rejected operations preserve owner metadata, allowing the recorded owner to complete the pending put.", "critical": true},
+        {"edge_id": "completed-object-can-be-removed-and-released", "source_node_id": "owning-client-put-end-recovers-object-to-complete", "target_node_id": "remove-erases-replicas-metadata-and-quota-ownership", "statement": "Once COMPLETE, the object can be removed and its tracked resources released.", "critical": true},
+        {"edge_id": "metadata-release-makes-key-absent", "source_node_id": "remove-erases-replicas-metadata-and-quota-ownership", "target_node_id": "subsequent-get-observes-object-not-found", "statement": "Erasing metadata and quota state makes the key absent to later reads.", "critical": true},
+        {"edge_id": "readiness-and-release-observations-bind-to-tests", "source_node_id": "subsequent-get-observes-object-not-found", "target_node_id": "put-readiness-and-remove-object-tests", "statement": "The lifecycle tests assert both pre-completion unreadiness and post-removal absence.", "critical": true}
+      ],
+      "disconfirming_checks": [
+        {"check_id": "processing-replica-remains-unreadable-and-unremovable", "statement": "Before owner PutEnd, both GetReplicaList and Remove must reject the PROCESSING replica.", "critical": true},
+        {"check_id": "put-end-complete-metadata-remains-readable-before-remove", "statement": "Owner PutEnd must make the COMPLETE replica readable before Remove erases it.", "critical": true}
+      ]
+    }
+  ]
+}

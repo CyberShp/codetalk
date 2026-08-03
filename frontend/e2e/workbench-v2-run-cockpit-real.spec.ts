@@ -126,8 +126,8 @@ test("starts a real Attempt and opens the bounded live run cockpit", async ({ pa
   const child = await childResponse.json();
   expect(child.parent_task_run_id).toBe(failedRunId);
   expect(child.task_bundle.retry_source.task_run_id).toBe(failedRunId);
-  expect(child.task_bundle.retry_source.mode).toBe("quality_revalidation");
-  expect(child.task_bundle.quality_revalidation_seed).toBeTruthy();
+  expect(child.task_bundle.retry_source.mode).toBe("quality_repair");
+  expect(child.task_bundle.quality_retry_seed).toBeTruthy();
 });
 
 function cockpitGraph(workflowId: string, name: string) {

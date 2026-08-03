@@ -1,0 +1,183 @@
+{
+  "case_id": "open-cas-wb-default-disconnect-001",
+  "evidence_catalog_sha256": "642a5a030ddf1bd89f51d1664d3c5288889f8a6d03ef7201aa76395aa081f8c0",
+  "execution_tier": "S",
+  "chains": [
+    {
+      "chain_id": "open-cas-disconnect-chain",
+      "nodes": [
+        {
+          "node_id": "trigger",
+          "kind": "trigger",
+          "statement": "test_disconnect_default disconnects a running write-back cache using the default userspace flags.",
+          "critical": true
+        },
+        {
+          "node_id": "bounded-input",
+          "kind": "precondition_input",
+          "statement": "Before disconnect, the test creates dirty data in a running write-back cache and records core CRCs.",
+          "critical": true
+        },
+        {
+          "node_id": "api-entry",
+          "kind": "entry",
+          "statement": "The userspace disconnect API enters with flush_data enabled by default.",
+          "critical": true
+        },
+        {
+          "node_id": "call-chain",
+          "kind": "call_chain",
+          "statement": "The userspace request crosses KCAS_IOCTL_DISCONNECT_CACHE into cache_mngt_disconnect_cache.",
+          "critical": true
+        },
+        {
+          "node_id": "acquire-resource",
+          "kind": "resource_acquisition",
+          "statement": "The kernel disconnect path acquires a cache reference for the target cache instance.",
+          "critical": true
+        },
+        {
+          "node_id": "own-resource",
+          "kind": "resource_ownership",
+          "statement": "The disconnect path owns the cache reference while blocking new dirty data and stopping the cache.",
+          "critical": true
+        },
+        {
+          "node_id": "mutate-state",
+          "kind": "state_resource_mutation",
+          "statement": "With default flush_data true, the disconnect path flushes dirty cache data before stopping it.",
+          "critical": true
+        },
+        {
+          "node_id": "downstream-effect",
+          "kind": "downstream_effect",
+          "statement": "The kernel path freezes exported object queues, locks the cache, and stops the running cache.",
+          "critical": true
+        },
+        {
+          "node_id": "propagate-error",
+          "kind": "error_propagation",
+          "statement": "Failures while preventing dirty data or flushing branch to the disconnect error cleanup paths.",
+          "critical": true
+        },
+        {
+          "node_id": "recover-cleanup",
+          "kind": "cleanup_recovery",
+          "statement": "Error cleanup restores cache state and unwinds references according to the failure label reached.",
+          "critical": true
+        },
+        {
+          "node_id": "release-resource",
+          "kind": "resource_release",
+          "statement": "Successful disconnect deposits and releases the acquired cache management references.",
+          "critical": true
+        },
+        {
+          "node_id": "external-observation",
+          "kind": "external_observation",
+          "statement": "After reconnect, the test observes frozen exported queues, zero dirty blocks, and unchanged core CRCs.",
+          "critical": true
+        },
+        {
+          "node_id": "oracle",
+          "kind": "executable_oracle",
+          "statement": "test_disconnect_default is the functional oracle for default flush and post-reconnect data preservation.",
+          "critical": true
+        }
+      ],
+      "edges": [
+        {
+          "edge_id": "e01",
+          "source_node_id": "trigger",
+          "target_node_id": "bounded-input",
+          "statement": "The default disconnect is triggered only after the test has made the running WB cache dirty.",
+          "critical": true
+        },
+        {
+          "edge_id": "e02",
+          "source_node_id": "bounded-input",
+          "target_node_id": "api-entry",
+          "statement": "The dirty running cache and captured CRCs are passed into the default disconnect API flow.",
+          "critical": true
+        },
+        {
+          "edge_id": "e03",
+          "source_node_id": "api-entry",
+          "target_node_id": "call-chain",
+          "statement": "The userspace API maps its default pass-through and flush flags into the disconnect ioctl.",
+          "critical": true
+        },
+        {
+          "edge_id": "e04",
+          "source_node_id": "call-chain",
+          "target_node_id": "acquire-resource",
+          "statement": "The ioctl handler invokes cache_mngt_disconnect_cache, which obtains the target cache reference.",
+          "critical": true
+        },
+        {
+          "edge_id": "e05",
+          "source_node_id": "acquire-resource",
+          "target_node_id": "own-resource",
+          "statement": "The acquired cache reference remains owned by the disconnect operation through state transitions.",
+          "critical": true
+        },
+        {
+          "edge_id": "e06",
+          "source_node_id": "own-resource",
+          "target_node_id": "mutate-state",
+          "statement": "While owning the cache, the default path prevents new dirty data and performs the requested flush.",
+          "critical": true
+        },
+        {
+          "edge_id": "e07",
+          "source_node_id": "mutate-state",
+          "target_node_id": "downstream-effect",
+          "statement": "Completing the dirty-data flush permits queue freeze, cache lock, and cache stop.",
+          "critical": true
+        },
+        {
+          "edge_id": "e08",
+          "source_node_id": "downstream-effect",
+          "target_node_id": "propagate-error",
+          "statement": "Any failure in the state-changing sequence propagates to a labeled disconnect cleanup path.",
+          "critical": true
+        },
+        {
+          "edge_id": "e09",
+          "source_node_id": "propagate-error",
+          "target_node_id": "recover-cleanup",
+          "statement": "The error labels restore or unwind the partially changed cache state.",
+          "critical": true
+        },
+        {
+          "edge_id": "e10",
+          "source_node_id": "recover-cleanup",
+          "target_node_id": "release-resource",
+          "statement": "Both success and error cleanup release the cache references held by disconnect.",
+          "critical": true
+        },
+        {
+          "edge_id": "e11",
+          "source_node_id": "release-resource",
+          "target_node_id": "external-observation",
+          "statement": "After disconnect resources are released and the cache reconnects, the test reads dirty count and CRC observations.",
+          "critical": true
+        },
+        {
+          "edge_id": "e12",
+          "source_node_id": "external-observation",
+          "target_node_id": "oracle",
+          "statement": "The functional test asserts zero dirty blocks and unchanged CRCs after the default disconnect lifecycle.",
+          "critical": true
+        }
+      ],
+      "disconfirming_checks": [
+        {
+          "check_id": "no-flush-retains-dirty-data",
+          "statement": "The explicit no-flush variant retains dirty data, demonstrating that the default zero-dirty result depends on flush_data true.",
+          "critical": true
+        }
+      ]
+    }
+  ]
+}

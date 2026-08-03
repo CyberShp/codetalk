@@ -1,0 +1,10 @@
+{
+  "id": "phosphor-nvme",
+  "source_dir": "phosphor-nvme",
+  "origin": "https://github.com/openbmc/phosphor-nvme.git",
+  "commit": "5ef51383d77fc32f5d5d314e70f860126de623e7",
+  "expected_tree": "18fbb0cd8c9a0dd93bbeb54b8f19474a53b7c354",
+  "license": "Apache-2.0",
+  "tiers": ["S"],
+  "test_execution": {"policy": "case_allowlist_only", "loader_execution": "forbidden", "network": "disabled"}
+}

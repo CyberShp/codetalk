@@ -1,0 +1,22 @@
+{
+  "schema_version": "quality-benchmark-project-v1",
+  "project_id": "spdk",
+  "project_kind": "host-storage-framework",
+  "canonical_origin": "https://github.com/spdk/spdk.git",
+  "revision": "d64c4fa89233397460e2e4ff55a1c69b8e498598",
+  "tree_sha": "b8c41cac12ca9c9cb34a8da6e028d35f826f581b",
+  "license": {
+    "expression": "BSD-3-Clause",
+    "evidence": "LICENSE"
+  },
+  "build_conditions": {
+    "summary": "Linux source build uses ./configure followed by make after dependencies are installed.",
+    "evidence_refs": [
+      "source://README.md#L61-L80"
+    ],
+    "not_executed": true
+  },
+  "case_ids": [
+    "spdk-concurrent-bdev-reset-001"
+  ]
+}

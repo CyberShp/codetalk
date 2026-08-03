@@ -1,0 +1,29 @@
+{
+  "schema_version": "quality-benchmark-case-v1",
+  "case_id": "spdk-concurrent-bdev-reset-001",
+  "project_id": "spdk",
+  "truth_package_version": "1",
+  "tier": "S",
+  "truth_package": {
+    "gold_claims": {
+      "path": "gold_claims.json",
+      "sha256": "58b441be256fa2383758ff697ac94876d6ab5225bd7e29f65ec2ff255d045c4d"
+    },
+    "coverage_universe": {
+      "path": "coverage_universe.json",
+      "sha256": "57019c49f2b3133f48e6de16578358f7fb824295c8d29421aa41dbd9dfe4e0fe"
+    },
+    "critical_chains": {
+      "path": "critical_chains.json",
+      "sha256": "b327c4f799117014616d7ea311a630f0bc5eeefc575fa29958b9676684f0ebce"
+    },
+    "execution_oracles": {
+      "path": "execution_oracles.json",
+      "sha256": "a823e53439a02cd921881c2110c58497f9318220fc44bbb1a50670e8590b96c0"
+    }
+  },
+  "test_execution": {
+    "policy": "disabled",
+    "commands": []
+  }
+}

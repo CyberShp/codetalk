@@ -1,0 +1,23 @@
+{
+  "schema_version": "quality-benchmark-project-v1",
+  "project_id": "femu",
+  "project_kind": "nvme-ssd-emulator",
+  "canonical_origin": "https://github.com/MoatLab/FEMU.git",
+  "revision": "b130c614afbc6e77f88e272533e9d71f8509e234",
+  "tree_sha": "012c1d0277ac77a77f90bcb480bb99538382f768",
+  "license": {
+    "expression": "GPL-2.0 with mixed file licenses",
+    "evidence": "COPYING and LICENSE"
+  },
+  "build_conditions": {
+    "summary": "The documented host is x86_64 Linux with hardware virtualization; the helper workflow installs dependencies and runs femu-compile.sh.",
+    "evidence_refs": [
+      "source://README.md#L109-L118",
+      "source://README.md#L159-L188"
+    ],
+    "not_executed": true
+  },
+  "case_ids": [
+    "femu-bbssd-out-of-range-write-001"
+  ]
+}

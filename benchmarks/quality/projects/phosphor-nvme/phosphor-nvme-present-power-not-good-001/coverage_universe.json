@@ -1,0 +1,14 @@
+{
+  "case_id": "phosphor-nvme-present-power-not-good-001",
+  "items": [
+    {"item_id": "nvme-entry-poll", "dimension": "entrypoints", "critical": true, "applicability": "required", "evidence_refs": ["source://nvme_manager.cpp#L388-L392"]},
+    {"item_id": "nvme-flow-present-power-bad", "dimension": "flows", "critical": true, "applicability": "required", "evidence_refs": ["source://nvme_manager.cpp#L656-L735"]},
+    {"item_id": "nvme-branch-present-before-power", "dimension": "branches", "critical": true, "applicability": "required", "evidence_refs": ["source://nvme_manager.cpp#L679-L727"]},
+    {"item_id": "nvme-state-error-latch", "dimension": "states", "critical": true, "applicability": "required", "evidence_refs": ["source://nvme_manager.cpp#L710-L727"]},
+    {"item_id": "nvme-resource-gpio-stream", "dimension": "resources", "critical": false, "applicability": "required", "evidence_refs": ["source://nvme_manager.cpp#L511-L539"]},
+    {"item_id": "nvme-boundary-dbus-led-inventory", "dimension": "boundaries", "critical": true, "applicability": "required", "evidence_refs": ["source://nvme_manager.cpp#L66-L179"]},
+    {"item_id": "nvme-concurrency-async-timer", "dimension": "concurrency", "critical": false, "applicability": "required", "evidence_refs": ["source://nvme_manager.cpp#L392-L402"]},
+    {"item_id": "nvme-error-power-not-good-recovery", "dimension": "errors", "critical": true, "applicability": "required", "evidence_refs": ["source://nvme_manager.cpp#L697-L727"]},
+    {"item_id": "nvme-mutation-inventory-on-serial-change", "dimension": "mutation", "critical": true, "applicability": "required", "description": "Inventory Present and asset properties are written only when the sampled serial differs from the cached serial, after which the cached serial is updated.", "evidence_refs": ["source://nvme_manager.cpp#L66-L92"]}
+  ]
+}

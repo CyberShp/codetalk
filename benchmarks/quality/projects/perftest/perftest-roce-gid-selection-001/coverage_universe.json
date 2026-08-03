@@ -1,0 +1,14 @@
+{
+  "case_id": "perftest-roce-gid-selection-001",
+  "items": [
+    {"item_id": "perftest-gid:entry", "dimension": "entrypoints", "critical": true, "applicability": "required", "evidence_refs": ["source://src/write_bw.c#L187-L191", "source://src/perftest_communication.c#L892-L928"]},
+    {"item_id": "perftest-gid:flow", "dimension": "flows", "critical": true, "applicability": "required", "evidence_refs": ["source://src/perftest_communication.c#L663-L723", "source://src/perftest_communication.c#L914-L929"]},
+    {"item_id": "perftest-gid:branches", "dimension": "branches", "critical": true, "applicability": "required", "evidence_refs": ["source://src/perftest_communication.c#L671-L700", "source://src/perftest_communication.c#L918-L928"]},
+    {"item_id": "perftest-gid:states", "dimension": "states", "critical": true, "applicability": "required", "evidence_refs": ["source://src/perftest_parameters.c#L1007-L1013", "source://src/perftest_parameters.c#L4483-L4493", "source://src/perftest_communication.c#L914-L928"]},
+    {"item_id": "perftest-gid:resources", "dimension": "resources", "critical": true, "applicability": "required", "evidence_refs": ["source://src/write_bw.c#L80-L117", "source://src/write_bw.c#L143-L178", "source://src/write_bw.c#L611-L639"]},
+    {"item_id": "perftest-gid:boundaries", "dimension": "boundaries", "critical": true, "applicability": "required", "evidence_refs": ["source://src/perftest_communication.c#L644-L723", "source://src/perftest_parameters.c#L3345-L3347"]},
+    {"item_id": "perftest-gid:concurrency", "dimension": "concurrency", "critical": false, "applicability": "required", "evidence_refs": ["source://src/perftest_communication.c#L931-L945", "source://src/perftest_resources.c#L3462-L3490"]},
+    {"item_id": "perftest-gid:errors", "dimension": "errors", "critical": true, "applicability": "required", "evidence_refs": ["source://src/perftest_communication.c#L671-L675", "source://src/perftest_communication.c#L914-L945"]},
+    {"item_id": "perftest-gid:protocol-roce-gid-selection", "dimension": "protocol", "critical": true, "applicability": "required", "description": "Automatic GID selection scores supported RoCE versions with v2 preferred over v1; setup queries a user-selected GID directly when use_gid_user is set, otherwise it selects the best scored GID index and fails when no valid index or GID can be queried.", "evidence_refs": ["source://src/perftest_communication.c#L618-L640", "source://src/perftest_communication.c#L652-L700", "source://src/perftest_communication.c#L915-L928"]}
+  ]
+}

@@ -1,0 +1,183 @@
+{
+  "case_id": "femu-bbssd-out-of-range-write-001",
+  "evidence_catalog_sha256": "a502ab12db5743af2d1b85e0f224482168ab4e5f98a0151df04c23917ffbb01f",
+  "execution_tier": "S",
+  "chains": [
+    {
+      "chain_id": "femu-bbssd-range-chain",
+      "nodes": [
+        {
+          "node_id": "trigger",
+          "kind": "trigger",
+          "statement": "A BBSSD write request is submitted with an exclusive ending LBA beyond the namespace size.",
+          "critical": true
+        },
+        {
+          "node_id": "bounded-input",
+          "kind": "precondition_input",
+          "statement": "femu_nvme_rw_check_req compares elba to nsze and treats elba greater than nsze as out of range.",
+          "critical": true
+        },
+        {
+          "node_id": "api-entry",
+          "kind": "entry",
+          "statement": "The write enters FEMU's NVMe I/O command dispatch and request-validation path.",
+          "critical": true
+        },
+        {
+          "node_id": "call-chain",
+          "kind": "call_chain",
+          "statement": "The BBSSD I/O dispatch routes the request between the NVMe poller and FTL processing rings.",
+          "critical": true
+        },
+        {
+          "node_id": "acquire-resource",
+          "kind": "resource_acquisition",
+          "statement": "The submission queue removes a request object from its free request list for this command.",
+          "critical": true
+        },
+        {
+          "node_id": "own-resource",
+          "kind": "resource_ownership",
+          "statement": "The NvmeRequest carries the command status while it traverses the poller and FTL rings.",
+          "critical": true
+        },
+        {
+          "node_id": "mutate-state",
+          "kind": "state_resource_mutation",
+          "statement": "The out-of-range validation records an error-page entry and sets NVME_LBA_RANGE with NVME_DNR.",
+          "critical": true
+        },
+        {
+          "node_id": "downstream-effect",
+          "kind": "downstream_effect",
+          "statement": "Because the request status is not NVME_SUCCESS, the FTL loop skips every opcode handler.",
+          "critical": true
+        },
+        {
+          "node_id": "propagate-error",
+          "kind": "error_propagation",
+          "statement": "The failed request is still enqueued through the FTL completion ring with its carried error status.",
+          "critical": true
+        },
+        {
+          "node_id": "recover-cleanup",
+          "kind": "cleanup_recovery",
+          "statement": "The FTL loop assigns zero added latency and returns the failed request to the poller.",
+          "critical": true
+        },
+        {
+          "node_id": "release-resource",
+          "kind": "resource_release",
+          "statement": "After posting completion, the poller returns the request object to the submission queue free list.",
+          "critical": true
+        },
+        {
+          "node_id": "external-observation",
+          "kind": "external_observation",
+          "statement": "The guest observes a completion queue entry carrying the original out-of-range error.",
+          "critical": true
+        },
+        {
+          "node_id": "oracle",
+          "kind": "executable_oracle",
+          "statement": "The source oracle requires out-of-range rejection, skipped FTL mutation, CQE posting, and request return.",
+          "critical": true
+        }
+      ],
+      "edges": [
+        {
+          "edge_id": "e01",
+          "source_node_id": "trigger",
+          "target_node_id": "bounded-input",
+          "statement": "The submitted write computes an elba that is checked against the namespace nsze bound.",
+          "critical": true
+        },
+        {
+          "edge_id": "e02",
+          "source_node_id": "bounded-input",
+          "target_node_id": "api-entry",
+          "statement": "The out-of-range request reaches the NVMe I/O entry where read/write validation runs.",
+          "critical": true
+        },
+        {
+          "edge_id": "e03",
+          "source_node_id": "api-entry",
+          "target_node_id": "call-chain",
+          "statement": "NVMe I/O dispatch hands the BBSSD request into the poller-to-FTL call chain.",
+          "critical": true
+        },
+        {
+          "edge_id": "e04",
+          "source_node_id": "call-chain",
+          "target_node_id": "acquire-resource",
+          "statement": "The poller dispatch operates on a request object acquired from the submission queue.",
+          "critical": true
+        },
+        {
+          "edge_id": "e05",
+          "source_node_id": "acquire-resource",
+          "target_node_id": "own-resource",
+          "statement": "The acquired NvmeRequest owns the command and its validation status through completion.",
+          "critical": true
+        },
+        {
+          "edge_id": "e06",
+          "source_node_id": "own-resource",
+          "target_node_id": "mutate-state",
+          "statement": "Validation mutates the owned request status after recording the out-of-range error page.",
+          "critical": true
+        },
+        {
+          "edge_id": "e07",
+          "source_node_id": "mutate-state",
+          "target_node_id": "downstream-effect",
+          "statement": "The non-success status prevents the FTL loop from invoking write, read, or trim handlers.",
+          "critical": true
+        },
+        {
+          "edge_id": "e08",
+          "source_node_id": "downstream-effect",
+          "target_node_id": "propagate-error",
+          "statement": "Skipping opcode handling preserves the carried status for completion-ring propagation.",
+          "critical": true
+        },
+        {
+          "edge_id": "e09",
+          "source_node_id": "propagate-error",
+          "target_node_id": "recover-cleanup",
+          "statement": "The failed request traverses the to_poller ring with zero FTL latency for cleanup completion.",
+          "critical": true
+        },
+        {
+          "edge_id": "e10",
+          "source_node_id": "recover-cleanup",
+          "target_node_id": "release-resource",
+          "statement": "The poller posts completion and returns the cleaned request to its free list.",
+          "critical": true
+        },
+        {
+          "edge_id": "e11",
+          "source_node_id": "release-resource",
+          "target_node_id": "external-observation",
+          "statement": "Returning the request follows posting the error-bearing CQE visible to the guest.",
+          "critical": true
+        },
+        {
+          "edge_id": "e12",
+          "source_node_id": "external-observation",
+          "target_node_id": "oracle",
+          "statement": "The source oracle binds the CQE error and request release to the out-of-range validation result.",
+          "critical": true
+        }
+      ],
+      "disconfirming_checks": [
+        {
+          "check_id": "invalid-request-skips-ftl-handler",
+          "statement": "A request whose status already failed validation must not enter ssd_write or any other FTL opcode handler.",
+          "critical": true
+        }
+      ]
+    }
+  ]
+}

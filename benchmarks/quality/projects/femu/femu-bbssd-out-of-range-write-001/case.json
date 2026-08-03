@@ -1,0 +1,29 @@
+{
+  "schema_version": "quality-benchmark-case-v1",
+  "case_id": "femu-bbssd-out-of-range-write-001",
+  "project_id": "femu",
+  "truth_package_version": "1",
+  "tier": "S",
+  "truth_package": {
+    "gold_claims": {
+      "path": "gold_claims.json",
+      "sha256": "639ed0547a492942407302ad745b3f45510faa8bea0393b63715d95a79504384"
+    },
+    "coverage_universe": {
+      "path": "coverage_universe.json",
+      "sha256": "5a1587c594df358dea3dc52e0149f98ffa89004a03cafbd85a74897c2e43a675"
+    },
+    "critical_chains": {
+      "path": "critical_chains.json",
+      "sha256": "aaba8a4ed61668f74d72e9db3fd9b9d1d5c663a3077b2c18204026e1adb06f42"
+    },
+    "execution_oracles": {
+      "path": "execution_oracles.json",
+      "sha256": "4279827c353306cd5d04f85c22fc00b1dfb8d0386a3a6ac738155375683bf69d"
+    }
+  },
+  "test_execution": {
+    "policy": "disabled",
+    "commands": []
+  }
+}

@@ -234,11 +234,11 @@ class RawOutputCreate(BaseModel):
 
 
 class AgentRunExecuteRequest(BaseModel):
-    timeout_sec: int = Field(default=0, ge=0, le=3600)
+    timeout_sec: int = Field(default=0, ge=0, le=5400)
 
 
 class TaskRunExecuteRequest(BaseModel):
-    timeout_sec: int = Field(default=0, ge=0, le=3600)
+    timeout_sec: int = Field(default=0, ge=0, le=5400)
     stop_on_error: bool = True
 
 
@@ -276,7 +276,7 @@ class PrepareTaskRunRequest(BaseModel):
 
 
 class RunTaskRunRequest(PrepareTaskRunRequest):
-    timeout_sec: int = Field(default=0, ge=0, le=3600)
+    timeout_sec: int = Field(default=0, ge=0, le=5400)
     stop_on_error: bool = True
 
 
@@ -2074,6 +2074,8 @@ def _task_run_ui_status(*, execution: dict[str, Any], nodes: list[dict[str, Any]
     status = str(execution.get("status") or "")
     if status in {"cancelled", "canceled"}:
         return {"status": "cancelled", "label": "已取消"}
+    if status in {"timed_out", "timeout"}:
+        return {"status": "timed_out", "label": "运行超时"}
     if status == "waiting_for_input":
         return {"status": "waiting_for_input", "label": "等待人工审批"}
     if any(node.get("status_label") == "运行失败" for node in nodes):
@@ -2086,6 +2088,8 @@ def _task_run_ui_status(*, execution: dict[str, Any], nodes: list[dict[str, Any]
         return {"status": "partial", "label": "部分完成"}
     if status == "quality_blocked":
         return {"status": "quality_blocked", "label": "执行完成，质量待修复"}
+    if status == "quality_repairing":
+        return {"status": "quality_repairing", "label": "正在自动修复质量问题"}
     if status in {"needs_review", "needs_rework"}:
         return {"status": status, "label": "需要复核"}
     if status in {"interrupted"}:
@@ -2101,6 +2105,8 @@ def _task_run_ui_status_label(status: str) -> str:
     normalized = str(status or "").strip().lower()
     if normalized == "waiting_for_input":
         return "等待人工审批"
+    if normalized in {"timed_out", "timeout"}:
+        return "运行超时"
     if normalized in {"completed", "ok", "ready", "success"}:
         return "已完成"
     if normalized in {"completed_empty"}:
@@ -2109,6 +2115,8 @@ def _task_run_ui_status_label(status: str) -> str:
         return "部分完成"
     if normalized == "quality_blocked":
         return "执行完成，质量待修复"
+    if normalized == "quality_repairing":
+        return "正在自动修复质量问题"
     if normalized in {"blocked", "upstream_blocked"}:
         return "因上游门禁阻断"
     if normalized in {"needs_review"}:
@@ -4758,6 +4766,16 @@ def _execute_task_run_with_closure(
             else None
         )
         def append_runner_event(event_type: str, event_payload: dict[str, Any]) -> None:
+            if event_type == "quality_repair_started":
+                event_store.mark_status_unless(
+                    task_run_id,
+                    "quality_repairing",
+                    blocked_statuses=_TASK_RUN_TERMINAL_STATUSES,
+                    quality_repair_attempt=int(event_payload.get("attempt") or 0),
+                    quality_repair_max_attempts=int(
+                        event_payload.get("max_attempts") or 0
+                    ),
+                )
             deduplication_key = str(event_payload.get("deduplication_key") or "").strip()
             if deduplication_key:
                 event_store.append_once(
@@ -5592,7 +5610,12 @@ async def validate_task_run_rerun_plan(task_run_id: str) -> dict[str, Any]:
         task_run,
         persist=not (_is_v3_task_run(task_run) and not workflow_v3_writes_enabled()),
     )
-    return _validate_task_rerun_plan(task_run=task_run, plan=plan)
+    runtime_status = WorkbenchTaskRunEventStore(_task_runs_dir()).current_status(task_run_id)
+    return _validate_task_rerun_plan(
+        task_run=task_run,
+        plan=plan,
+        runtime_status=runtime_status,
+    )
 
 
 @router.get("/task-runs/{task_run_id}/rerun-plan/history")
@@ -5632,8 +5655,17 @@ async def execute_task_run_rerun_plan(
             status_code=409,
             detail="上一次任务仍在退出中，请稍候再重新运行。",
         )
+    if runtime_status not in _TASK_RUN_TERMINAL_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail="上一次任务尚未进入终态，不能手动重新运行。",
+        )
     plan = _ensure_task_rerun_plan(task_run)
-    validation_before = _validate_task_rerun_plan(task_run=task_run, plan=plan)
+    validation_before = _validate_task_rerun_plan(
+        task_run=task_run,
+        plan=plan,
+        runtime_status=runtime_status,
+    )
     if not validation_before.get("can_rerun"):
         raise HTTPException(
             status_code=409,
@@ -10509,7 +10541,12 @@ def _ensure_task_rerun_plan(
     return payload
 
 
-def _validate_task_rerun_plan(*, task_run: Any, plan: dict[str, Any]) -> dict[str, Any]:
+def _validate_task_rerun_plan(
+    *,
+    task_run: Any,
+    plan: dict[str, Any],
+    runtime_status: str | None = None,
+) -> dict[str, Any]:
     task_dir = Path(str(task_run.artifact_dir))
     checks = [
         _rerun_file_check("task_run", task_dir / "task_run.json"),
@@ -10518,6 +10555,13 @@ def _validate_task_rerun_plan(*, task_run: Any, plan: dict[str, Any]) -> dict[st
         _rerun_file_check("workflow_snapshot", task_dir / "workflow_snapshot.json"),
         _rerun_repo_check(str(task_run.repo_path or "")),
     ]
+    if runtime_status is not None and runtime_status not in _TASK_RUN_TERMINAL_STATUSES:
+        checks.append({
+            "id": "runtime_terminal_status",
+            "status": "blocked",
+            "reason": "manual rerun is available only after a terminal run status",
+            "actual": runtime_status,
+        })
     plan_task_run_id = str(plan.get("task_run_id") or "")
     if plan_task_run_id != task_run.task_run_id:
         checks.append({

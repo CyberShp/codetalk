@@ -1,0 +1,107 @@
+{
+  "case_id": "mooncake-store-put-commit-readiness-recovery-001",
+  "items": [
+    {
+      "item_id": "mooncake-store-put-commit-readiness-recovery-001:entrypoints",
+      "dimension": "entrypoints",
+      "critical": true,
+      "applicability": "required",
+      "evidence_refs": [
+        "source://mooncake-store/src/master_service.cpp#PutStart:L3566-L3753",
+        "source://mooncake-store/src/master_service.cpp#PutEnd:L3756-L3793",
+        "source://mooncake-store/src/master_service.cpp#GetReplicaList:L2998-L3050"
+      ]
+    },
+    {
+      "item_id": "mooncake-store-put-commit-readiness-recovery-001:flows",
+      "dimension": "flows",
+      "critical": true,
+      "applicability": "required",
+      "evidence_refs": [
+        "test://mooncake-store/tests/master_service_test.cpp#PutStartEndFlow:L1689-L1740",
+        "test://mooncake-store/tests/master_service_test.cpp#RemoveObject:L2511-L2540"
+      ]
+    },
+    {
+      "item_id": "mooncake-store-put-commit-readiness-recovery-001:branches",
+      "dimension": "branches",
+      "critical": true,
+      "applicability": "required",
+      "evidence_refs": [
+        "source://mooncake-store/src/master_service.cpp#readable_replica_branch:L2998-L3050",
+        "source://mooncake-store/src/master_service.cpp#client_owner_branch:L3763-L3793"
+      ]
+    },
+    {
+      "item_id": "mooncake-store-put-commit-readiness-recovery-001:states",
+      "dimension": "states",
+      "critical": true,
+      "applicability": "required",
+      "evidence_refs": [
+        "source://mooncake-store/src/master_service.cpp#replica_mark_complete:L3775-L3793",
+        "source://mooncake-store/src/master_service.cpp#metadata_release:L1887-L1954",
+        "source://mooncake-store/src/master_service.cpp#metadata_key_erase:L5398-L5400",
+        "test://mooncake-store/tests/master_service_test.cpp#processing_complete:L1702-L1740",
+        "test://mooncake-store/tests/master_service_test.cpp#post_remove_absent:L2511-L2534"
+      ]
+    },
+    {
+      "item_id": "mooncake-store-put-commit-readiness-recovery-001:resources",
+      "dimension": "resources",
+      "critical": true,
+      "applicability": "required",
+      "evidence_refs": [
+        "source://mooncake-store/src/master_service.cpp#allocate_insert_metadata:L3335-L3563",
+        "source://mooncake-store/src/master_service.cpp#metadata_owner_created:L3548-L3561",
+        "source://mooncake-store/src/master_service.cpp#metadata_owner_checked:L3760-L3768",
+        "source://mooncake-store/src/master_service.cpp#replica_metadata_quota_release:L1887-L1954",
+        "source://mooncake-store/src/master_service.cpp#remove_metadata_quota_release:L5339-L5400"
+      ]
+    },
+    {
+      "item_id": "mooncake-store-put-commit-readiness-recovery-001:boundaries",
+      "dimension": "boundaries",
+      "critical": true,
+      "applicability": "required",
+      "evidence_refs": [
+        "test://mooncake-store/tests/master_service_test.cpp#precommit_boundary:L1709-L1716",
+        "test://mooncake-store/tests/master_service_test.cpp#postcommit_boundary:L1730-L1740",
+        "test://mooncake-store/tests/master_service_test.cpp#postremove_boundary:L2527-L2534"
+      ]
+    },
+    {
+      "item_id": "mooncake-store-put-commit-readiness-recovery-001:concurrency",
+      "dimension": "concurrency",
+      "critical": true,
+      "applicability": "required",
+      "evidence_refs": [
+        "source://mooncake-store/src/master_service.cpp#snapshot_and_metadata_lock:L3760-L3768",
+        "test://mooncake-store/tests/master_service_test.cpp#distinct_client_setup:L1692-L1694",
+        "test://mooncake-store/tests/master_service_test.cpp#distinct_client_ownership:L1718-L1728"
+      ]
+    },
+    {
+      "item_id": "mooncake-store-put-commit-readiness-recovery-001:errors",
+      "dimension": "errors",
+      "critical": true,
+      "applicability": "required",
+      "evidence_refs": [
+        "source://mooncake-store/src/master_service.cpp#replica_not_ready:L2998-L3050",
+        "source://mooncake-store/src/master_service.cpp#illegal_client:L3768-L3773",
+        "source://mooncake-store/src/master_service.cpp#object_not_found_after_remove:L5339-L5347",
+        "test://mooncake-store/tests/master_service_test.cpp#readiness_error_oracles:L1709-L1728",
+        "test://mooncake-store/tests/master_service_test.cpp#remove_error_oracles:L2531-L2539"
+      ]
+    },
+    {
+      "item_id": "mooncake-store-put-commit-readiness-recovery-001:mutation-commit-replicas",
+      "dimension": "mutation",
+      "critical": true,
+      "applicability": "required",
+      "description": "PutEnd rejects a non-owner and otherwise marks every selected valid replica complete.",
+      "evidence_refs": [
+        "source://mooncake-store/src/master_service.cpp#L3768-L3793"
+      ]
+    }
+  ]
+}

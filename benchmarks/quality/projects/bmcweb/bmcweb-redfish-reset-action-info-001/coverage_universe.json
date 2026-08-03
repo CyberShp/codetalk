@@ -1,0 +1,14 @@
+{
+  "case_id": "bmcweb-redfish-reset-action-info-001",
+  "items": [
+    {"item_id": "bmcweb-entry-reset-action-info-get", "dimension": "entrypoints", "critical": true, "applicability": "required", "evidence_refs": ["source://redfish-core/lib/systems.hpp#L3645-L3652"]},
+    {"item_id": "bmcweb-flow-route-to-dbus-response", "dimension": "flows", "critical": true, "applicability": "required", "evidence_refs": ["source://redfish-core/lib/systems.hpp#L3564-L3606"]},
+    {"item_id": "bmcweb-branch-dbus-error-disposition", "dimension": "branches", "critical": true, "applicability": "required", "evidence_refs": ["source://redfish-core/lib/systems.hpp#L3512-L3531"]},
+    {"item_id": "bmcweb-state-allowable-values", "dimension": "states", "critical": false, "applicability": "required", "evidence_refs": ["source://redfish-core/lib/systems.hpp#L3500-L3549"]},
+    {"item_id": "bmcweb-resource-callback-value-vector", "dimension": "resources", "critical": false, "applicability": "required", "evidence_refs": ["source://redfish-core/lib/systems.hpp#L3500-L3531"]},
+    {"item_id": "bmcweb-boundary-redfish-dbus", "dimension": "boundaries", "critical": true, "applicability": "required", "evidence_refs": ["source://redfish-core/lib/systems.hpp#L3552-L3561"]},
+    {"item_id": "bmcweb-concurrency-async-method", "dimension": "concurrency", "critical": false, "applicability": "required", "evidence_refs": ["source://redfish-core/lib/systems.hpp#L3500-L3561"]},
+    {"item_id": "bmcweb-error-fallback-vs-500", "dimension": "errors", "critical": true, "applicability": "required", "evidence_refs": ["source://test/redfish-core/lib/system_test.cpp#L25-L64"]},
+    {"item_id": "bmcweb-protocol-redfish-reset-action-info-methods", "dimension": "protocol", "critical": true, "applicability": "required", "description": "The Redfish ResetActionInfo resource binds HEAD and GET to distinct handlers with their corresponding privileges.", "evidence_refs": ["source://redfish-core/lib/systems.hpp#L3640-L3652"]}
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "schema_version": "quality-benchmark-project-v1",
+  "project_id": "lmcache",
+  "display_name": "LMCache",
+  "canonical_source": {
+    "origin": "https://github.com/LMCache/LMCache.git",
+    "revision": "f625b9733ad38c6b1bb3ba3d5083998ab5307ffb",
+    "tree_sha": "c970140ccbe796aec9a25a915ea62390223100ec",
+    "source_dir": "lmcache"
+  },
+  "license": {
+    "spdx": "Apache-2.0",
+    "path": "LICENSE",
+    "git_blob_sha": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64"
+  },
+  "build_conditions": {
+    "status": "not_run",
+    "requirements": [
+      "pyproject.toml requires Python >=3.10,<3.14 and classifies the package for POSIX Linux.",
+      "The contributor guide lists Linux, an NVIDIA GPU, CUDA 12.8+, and the test dependencies as development prerequisites."
+    ],
+    "evidence": [
+      "pyproject.toml:20-42",
+      "docs/source/developer_guide/contributing.rst:98-121",
+      "docs/source/developer_guide/contributing.rst:152-180"
+    ],
+    "limitations": [
+      "No dependency installation, build, import, or project test execution was performed while authoring this Tier S case.",
+      "The selected local CPU tests are retained as static oracle definitions; their runtime dependency and platform requirements were not satisfied here."
+    ]
+  },
+  "cases": [
+    "lmcache-local-cpu-put-get-pinned-eviction-recovery-001"
+  ]
+}

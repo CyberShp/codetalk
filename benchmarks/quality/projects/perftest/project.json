@@ -1,0 +1,24 @@
+{
+  "schema_version": "quality-benchmark-project-v1",
+  "project_id": "perftest",
+  "project_kind": "rdma-performance-tools",
+  "canonical_origin": "https://github.com/linux-rdma/perftest.git",
+  "revision": "00b55b6660d0170dabe2c1b49193e8fbe265086e",
+  "tree_sha": "0fa1b3385f5193d09915c247d1bb7266efa5c7aa",
+  "license": {
+    "expression": "GPL-2.0-only OR Linux-OpenIB",
+    "evidence": "COPYING"
+  },
+  "build_conditions": {
+    "summary": "The documented source build runs autogen.sh, configure, make and make install; the selected path additionally requires an opened InfiniBand/RoCE device and a populated GID table.",
+    "evidence_refs": [
+      "source://README#L35-L57",
+      "source://src/write_bw.c#L80-L110",
+      "source://src/perftest_communication.c#L705-L723"
+    ],
+    "not_executed": true
+  },
+  "case_ids": [
+    "perftest-roce-gid-selection-001"
+  ]
+}

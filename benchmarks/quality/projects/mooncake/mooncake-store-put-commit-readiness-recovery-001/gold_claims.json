@@ -1,0 +1,68 @@
+{
+  "case_id": "mooncake-store-put-commit-readiness-recovery-001",
+  "claims": [
+    {
+      "gold_id": "mooncake-store-put-commit-readiness-recovery-001:put-start-processing",
+      "semantic_key": "mooncake.store.put_start.processing_replica",
+      "critical": true,
+      "applicability": "applicable",
+      "statement": "PutStart reserves quota, allocates replica storage, inserts owner-scoped object metadata, and returns a nonempty replica list whose new replica is in PROCESSING state in the bounded test flow.",
+      "evidence_refs": [
+        "source://mooncake-store/src/master_service.cpp#reserve_tenant_quota:L3351-L3359",
+        "source://mooncake-store/src/master_service.cpp#allocate_memory_replicas:L3417-L3438",
+        "source://mooncake-store/src/master_service.cpp#insert_owned_processing_metadata:L3524-L3563",
+        "source://mooncake-store/src/master_service.cpp#PutStart_delegates_to_metadata_allocation:L3704-L3733",
+        "test://mooncake-store/tests/master_service_test.cpp#PutStartEndFlow_start:L1689-L1707"
+      ]
+    },
+    {
+      "gold_id": "mooncake-store-put-commit-readiness-recovery-001:processing-not-readable",
+      "semantic_key": "mooncake.store.processing_replica.not_ready_for_get_remove",
+      "critical": true,
+      "applicability": "applicable",
+      "statement": "Before PutEnd completes the replica, GetReplicaList and Remove reject the object with REPLICA_IS_NOT_READY in the bounded test flow.",
+      "evidence_refs": [
+        "source://mooncake-store/src/master_service.cpp#GetReplicaList_not_ready:L3011-L3034",
+        "source://mooncake-store/src/master_service.cpp#Remove_not_ready:L5349-L5365",
+        "test://mooncake-store/tests/master_service_test.cpp#processing_not_ready:L1709-L1716"
+      ]
+    },
+    {
+      "gold_id": "mooncake-store-put-commit-readiness-recovery-001:wrong-client-rejected",
+      "semantic_key": "mooncake.store.pending_put.owner_mismatch_illegal_client",
+      "critical": true,
+      "applicability": "applicable",
+      "statement": "PutEnd rejects a client that does not match the client recorded by PutStart with ILLEGAL_CLIENT, and the test also checks the same ownership boundary for PutRevoke.",
+      "evidence_refs": [
+        "source://mooncake-store/src/master_service.cpp#PutEnd_client_check:L3763-L3773",
+        "source://mooncake-store/src/master_service.cpp#PutRevoke_client_check:L3982-L3995",
+        "test://mooncake-store/tests/master_service_test.cpp#wrong_client_checks:L1718-L1728"
+      ]
+    },
+    {
+      "gold_id": "mooncake-store-put-commit-readiness-recovery-001:owner-commit-recovers-readiness",
+      "semantic_key": "mooncake.store.put_end.complete_replica_readiness",
+      "critical": true,
+      "applicability": "applicable",
+      "statement": "PutEnd from the owning client marks the matching replica COMPLETE, after which GetReplicaList returns one COMPLETE replica in the bounded test flow.",
+      "evidence_refs": [
+        "source://mooncake-store/src/master_service.cpp#PutEnd_mark_matching_replicas_complete:L3768-L3793",
+        "test://mooncake-store/tests/master_service_test.cpp#owner_commit_final_get:L1730-L1740"
+      ]
+    },
+    {
+      "gold_id": "mooncake-store-put-commit-readiness-recovery-001:remove-releases-object-lifecycle",
+      "semantic_key": "mooncake.store.remove.replica_metadata_quota_release",
+      "critical": true,
+      "applicability": "applicable",
+      "statement": "PutEnd leaves the completed object readable; the non-HA Remove path then calls EraseMetadata, which erases the metadata and releases its tracked replica and quota accounting, after which GetReplicaList returns OBJECT_NOT_FOUND in the bounded test flow.",
+      "evidence_refs": [
+        "source://mooncake-store/include/master_service.h#MetadataAccessorRW_Erase_calls_EraseMetadata:L1787-L1793",
+        "source://mooncake-store/src/master_service.cpp#EraseMetadata_releases_tracked_state_and_quota:L1887-L1954",
+        "source://mooncake-store/src/master_service.cpp#non_HA_Remove_calls_accessor_Erase:L5339-L5400",
+        "test://mooncake-store/tests/master_service_test.cpp#PutEnd_still_readable:L1730-L1740",
+        "test://mooncake-store/tests/master_service_test.cpp#RemoveObject_release:L2511-L2534"
+      ]
+    }
+  ]
+}

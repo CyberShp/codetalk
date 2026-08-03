@@ -1,0 +1,45 @@
+{
+  "case_id": "ucx-roce-reachability-mode-001",
+  "claims": [
+    {
+      "gold_id": "ucx-roce:modes",
+      "semantic_key": "ucx.uct.ib.roce_reachability.config_modes",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "UCX_IB_ROCE_REACHABILITY_MODE is an enum with route as the default and route, local_subnet, and all values; all is documented as assuming every address reachable without a check.",
+      "evidence_refs": ["source://src/uct/ib/base/ib_iface.c#L70-L75", "source://src/uct/ib/base/ib_iface.c#L217-L222", "source://src/uct/ib/base/ib_iface.h#L112-L120"]
+    },
+    {
+      "gold_id": "ucx-roce:legacy-override",
+      "semantic_key": "ucx.uct.ib.roce_reachability.legacy_local_subnet_override",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "During RoCE interface initialization, legacy ROCE_LOCAL_SUBNET=y overrides the selected mode to local_subnet; prefix bits are otherwise reset to zero unless the GID is RoCEv2 and local_subnet mode is active.",
+      "evidence_refs": ["source://src/uct/ib/base/ib_iface.c#L1455-L1506"]
+    },
+    {
+      "gold_id": "ucx-roce:all-short-circuit",
+      "semantic_key": "ucx.uct.ib.roce_reachability.all_short_circuit",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "For a RoCE-to-RoCE address that has passed the outer link-layer and PKEY checks, all mode returns reachable before RoCE version, address-family, GID conversion, subnet, or route checks; this classification does not prove transport connectivity.",
+      "evidence_refs": ["source://src/uct/ib/base/ib_iface.c#L920-L983", "source://src/uct/ib/base/ib_iface.c#L792-L872", "source://README.md#L148-L150"]
+    },
+    {
+      "gold_id": "ucx-roce:route-failure",
+      "semantic_key": "ucx.uct.ib.roce_reachability.route_resolution",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "Route mode requires a RoCE netdev and accepts the best netdev route, a qualifying loopback route, or a kernel local route; otherwise it fills a no-route information string and returns unreachable.",
+      "evidence_refs": ["source://src/uct/ib/base/ib_iface.c#L697-L759", "source://src/uct/ib/base/ib_iface.c#L861-L864"]
+    },
+    {
+      "gold_id": "ucx-roce:local-subnet-boundary",
+      "semantic_key": "ucx.uct.ib.roce_reachability.local_subnet_boundary",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "Local-subnet mode treats a zero-bit prefix as universally reachable and otherwise returns the same-subnet comparison; the existing RoCE gtest only demonstrates successful traffic under local_subnet mode.",
+      "evidence_refs": ["source://src/uct/ib/base/ib_iface.c#L761-L789", "source://src/uct/ib/base/ib_iface.c#L867-L872", "source://test/gtest/uct/ib/test_ib.cc#L51-L78", "source://test/gtest/uct/ib/test_ib.cc#L305-L314"]
+    }
+  ]
+}

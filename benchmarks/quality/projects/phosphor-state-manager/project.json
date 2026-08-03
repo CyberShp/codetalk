@@ -1,0 +1,10 @@
+{
+  "id": "phosphor-state-manager",
+  "source_dir": "phosphor-state-manager",
+  "origin": "https://github.com/openbmc/phosphor-state-manager.git",
+  "commit": "3f6517cbce44f84f9cea95f3f72b4f6401a52d49",
+  "expected_tree": "4fbec101d4be874fed853e0f344d174f977450a0",
+  "license": "Apache-2.0",
+  "tiers": ["S", "E"],
+  "test_execution": {"policy": "case_allowlist_only", "loader_execution": "forbidden", "network": "disabled"}
+}

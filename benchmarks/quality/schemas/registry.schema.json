@@ -1,0 +1,121 @@
+{
+  "$defs": {
+    "QualityBenchmarkProject": {
+      "additionalProperties": false,
+      "properties": {
+        "commit": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Commit",
+          "type": "string"
+        },
+        "expected_tree": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Expected Tree",
+          "type": "string"
+        },
+        "id": {
+          "pattern": "^[a-z0-9][a-z0-9-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "license": {
+          "minLength": 1,
+          "title": "License",
+          "type": "string"
+        },
+        "origin": {
+          "pattern": "^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\\.git$",
+          "title": "Origin",
+          "type": "string"
+        },
+        "source_dir": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+          "title": "Source Dir",
+          "type": "string"
+        },
+        "test_execution": {
+          "$ref": "#/$defs/RegistryTestExecution"
+        },
+        "tiers": {
+          "items": {
+            "enum": [
+              "S",
+              "E",
+              "H"
+            ],
+            "type": "string"
+          },
+          "title": "Tiers",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "source_dir",
+        "origin",
+        "commit",
+        "expected_tree",
+        "license",
+        "tiers",
+        "test_execution"
+      ],
+      "title": "QualityBenchmarkProject",
+      "type": "object"
+    },
+    "RegistryTestExecution": {
+      "additionalProperties": false,
+      "properties": {
+        "loader_execution": {
+          "const": "forbidden",
+          "title": "Loader Execution",
+          "type": "string"
+        },
+        "network": {
+          "const": "disabled",
+          "title": "Network",
+          "type": "string"
+        },
+        "policy": {
+          "const": "case_allowlist_only",
+          "title": "Policy",
+          "type": "string"
+        }
+      },
+      "required": [
+        "policy",
+        "loader_execution",
+        "network"
+      ],
+      "title": "RegistryTestExecution",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "projects": {
+      "items": {
+        "$ref": "#/$defs/QualityBenchmarkProject"
+      },
+      "title": "Projects",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "quality-benchmark-registry-v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "truth_package_version": {
+      "pattern": "^[1-9][0-9]*$",
+      "title": "Truth Package Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "truth_package_version",
+    "projects"
+  ],
+  "title": "QualityBenchmarkRegistry",
+  "type": "object"
+}

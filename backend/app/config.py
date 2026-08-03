@@ -190,7 +190,12 @@ class Settings(BaseSettings):
     source_analysis_schema_version: str = "source-evidence-pack-v11"
     # Keep provider work below the 20-minute product SLA and reserve time for
     # cancellation, final governance refresh, and task-state persistence.
-    staged_workflow_timeout_seconds: int = Field(default=1180, ge=60, le=1200)
+    staged_workflow_timeout_seconds: int = Field(default=90 * 60, ge=1, le=90 * 60)
+    # Quality profile deadlines are absolute lifecycle ceilings.  They include
+    # generation, audit, repair, and finalization rather than only a provider
+    # call, so a repair turn cannot silently exceed the user-facing promise.
+    quality_rapid_deadline_seconds: int = Field(default=15 * 60, ge=60, le=15 * 60)
+    quality_deep_deadline_seconds: int = Field(default=90 * 60, ge=60, le=90 * 60)
     staged_workflow_max_tokens: int = Field(default=12000, ge=1000, le=32000)
     staged_quality_repair_enabled: bool = True
     staged_quality_repair_max_attempts: int = Field(default=3, ge=0, le=4)
@@ -199,12 +204,10 @@ class Settings(BaseSettings):
         ge=0,
         le=1200,
     )
-    # A generic CLI Agent cannot reliably enforce an artifact-scoped repair:
-    # its native session may rediscover the repository before editing a single
-    # failed field.  Keep this opt-in until the dedicated, token-bounded repair
-    # transport is selected.  Otherwise a completed 8-20 minute run could
-    # silently become a second full Agent run.
-    external_agent_quality_repair_enabled: bool = False
+    # External repairs reuse the same run, are limited to declared failed
+    # artifacts, preserve protected bytes, and have their own short timeout.
+    # Terminal blocking is the fallback after that bounded attempt.
+    external_agent_quality_repair_enabled: bool = True
     external_agent_quality_repair_timeout_seconds: int = Field(
         default=300, ge=30, le=600
     )

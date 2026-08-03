@@ -1,0 +1,10 @@
+{
+  "$base": "valid_operational.json",
+  "mutations": [
+    {
+      "op": "set",
+      "path": "/overall_score",
+      "value": 100
+    }
+  ]
+}

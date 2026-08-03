@@ -1,0 +1,14 @@
+{
+  "schema_version": "quality-benchmark-case-v1",
+  "case_id": "perftest-roce-gid-selection-001",
+  "project_id": "perftest",
+  "truth_package_version": "1",
+  "tier": "S",
+  "truth_package": {
+    "gold_claims": {"path": "gold_claims.json", "sha256": "702f02402011f0b38fa4c16bd137415ebc95dddc0d7087f9f41383638440e66c"},
+    "coverage_universe": {"path": "coverage_universe.json", "sha256": "4ff11078c8c3f003c32437d5f167a0241e510d6e6fa8c90088d7a6a7b19fcec9"},
+    "critical_chains": {"path": "critical_chains.json", "sha256": "5d491b98b6e80d28e1b86cd178e0ccaffb16267814139a0fa8c4b97a23842708"},
+    "execution_oracles": {"path": "execution_oracles.json", "sha256": "7b7d7161658c3f1b5763831f5e3925957da29ffa442bc5ce90acbc982767f429"}
+  },
+  "test_execution": {"policy": "disabled", "commands": []}
+}

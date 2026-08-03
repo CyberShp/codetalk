@@ -1,0 +1,14 @@
+{
+  "case_id": "rdma-core-mw-remote-access-denied-001",
+  "items": [
+    {"item_id": "rdma-mw:entry", "dimension": "entrypoints", "critical": true, "applicability": "required", "evidence_refs": ["source://tests/test_qpex.py#L247-L258"]},
+    {"item_id": "rdma-mw:flow", "dimension": "flows", "critical": true, "applicability": "required", "evidence_refs": ["source://tests/test_qpex.py#L258-L285"]},
+    {"item_id": "rdma-mw:branches", "dimension": "branches", "critical": true, "applicability": "required", "evidence_refs": ["source://tests/test_qpex.py#L266-L275", "source://tests/utils.py#L406-L412"]},
+    {"item_id": "rdma-mw:states", "dimension": "states", "critical": true, "applicability": "required", "evidence_refs": ["source://tests/test_qpex.py#L261-L282", "source://tests/base.py#L712-L774"]},
+    {"item_id": "rdma-mw:resources", "dimension": "resources", "critical": true, "applicability": "required", "evidence_refs": ["source://tests/base.py#L562-L667", "source://pyverbs/mr.pyx#L314-L350", "source://pyverbs/qp.pyx#L1405-L1410"]},
+    {"item_id": "rdma-mw:boundaries", "dimension": "boundaries", "critical": true, "applicability": "required", "evidence_refs": ["source://tests/test_qpex.py#L247-L285"]},
+    {"item_id": "rdma-mw:concurrency", "dimension": "concurrency", "critical": false, "applicability": "required", "evidence_refs": ["source://tests/base.py#L337-L357"]},
+    {"item_id": "rdma-mw:errors", "dimension": "errors", "critical": true, "applicability": "required", "evidence_refs": ["source://tests/test_qpex.py#L283-L285", "source://tests/utils.py#L675-L694"]},
+    {"item_id": "rdma-mw:protocol-remote-access-denied", "dimension": "protocol", "critical": true, "applicability": "required", "description": "A generic RDMA write posted with a local-write-only memory-window rkey must complete with IBV_WC_REM_ACCESS_ERR.", "evidence_refs": ["source://tests/test_qpex.py#L276-L285"]}
+  ]
+}

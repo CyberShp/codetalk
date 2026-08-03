@@ -1,0 +1,23 @@
+{
+  "schema_version": "quality-benchmark-project-v1",
+  "project_id": "open-cas-linux",
+  "project_kind": "host-block-cache",
+  "canonical_origin": "https://github.com/Open-CAS/open-cas-linux.git",
+  "revision": "f1befa8dddf810733e720dec07c71de892951e39",
+  "tree_sha": "509e5c7987cd3c83aa213ac23b715a9180d65a6b",
+  "license": {
+    "expression": "BSD-3-Clause",
+    "evidence": "LICENSE"
+  },
+  "build_conditions": {
+    "summary": "The documented build runs ./configure, make, and make install; functional tests require at least two destructive test disks.",
+    "evidence_refs": [
+      "source://README.md#L44-L62",
+      "source://README.md#L100-L110"
+    ],
+    "not_executed": true
+  },
+  "case_ids": [
+    "open-cas-wb-default-disconnect-001"
+  ]
+}

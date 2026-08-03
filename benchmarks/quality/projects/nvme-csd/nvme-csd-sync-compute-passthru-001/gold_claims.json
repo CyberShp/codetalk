@@ -1,0 +1,36 @@
+{
+  "case_id": "nvme-csd-sync-compute-passthru-001",
+  "claims": [
+    {
+      "gold_id": "nvme-csd:sync-dispatch",
+      "semantic_key": "nvme_csd.host.sync_compute.dispatch",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "For a non-null request, csQueueComputeRequest synchronously calls xxDoComputeRequest and returns its status; xxDoComputeRequest delegates to tsp_compute_operation.",
+      "evidence_refs": [
+        "source://host/snia_cs_api/cs_api_nvme_tsp.c#L522-L524",
+        "source://host/snia_cs_api/cs_api_nvme_tsp.c#L562-L577"
+      ]
+    },
+    {
+      "gold_id": "nvme-csd:passthru-fields",
+      "semantic_key": "nvme_csd.host.sync_compute.admin_passthru_fields",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "The operation issues opcode 0xc0 with compute/userspace cdw10, synchronous cdw11=0, cdw12=req_size, a 4096-byte data buffer, and a one-hour timeout.",
+      "evidence_refs": [
+        "source://host/snia_cs_api/cs_api_nvme_tsp.c#L234-L253"
+      ]
+    },
+    {
+      "gold_id": "nvme-csd:request-bound-gap",
+      "semantic_key": "nvme_csd.host.sync_compute.request_size_bound_missing",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "This Tier S case is bounded to get_request_size(req) <= 4096; the implementation computes req_size and copies it into a 4096-byte stack buffer without enforcing that bound.",
+      "evidence_refs": [
+        "source://host/snia_cs_api/cs_api_nvme_tsp.c#L210-L244"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "case_id": "ucx-roce-reachability-mode-001",
+  "execution_plan": {"schema_version": "quality-depth-execution-v1", "case_id": "ucx-roce-reachability-mode-001", "execution_tier": "S", "policy": "disabled", "oracles": [], "limitations": []},
+  "tier_dispositions": [{"tier": "E", "status": "unavailable", "requirements": ["UCX_TEST_BUILD", "ISOLATED_ROUTE_FIXTURE"], "limitation": "EXECUTION_ENVIRONMENT_NOT_PROVISIONED"}, {"tier": "H", "status": "unavailable", "requirements": ["ROCE_DEVICE", "ROCE_FABRIC"], "limitation": "HARDWARE_ENVIRONMENT_NOT_PROVISIONED"}],
+  "execution_tier": "S",
+  "policy": "disabled",
+  "oracle": {
+    "oracle_id": "ucx:roce-reachability-static",
+    "kind": "static_source_oracle",
+    "source_path": "src/uct/ib/base/ib_iface.c",
+    "line_range": "L697-L872",
+    "status": "not_run",
+    "bounded_input_contract": ["local and remote addresses use the Ethernet/RoCE link layer", "outer PKEY checks have passed", "the interface has initialized GID and reachability configuration"],
+    "expected_observations": ["route mode returns false when no accepted route exists", "local_subnet compares prefixes except that prefix length zero accepts any address", "all mode returns true before version, address-family, GID conversion and route checks"],
+    "disconfirming_observation": "The existing test at test/gtest/uct/ib/test_ib.cc:L308-L312 covers successful local_subnet traffic only; it does not validate all mode or prove that a classifier-true peer can communicate.",
+    "test_execution": {"policy": "disabled", "commands": [], "reason": "Tier S authoring forbids third-party execution; RoCE route and traffic behavior requires a controlled multi-endpoint hardware/network setup."}
+  },
+  "l3": {"status": "not_run", "limitations": ["L3_NOT_RUN:TIER_S", "No RoCE interface, route table, GID pair, UCX endpoint, or traffic path was exercised."]},
+  "evidence_catalog": {
+    "case_id": "ucx-roce-reachability-mode-001",
+    "bindings": [
+      {"evidence_ref": "source://README.md#L148-L150:node-trigger", "chain_id": "ucx-roce-route-recovery-chain", "category": "node", "obligation_id": "route-misclassification-trigger"},
+      {"evidence_ref": "source://src/uct/ib/base/ib_iface.c#L920-L983:node-envelope", "chain_id": "ucx-roce-route-recovery-chain", "category": "node", "obligation_id": "matching-roce-envelope"},
+      {"evidence_ref": "source://src/uct/ib/base/ib_iface.c#L920-L989:node-entry", "chain_id": "ucx-roce-route-recovery-chain", "category": "node", "obligation_id": "reachability-entry"},
+      {"evidence_ref": "source://src/uct/ib/base/ib_iface.c#L968-L973:node-dispatch", "chain_id": "ucx-roce-route-recovery-chain", "category": "node", "obligation_id": "dispatch-roce-classifier"},
+      {"evidence_ref": "source://src/uct/ib/base/ib_iface.c#L1575-L1613:node-acquire", "chain_id": "ucx-roce-route-recovery-chain", "category": "node", "obligation_id": "acquire-gid-route-state"},
+      {"evidence_ref": "source://src/uct/ib/base/ib_iface.h#L213-L224:node-own", "chain_id": "ucx-roce-route-recovery-chain", "category": "node", "obligation_id": "own-iface-config-state"},
+      {"evidence_ref": "source://src/uct/ib/base/ib_iface.c#L697-L759:node-route", "chain_id": "ucx-roce-route-recovery-chain", "category": "node", "obligation_id": "evaluate-route-state"},
+      {"evidence_ref": "source://src/uct/ib/base/ib_iface.c#L748-L759:node-unreachable", "chain_id": "ucx-roce-route-recovery-chain", "category": "node", "obligation_id": "classify-peer-unreachable"},
+      {"evidence_ref": "source://src/uct/ib/base/ib_iface.c#L748-L759:node-error", "chain_id": "ucx-roce-route-recovery-chain", "category": "node", "obligation_id": "propagate-unreachable-info"},
+      {"evidence_ref": "source://README.md#L148-L150:node-recovery", "chain_id": "ucx-roce-route-recovery-chain", "category": "node", "obligation_id": "recover-with-all-mode"},
+      {"evidence_ref": "source://src/uct/ib/base/ib_iface.c#L1877-L1901:node-release", "chain_id": "ucx-roce-route-recovery-chain", "category": "node", "obligation_id": "release-old-iface-resources"},
+      {"evidence_ref": "source://src/uct/ib/base/ib_iface.c#L806-L813:node-observe", "chain_id": "ucx-roce-route-recovery-chain", "category": "node", "obligation_id": "observe-all-short-circuit"},
+      {"evidence_ref": "source://src/uct/ib/base/ib_iface.c#L697-L872:node-oracle", "chain_id": "ucx-roce-route-recovery-chain", "category": "node", "obligation_id": "static-mode-oracle"},
+      {"evidence_ref": "source://README.md#L148-L150:edge-e01", "chain_id": "ucx-roce-route-recovery-chain", "category": "edge", "obligation_id": "e01"},
+      {"evidence_ref": "source://src/uct/ib/base/ib_iface.c#L920-L983:edge-e02", "chain_id": "ucx-roce-route-recovery-chain", "category": "edge", "obligation_id": "e02"},
+      {"evidence_ref": "source://src/uct/ib/base/ib_iface.c#L968-L973:edge-e03", "chain_id": "ucx-roce-route-recovery-chain", "category": "edge", "obligation_id": "e03"},
+      {"evidence_ref": "source://src/uct/ib/base/ib_iface.c#L1575-L1613:edge-e04", "chain_id": "ucx-roce-route-recovery-chain", "category": "edge", "obligation_id": "e04"},
+      {"evidence_ref": "source://src/uct/ib/base/ib_iface.h#L213-L224:edge-e05", "chain_id": "ucx-roce-route-recovery-chain", "category": "edge", "obligation_id": "e05"},
+      {"evidence_ref": "source://src/uct/ib/base/ib_iface.c#L697-L759:edge-e06", "chain_id": "ucx-roce-route-recovery-chain", "category": "edge", "obligation_id": "e06"},
+      {"evidence_ref": "source://src/uct/ib/base/ib_iface.c#L748-L759:edge-e07", "chain_id": "ucx-roce-route-recovery-chain", "category": "edge", "obligation_id": "e07"},
+      {"evidence_ref": "source://src/uct/ib/base/ib_iface.c#L748-L759:edge-e08", "chain_id": "ucx-roce-route-recovery-chain", "category": "edge", "obligation_id": "e08"},
+      {"evidence_ref": "source://README.md#L148-L150:edge-e09", "chain_id": "ucx-roce-route-recovery-chain", "category": "edge", "obligation_id": "e09"},
+      {"evidence_ref": "source://src/uct/ib/base/ib_iface.c#L1877-L1901:edge-e10", "chain_id": "ucx-roce-route-recovery-chain", "category": "edge", "obligation_id": "e10"},
+      {"evidence_ref": "source://src/uct/ib/base/ib_iface.c#L806-L813:edge-e11", "chain_id": "ucx-roce-route-recovery-chain", "category": "edge", "obligation_id": "e11"},
+      {"evidence_ref": "source://src/uct/ib/base/ib_iface.c#L697-L872:edge-e12", "chain_id": "ucx-roce-route-recovery-chain", "category": "edge", "obligation_id": "e12"},
+      {"evidence_ref": "test://src/uct/ib/base/ib_iface.c#L806-L813:check-connectivity", "chain_id": "ucx-roce-route-recovery-chain", "category": "check", "obligation_id": "all-does-not-prove-connectivity"},
+      {"evidence_ref": "test://test/gtest/uct/ib/test_ib.cc#L305-L314:check-test-scope", "chain_id": "ucx-roce-route-recovery-chain", "category": "check", "obligation_id": "local-subnet-test-does-not-cover-all"},
+      {"evidence_ref": "oracle://src/uct/ib/base/ib_iface.c#L697-L872:tier-s-not-executed", "chain_id": "ucx-roce-route-recovery-chain", "category": "l3", "obligation_id": "execution"}
+    ]
+  }
+}

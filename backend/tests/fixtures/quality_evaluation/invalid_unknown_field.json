@@ -1,0 +1,10 @@
+{
+  "$base": "valid_operational.json",
+  "mutations": [
+    {
+      "op": "set",
+      "path": "/first_pass/accuracy/mystery",
+      "value": true
+    }
+  ]
+}

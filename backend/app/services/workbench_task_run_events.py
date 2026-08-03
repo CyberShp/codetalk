@@ -222,6 +222,8 @@ class WorkbenchTaskRunEventStore:
             return "waiting_for_input"
         if status == "cancelled":
             return "cancelled"
+        if status == "timed_out":
+            return "timed_out"
         if status in {"running", "queued", "prepared"}:
             return status
         return "failed"

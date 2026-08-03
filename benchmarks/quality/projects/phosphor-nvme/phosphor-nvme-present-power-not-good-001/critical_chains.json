@@ -1,0 +1,43 @@
+{
+  "case_id": "phosphor-nvme-present-power-not-good-001",
+  "evidence_catalog_sha256": "ed1f13ede6d3d416c534d6743dd8e5ad3bf4756f310ef08bf323821991e29fed",
+  "execution_tier": "S",
+  "chains": [
+    {
+      "chain_id": "nvme-present-power-bad-chain",
+      "nodes": [
+        {"node_id": "poll-trigger", "kind": "trigger", "statement": "A periodic Nvme::read poll starts evaluation of each configured drive.", "critical": true},
+        {"node_id": "configured-slot-precondition", "kind": "precondition_input", "statement": "The flow requires a configured NVMe slot with present and power-good GPIO definitions or defaults.", "critical": true},
+        {"node_id": "read-entry", "kind": "entry", "statement": "Nvme::read enters the per-drive GPIO and inventory update path.", "critical": true},
+        {"node_id": "gpio-read-call", "kind": "call_chain", "statement": "Nvme::read derives GPIO paths and reads present and power-good signals before branching on presence.", "critical": true},
+        {"node_id": "gpio-stream-acquire", "kind": "resource_acquisition", "statement": "Each GPIO read opens an input stream for the configured value path.", "critical": false},
+        {"node_id": "gpio-stream-own", "kind": "resource_ownership", "statement": "The GPIO helper owns its input stream while reading the pin value.", "critical": false},
+        {"node_id": "gpio-stream-release", "kind": "resource_release", "statement": "The local GPIO input stream is closed when the helper returns its sampled value.", "critical": false},
+        {"node_id": "power-bad-state-mutation", "kind": "state_resource_mutation", "statement": "A present drive with power-good false latches the power error and records a failure sample.", "critical": true},
+        {"node_id": "inventory-led-downstream", "kind": "downstream_effect", "statement": "The power-bad branch requests fault LED on, locate LED off, and inventory Present true through the serial-gated helper.", "critical": true},
+        {"node_id": "power-error-propagation", "kind": "error_propagation", "statement": "Power-good false skips SMBus access, emits the failure temperature, and advances the SMBus error count to its retry limit.", "critical": true},
+        {"node_id": "power-good-recovery", "kind": "recovery", "statement": "When power-good returns, Nvme::read clears the power-error latch and re-enters readNvmeData with SMBus enabled.", "critical": true},
+        {"node_id": "dbus-led-sensor-observation", "kind": "external_observation", "statement": "D-Bus clients observe the requested LED state, sensor availability equal to power-good, and serial-gated inventory updates.", "critical": true},
+        {"node_id": "static-source-oracle", "kind": "executable_oracle", "statement": "The source oracle covers GPIO sampling, the present/power-bad branch, helper write gates, and power-good recovery.", "critical": true}
+      ],
+      "edges": [
+        {"edge_id": "poll-to-precondition", "source_node_id": "poll-trigger", "target_node_id": "configured-slot-precondition", "statement": "Each poll enumerates the configured slot and its GPIO settings before reading state.", "critical": true},
+        {"edge_id": "precondition-to-entry", "source_node_id": "configured-slot-precondition", "target_node_id": "read-entry", "statement": "A configured drive slot is processed by Nvme::read.", "critical": true},
+        {"edge_id": "entry-to-gpio-call", "source_node_id": "read-entry", "target_node_id": "gpio-read-call", "statement": "Nvme::read calls the GPIO helper for present and power-good inputs before its presence branch.", "critical": true},
+        {"edge_id": "call-to-acquire", "source_node_id": "gpio-read-call", "target_node_id": "gpio-stream-acquire", "statement": "The GPIO helper opens the configured value file to sample the pin.", "critical": false},
+        {"edge_id": "acquire-to-own", "source_node_id": "gpio-stream-acquire", "target_node_id": "gpio-stream-own", "statement": "The helper retains the opened stream until the value has been read.", "critical": false},
+        {"edge_id": "own-to-release", "source_node_id": "gpio-stream-own", "target_node_id": "gpio-stream-release", "statement": "Returning the sampled GPIO value ends ownership of the local stream.", "critical": false},
+        {"edge_id": "release-to-mutation", "source_node_id": "gpio-stream-release", "target_node_id": "power-bad-state-mutation", "statement": "The completed present and power-good samples determine whether the power-bad latch is set.", "critical": true},
+        {"edge_id": "mutation-to-downstream", "source_node_id": "power-bad-state-mutation", "target_node_id": "inventory-led-downstream", "statement": "Entering the present/power-bad state requests the declared LED and inventory updates.", "critical": true},
+        {"edge_id": "downstream-to-error", "source_node_id": "inventory-led-downstream", "target_node_id": "power-error-propagation", "statement": "The same power-bad branch propagates failure through the sensor sample and SMBus retry state.", "critical": true},
+        {"edge_id": "error-to-recovery", "source_node_id": "power-error-propagation", "target_node_id": "power-good-recovery", "statement": "A later power-good sample clears the latched error and restores the SMBus read path.", "critical": true},
+        {"edge_id": "recovery-to-observation", "source_node_id": "power-good-recovery", "target_node_id": "dbus-led-sensor-observation", "statement": "Recovery updates the externally visible sensor availability and subsequent drive state.", "critical": true},
+        {"edge_id": "observation-to-oracle", "source_node_id": "dbus-led-sensor-observation", "target_node_id": "static-source-oracle", "statement": "The source ranges bind the observable inventory, LED, and sensor outcomes to each branch.", "critical": true}
+      ],
+      "disconfirming_checks": [
+        {"check_id": "check-present-not-absent", "statement": "The power-bad path for a detected drive passes Present true to the inventory helper; it is not the absent-drive branch.", "critical": true},
+        {"check_id": "check-inventory-write-gate", "statement": "The inventory helper writes Present and asset fields only when the sampled serial differs from the cached serial.", "critical": true}
+      ]
+    }
+  ]
+}

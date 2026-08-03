@@ -1,0 +1,55 @@
+{
+  "case_id": "rdma-core-mw-remote-access-denied-001",
+  "execution_plan": {"schema_version": "quality-depth-execution-v1", "case_id": "rdma-core-mw-remote-access-denied-001", "execution_tier": "S", "policy": "disabled", "oracles": [], "limitations": []},
+  "tier_dispositions": [{"tier": "E", "status": "unavailable", "requirements": ["PYVERBS_TEST_ENV", "SOFTWARE_RDMA_DEVICE"], "limitation": "EXECUTION_ENVIRONMENT_NOT_PROVISIONED"}, {"tier": "H", "status": "unavailable", "requirements": ["RDMA_DEVICE", "RDMA_FABRIC"], "limitation": "HARDWARE_ENVIRONMENT_NOT_PROVISIONED"}],
+  "execution_tier": "S",
+  "policy": "disabled",
+  "oracle": {
+    "oracle_id": "rdma-core:test_qp_ex_rc_bind_mw",
+    "kind": "existing_hardware_test",
+    "source_path": "tests/test_qpex.py",
+    "symbol": "QpExTestCase.test_qp_ex_rc_bind_mw",
+    "line_range": "L247-L285",
+    "status": "not_run",
+    "expected_observations": [
+      "the Type-2 MW bind completes successfully",
+      "the subsequent remote write completion is IBV_WC_REM_ACCESS_ERR",
+      "unsupported QPEx or MW capability produces SkipTest rather than a pass"
+    ],
+    "test_execution": {"policy": "disabled", "commands": [], "reason": "Tier S authoring forbids execution of third-party code and the test requires suitable RDMA hardware."}
+  },
+  "l3": {"status": "not_run", "limitations": ["L3_NOT_RUN:TIER_S", "No RDMA device, QPEx capability, Type-2 MW capability, CQ behavior, or runtime resource release was exercised."]},
+  "evidence_catalog": {
+    "case_id": "rdma-core-mw-remote-access-denied-001",
+    "bindings": [
+      {"evidence_ref": "source://tests/test_qpex.py#L247-L258:node-invoke", "chain_id": "rdma-mw-denial-chain", "category": "node", "obligation_id": "invoke-bind-mw-test"},
+      {"evidence_ref": "source://tests/test_qpex.py#L247-L265:node-contract", "chain_id": "rdma-mw-denial-chain", "category": "node", "obligation_id": "restricted-access-contract"},
+      {"evidence_ref": "source://tests/test_qpex.py#L258-L258:node-entry", "chain_id": "rdma-mw-denial-chain", "category": "node", "obligation_id": "create-rc-players"},
+      {"evidence_ref": "source://tests/base.py#L337-L357:node-call-chain", "chain_id": "rdma-mw-denial-chain", "category": "node", "obligation_id": "prepare-qps-and-work-requests"},
+      {"evidence_ref": "source://tests/base.py#L562-L667:node-acquire", "chain_id": "rdma-mw-denial-chain", "category": "node", "obligation_id": "allocate-rdma-resources"},
+      {"evidence_ref": "source://pyverbs/qp.pyx#L1405-L1410:node-own", "chain_id": "rdma-mw-denial-chain", "category": "node", "obligation_id": "retain-mw-ownership"},
+      {"evidence_ref": "source://tests/test_qpex.py#L261-L275:node-bind", "chain_id": "rdma-mw-denial-chain", "category": "node", "obligation_id": "bind-restricted-rkey"},
+      {"evidence_ref": "source://tests/test_qpex.py#L276-L282:node-write", "chain_id": "rdma-mw-denial-chain", "category": "node", "obligation_id": "post-remote-write"},
+      {"evidence_ref": "source://tests/utils.py#L675-L694:node-error", "chain_id": "rdma-mw-denial-chain", "category": "node", "obligation_id": "surface-remote-access-error"},
+      {"evidence_ref": "source://tests/base.py#L359-L371:node-teardown", "chain_id": "rdma-mw-denial-chain", "category": "node", "obligation_id": "teardown-endpoints"},
+      {"evidence_ref": "source://pyverbs/device.pyx#L180-L192:node-release", "chain_id": "rdma-mw-denial-chain", "category": "node", "obligation_id": "release-context-graph"},
+      {"evidence_ref": "source://tests/test_qpex.py#L283-L285:node-observe", "chain_id": "rdma-mw-denial-chain", "category": "node", "obligation_id": "observe-cq-status"},
+      {"evidence_ref": "source://tests/test_qpex.py#L247-L285:node-oracle", "chain_id": "rdma-mw-denial-chain", "category": "node", "obligation_id": "assert-exact-denial"},
+      {"evidence_ref": "source://tests/test_qpex.py#L247-L265:edge-e01", "chain_id": "rdma-mw-denial-chain", "category": "edge", "obligation_id": "e01"},
+      {"evidence_ref": "source://tests/test_qpex.py#L258-L258:edge-e02", "chain_id": "rdma-mw-denial-chain", "category": "edge", "obligation_id": "e02"},
+      {"evidence_ref": "source://tests/base.py#L337-L357:edge-e03", "chain_id": "rdma-mw-denial-chain", "category": "edge", "obligation_id": "e03"},
+      {"evidence_ref": "source://tests/base.py#L562-L667:edge-e04", "chain_id": "rdma-mw-denial-chain", "category": "edge", "obligation_id": "e04"},
+      {"evidence_ref": "source://pyverbs/mr.pyx#L314-L329:edge-e05", "chain_id": "rdma-mw-denial-chain", "category": "edge", "obligation_id": "e05"},
+      {"evidence_ref": "source://pyverbs/qp.pyx#L1405-L1410:edge-e06", "chain_id": "rdma-mw-denial-chain", "category": "edge", "obligation_id": "e06"},
+      {"evidence_ref": "source://tests/test_qpex.py#L261-L282:edge-e07", "chain_id": "rdma-mw-denial-chain", "category": "edge", "obligation_id": "e07"},
+      {"evidence_ref": "source://tests/test_qpex.py#L276-L285:edge-e08", "chain_id": "rdma-mw-denial-chain", "category": "edge", "obligation_id": "e08"},
+      {"evidence_ref": "source://tests/base.py#L359-L371:edge-e09", "chain_id": "rdma-mw-denial-chain", "category": "edge", "obligation_id": "e09"},
+      {"evidence_ref": "source://pyverbs/device.pyx#L180-L192:edge-e10", "chain_id": "rdma-mw-denial-chain", "category": "edge", "obligation_id": "e10"},
+      {"evidence_ref": "source://tests/test_qpex.py#L283-L285:edge-e11", "chain_id": "rdma-mw-denial-chain", "category": "edge", "obligation_id": "e11"},
+      {"evidence_ref": "source://tests/test_qpex.py#L247-L285:edge-e12", "chain_id": "rdma-mw-denial-chain", "category": "edge", "obligation_id": "e12"},
+      {"evidence_ref": "test://tests/test_qpex.py#L261-L285:check-bind-first", "chain_id": "rdma-mw-denial-chain", "category": "check", "obligation_id": "bind-must-complete-before-denial"},
+      {"evidence_ref": "test://tests/test_qpex.py#L266-L285:check-skip", "chain_id": "rdma-mw-denial-chain", "category": "check", "obligation_id": "unsupported-capability-is-not-pass"},
+      {"evidence_ref": "oracle://tests/test_qpex.py#L247-L285:tier-s-not-executed", "chain_id": "rdma-mw-denial-chain", "category": "l3", "obligation_id": "execution"}
+    ]
+  }
+}

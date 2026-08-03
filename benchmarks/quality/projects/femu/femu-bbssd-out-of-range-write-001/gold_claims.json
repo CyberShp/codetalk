@@ -1,0 +1,29 @@
+{
+  "case_id": "femu-bbssd-out-of-range-write-001",
+  "claims": [
+    {
+      "gold_id": "femu-bbssd:range-rejection",
+      "semantic_key": "femu.bbssd.write.out_of_range.status",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "A BBSSD write whose exclusive end LBA exceeds namespace size is rejected with NVME_LBA_RANGE | NVME_DNR after an error-page record is created.",
+      "evidence_refs": [
+        "source://hw/femu/bbssd/bb.c#L85-L99",
+        "source://hw/femu/nvme-io.c#L443-L466",
+        "source://hw/femu/nvme-util.c#L204-L214"
+      ]
+    },
+    {
+      "gold_id": "femu-bbssd:failed-request-completion",
+      "semantic_key": "femu.bbssd.write.failed_request.completion",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "The failed request keeps its error status, bypasses FTL opcode handlers, traverses the completion rings, posts a CQE, and returns to the submission-queue request list.",
+      "evidence_refs": [
+        "source://hw/femu/nvme-io.c#L159-L202",
+        "source://hw/femu/bbssd/ftl.c#L2773-L2819",
+        "source://hw/femu/nvme-io.c#L267-L293"
+      ]
+    }
+  ]
+}

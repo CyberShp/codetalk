@@ -1,0 +1,43 @@
+{
+  "case_id": "rdma-core-mw-remote-access-denied-001",
+  "evidence_catalog_sha256": "79071587b121a4462d601c7c47daa3510b1cb4af74994c085a5625883bd12675",
+  "execution_tier": "S",
+  "chains": [
+    {
+      "chain_id": "rdma-mw-denial-chain",
+      "nodes": [
+        {"node_id": "invoke-bind-mw-test", "kind": "trigger", "statement": "QpExRCBindMw starts the Type-2 memory-window access-control test.", "critical": true},
+        {"node_id": "restricted-access-contract", "kind": "precondition_input", "statement": "The test binds a Type-2 MW over the full MR with local-write access but without remote-write access.", "critical": true},
+        {"node_id": "create-rc-players", "kind": "entry", "statement": "The test enters by creating RC extended-QP client and server players.", "critical": true},
+        {"node_id": "prepare-qps-and-work-requests", "kind": "call_chain", "statement": "The players prepare QPs, the MW bind work request, and the subsequent RDMA write work request.", "critical": true},
+        {"node_id": "allocate-rdma-resources", "kind": "resource_acquisition", "statement": "Setup acquires endpoint contexts, PD/MR resources, QPs, completion queues, and a Type-2 MW.", "critical": true},
+        {"node_id": "retain-mw-ownership", "kind": "resource_ownership", "statement": "The MW is retained by its protection domain and QP ownership graph until teardown.", "critical": true},
+        {"node_id": "bind-restricted-rkey", "kind": "state_resource_mutation", "statement": "The test increments the MW rkey and successfully binds the MR with only IBV_ACCESS_LOCAL_WRITE.", "critical": true},
+        {"node_id": "post-remote-write", "kind": "downstream_effect", "statement": "After successful bind completion, the client posts an RDMA write using the restricted MW rkey.", "critical": true},
+        {"node_id": "surface-remote-access-error", "kind": "error_propagation", "statement": "Polling the client completion surfaces IBV_WC_REM_ACCESS_ERR for that remote write.", "critical": true},
+        {"node_id": "teardown-endpoints", "kind": "cleanup_recovery", "statement": "Test teardown closes both endpoint contexts after the denial result or an error.", "critical": true},
+        {"node_id": "release-context-graph", "kind": "resource_release", "statement": "Context.close releases dependent resources before closing each RDMA device context.", "critical": true},
+        {"node_id": "observe-cq-status", "kind": "external_observation", "statement": "The observable client work completion has status IBV_WC_REM_ACCESS_ERR.", "critical": true},
+        {"node_id": "assert-exact-denial", "kind": "executable_oracle", "statement": "The pyverbs test requires successful MW bind completion followed by the exact remote-access denial status.", "critical": true}
+      ],
+      "edges": [
+        {"edge_id": "e01", "source_node_id": "invoke-bind-mw-test", "target_node_id": "restricted-access-contract", "statement": "The test invocation constructs a local-write-only MW access contract.", "critical": true},
+        {"edge_id": "e02", "source_node_id": "restricted-access-contract", "target_node_id": "create-rc-players", "statement": "The restricted MW contract is exercised by newly created RC extended-QP players.", "critical": true},
+        {"edge_id": "e03", "source_node_id": "create-rc-players", "target_node_id": "prepare-qps-and-work-requests", "statement": "The RC players prepare their QPs and bind/write work requests.", "critical": true},
+        {"edge_id": "e04", "source_node_id": "prepare-qps-and-work-requests", "target_node_id": "allocate-rdma-resources", "statement": "Preparing the operation requires allocation of contexts, memory, queues, and the MW.", "critical": true},
+        {"edge_id": "e05", "source_node_id": "allocate-rdma-resources", "target_node_id": "retain-mw-ownership", "statement": "The allocated MW remains owned through its PD and QP for the test lifetime.", "critical": true},
+        {"edge_id": "e06", "source_node_id": "retain-mw-ownership", "target_node_id": "bind-restricted-rkey", "statement": "The retained MW is rebound with a new rkey and local-write-only permissions.", "critical": true},
+        {"edge_id": "e07", "source_node_id": "bind-restricted-rkey", "target_node_id": "post-remote-write", "statement": "Only after a successful bind completion does the test post the remote write with the restricted rkey.", "critical": true},
+        {"edge_id": "e08", "source_node_id": "post-remote-write", "target_node_id": "surface-remote-access-error", "statement": "The posted remote write completes with the remote-access error caused by the restricted MW permissions.", "critical": true},
+        {"edge_id": "e09", "source_node_id": "surface-remote-access-error", "target_node_id": "teardown-endpoints", "statement": "After observing or raising on the completion status, teardown closes both endpoints.", "critical": true},
+        {"edge_id": "e10", "source_node_id": "teardown-endpoints", "target_node_id": "release-context-graph", "statement": "Endpoint teardown releases each context's dependent ownership graph.", "critical": true},
+        {"edge_id": "e11", "source_node_id": "release-context-graph", "target_node_id": "observe-cq-status", "statement": "The test preserves the polled completion status as its observable denial result before resource release completes.", "critical": true},
+        {"edge_id": "e12", "source_node_id": "observe-cq-status", "target_node_id": "assert-exact-denial", "statement": "The oracle compares the observed completion status to IBV_WC_REM_ACCESS_ERR.", "critical": true}
+      ],
+      "disconfirming_checks": [
+        {"check_id": "bind-must-complete-before-denial", "statement": "The MW bind completion must succeed before the later remote write denial can count as evidence.", "critical": true},
+        {"check_id": "unsupported-capability-is-not-pass", "statement": "EOPNOTSUPP during QPEx or MW setup becomes SkipTest and cannot be classified as a passing denial.", "critical": true}
+      ]
+    }
+  ]
+}

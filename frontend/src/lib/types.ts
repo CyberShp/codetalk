@@ -1066,6 +1066,8 @@ export interface PreparedWorkbenchTaskRun {
     updated_at?: string;
     started_at?: string;
     completed_at?: string;
+    quality_repair_attempt?: number;
+    quality_repair_max_attempts?: number;
   };
   acceptance_audit?: {
     status?: string;
@@ -1154,6 +1156,45 @@ export interface WorkbenchQualityAxis {
   verified?: number;
   contradicted?: number;
   insufficient?: number;
+}
+
+export type QualityEvaluationScope = "operational" | "independent_benchmark";
+export type QualityEvaluationAxisStatus = "pass" | "limited" | "fail";
+
+export interface QualityEvaluationMetric { name: string; numerator: number; denominator: number; }
+export interface QualityEvaluationLayer {
+  status: "pass" | "fail" | "not_run" | "not_applicable";
+  numerator: number;
+  denominator: number;
+  limitations: string[];
+}
+export interface QualityEvaluationAxis {
+  status: QualityEvaluationAxisStatus;
+  numerator: number;
+  denominator: number;
+  critical_misses: Array<{
+    item_id: string;
+    public_label?: string;
+    reason: string;
+    recommended_action?: string;
+    validation_layer: "L0" | "L1" | "L2" | "L3";
+  }>;
+  limitations: string[];
+  validation_layers: Record<"L0" | "L1" | "L2" | "L3", QualityEvaluationLayer>;
+  metrics: QualityEvaluationMetric[];
+}
+export interface QualityEvaluationSnapshot { accuracy: QualityEvaluationAxis; breadth: QualityEvaluationAxis; depth: QualityEvaluationAxis; }
+export interface QualityEvaluationReport {
+  schema_version: "quality-evaluation-v1";
+  scope: QualityEvaluationScope;
+  run_ref: string;
+  benchmark_identity: { case_id: string; source_revision: string; truth_package_version: string } | null;
+  delivery_status: "ready" | "limited" | "not_ready";
+  first_pass: QualityEvaluationSnapshot;
+  final_after_auto_repair: QualityEvaluationSnapshot;
+  repair_summary: { attempt_count: number; elapsed_seconds: number; terminal_block_reason: string | null; };
+  hard_failures: Array<{ code: string; message: string; unrecoverable: boolean }>;
+  limitations: string[];
 }
 
 export interface WorkbenchTaskRunEvent {

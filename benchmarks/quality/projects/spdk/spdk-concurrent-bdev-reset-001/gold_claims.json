@@ -1,0 +1,35 @@
+{
+  "case_id": "spdk-concurrent-bdev-reset-001",
+  "claims": [
+    {
+      "gold_id": "spdk-reset:concurrent-queue",
+      "semantic_key": "spdk.bdev_nvme.concurrent_reset.pending_queue",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "When a second bdev reset reaches the app-thread reset handler while the controller reset function reports -EBUSY, its bdev I/O is appended to pending_resets and the handler returns.",
+      "evidence_refs": [
+        "source://module/bdev/nvme/bdev_nvme.c#L3162-L3182"
+      ]
+    },
+    {
+      "gold_id": "spdk-reset:pending-completion",
+      "semantic_key": "spdk.bdev_nvme.concurrent_reset.pending_completion",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "Completing a controller reset drains pending_resets, removes each queued bdev I/O, and resumes it with success or failure derived from the controller-reset outcome.",
+      "evidence_refs": [
+        "source://module/bdev/nvme/bdev_nvme.c#L2143-L2157"
+      ]
+    },
+    {
+      "gold_id": "spdk-reset:unit-oracle",
+      "semantic_key": "spdk.bdev_nvme.concurrent_reset.test_pending_reset_oracle",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "test_pending_reset covers both successful concurrent reset completion and a controller-removal failure path for both reset I/Os.",
+      "evidence_refs": [
+        "source://test/unit/lib/bdev/nvme/bdev_nvme.c/bdev_nvme_ut.c#L1945-L2106"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,183 @@
+{
+  "case_id": "spdk-concurrent-bdev-reset-001",
+  "evidence_catalog_sha256": "0c72c6b8ba90054136a981163db8f8d061a244a4373df6ddb9a522831cb490f8",
+  "execution_tier": "S",
+  "chains": [
+    {
+      "chain_id": "spdk-reset-chain",
+      "nodes": [
+        {
+          "node_id": "trigger",
+          "kind": "trigger",
+          "statement": "The unit flow submits a second bdev reset while the first controller reset is still active.",
+          "critical": true
+        },
+        {
+          "node_id": "bounded-input",
+          "kind": "precondition_input",
+          "statement": "The controller-reset function reports EBUSY for the concurrent reset request.",
+          "critical": true
+        },
+        {
+          "node_id": "api-entry",
+          "kind": "entry",
+          "statement": "The bdev reset request enters bdev_nvme_reset and is dispatched toward controller reset handling.",
+          "critical": true
+        },
+        {
+          "node_id": "call-chain",
+          "kind": "call_chain",
+          "statement": "The reset path sends work to the app-thread reset handler before invoking the controller reset.",
+          "critical": true
+        },
+        {
+          "node_id": "acquire-resource",
+          "kind": "resource_acquisition",
+          "statement": "The app-thread handler acquires the controller and bdev I/O context needed to manage the reset.",
+          "critical": true
+        },
+        {
+          "node_id": "own-resource",
+          "kind": "resource_ownership",
+          "statement": "The controller's pending_resets queue retains ownership of the concurrent bdev I/O until reset completion.",
+          "critical": true
+        },
+        {
+          "node_id": "mutate-state",
+          "kind": "state_resource_mutation",
+          "statement": "An EBUSY controller reset appends the concurrent bdev I/O to pending_resets and returns.",
+          "critical": true
+        },
+        {
+          "node_id": "downstream-effect",
+          "kind": "downstream_effect",
+          "statement": "Controller reset completion drains every bdev I/O from pending_resets.",
+          "critical": true
+        },
+        {
+          "node_id": "propagate-error",
+          "kind": "error_propagation",
+          "statement": "Each drained pending reset receives success or failure derived from the controller-reset result.",
+          "critical": true
+        },
+        {
+          "node_id": "recover-cleanup",
+          "kind": "cleanup_recovery",
+          "statement": "The completion loop removes each queued request and resumes its bdev I/O completion path.",
+          "critical": true
+        },
+        {
+          "node_id": "release-resource",
+          "kind": "resource_release",
+          "statement": "Reset completion unfreezes the relevant I/O paths and completes the retained reset request resources.",
+          "critical": true
+        },
+        {
+          "node_id": "external-observation",
+          "kind": "external_observation",
+          "statement": "test_pending_reset observes both reset I/Os succeed normally and both fail after controller removal.",
+          "critical": true
+        },
+        {
+          "node_id": "oracle",
+          "kind": "executable_oracle",
+          "statement": "The test_pending_reset unit test is the source-backed oracle for concurrent reset queuing and completion.",
+          "critical": true
+        }
+      ],
+      "edges": [
+        {
+          "edge_id": "e01",
+          "source_node_id": "trigger",
+          "target_node_id": "bounded-input",
+          "statement": "Submitting the second reset while the first is active causes the controller reset path to return EBUSY.",
+          "critical": true
+        },
+        {
+          "edge_id": "e02",
+          "source_node_id": "bounded-input",
+          "target_node_id": "api-entry",
+          "statement": "The bounded concurrent reset request reaches bdev_nvme_reset with the first reset still active.",
+          "critical": true
+        },
+        {
+          "edge_id": "e03",
+          "source_node_id": "api-entry",
+          "target_node_id": "call-chain",
+          "statement": "bdev_nvme_reset dispatches the request through the app-thread reset call chain.",
+          "critical": true
+        },
+        {
+          "edge_id": "e04",
+          "source_node_id": "call-chain",
+          "target_node_id": "acquire-resource",
+          "statement": "The app-thread handler resolves the controller context before attempting controller reset.",
+          "critical": true
+        },
+        {
+          "edge_id": "e05",
+          "source_node_id": "acquire-resource",
+          "target_node_id": "own-resource",
+          "statement": "When the controller is busy, its pending queue retains the acquired bdev I/O context.",
+          "critical": true
+        },
+        {
+          "edge_id": "e06",
+          "source_node_id": "own-resource",
+          "target_node_id": "mutate-state",
+          "statement": "The controller-owned queue is mutated by appending the concurrent reset request.",
+          "critical": true
+        },
+        {
+          "edge_id": "e07",
+          "source_node_id": "mutate-state",
+          "target_node_id": "downstream-effect",
+          "statement": "The queued state is later consumed when controller reset completion drains pending_resets.",
+          "critical": true
+        },
+        {
+          "edge_id": "e08",
+          "source_node_id": "downstream-effect",
+          "target_node_id": "propagate-error",
+          "statement": "Draining each pending request propagates the controller-reset success or failure result.",
+          "critical": true
+        },
+        {
+          "edge_id": "e09",
+          "source_node_id": "propagate-error",
+          "target_node_id": "recover-cleanup",
+          "statement": "After assigning the reset result, the loop removes and resumes each queued bdev I/O.",
+          "critical": true
+        },
+        {
+          "edge_id": "e10",
+          "source_node_id": "recover-cleanup",
+          "target_node_id": "release-resource",
+          "statement": "Resuming queued resets leads to unfreezing and completion of retained reset resources.",
+          "critical": true
+        },
+        {
+          "edge_id": "e11",
+          "source_node_id": "release-resource",
+          "target_node_id": "external-observation",
+          "statement": "Completing and releasing both reset requests produces the success or failure values asserted by the test.",
+          "critical": true
+        },
+        {
+          "edge_id": "e12",
+          "source_node_id": "external-observation",
+          "target_node_id": "oracle",
+          "statement": "The observed pair of reset results is asserted by test_pending_reset in both normal and removal paths.",
+          "critical": true
+        }
+      ],
+      "disconfirming_checks": [
+        {
+          "check_id": "controller-removal-failure",
+          "statement": "Removing the controller during reset must make both the active and pending reset I/Os fail rather than pass.",
+          "critical": true
+        }
+      ]
+    }
+  ]
+}

@@ -7149,7 +7149,7 @@ async def test_workbench_prepare_task_run_api(workbench_client):
     assert body["agent_runs"][0]["step_id"] == "collect_mr"
 
 
-async def test_workbench_prepare_task_run_api_lazily_materializes_rerun_plan(
+async def test_prepared_task_run_materializes_plan_but_cannot_manual_rerun_before_terminal(
     workbench_client,
     tmp_path,
 ):
@@ -7193,7 +7193,19 @@ async def test_workbench_prepare_task_run_api_lazily_materializes_rerun_plan(
         f"/api/workbench/task-runs/{task_run_id}/rerun-plan/validation"
     )
     assert validation.status_code == 200
-    assert validation.json()["can_rerun"] is True
+    assert validation.json()["can_rerun"] is False
+    terminal_check = next(
+        item
+        for item in validation.json()["checks"]
+        if item["id"] == "runtime_terminal_status"
+    )
+    assert terminal_check["status"] == "blocked"
+    execute = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/rerun-plan/execute",
+        json={"timeout_sec": 10},
+    )
+    assert execute.status_code == 409
+    assert "尚未进入终态" in execute.json()["detail"]
 
 
 async def test_workbench_prepare_task_run_api_rejects_missing_required_input(workbench_client, tmp_path):
@@ -9160,6 +9172,18 @@ async def test_run_ui_distinguishes_completed_quality_block_from_runtime_failure
     status = _task_run_ui_status(execution={"status": "quality_blocked"}, nodes=[])
 
     assert status == {"status": "quality_blocked", "label": "执行完成，质量待修复"}
+
+
+async def test_run_ui_preserves_timeout_even_when_a_node_has_failed():
+    from app.api.agent_workbench import _task_run_ui_status, _task_run_ui_status_label
+
+    status = _task_run_ui_status(
+        execution={"status": "timed_out"},
+        nodes=[{"status_label": "运行失败"}],
+    )
+
+    assert status == {"status": "timed_out", "label": "运行超时"}
+    assert _task_run_ui_status_label("timed_out") == "运行超时"
 
 
 async def test_public_stage_progress_keeps_only_cockpit_fields(tmp_path):

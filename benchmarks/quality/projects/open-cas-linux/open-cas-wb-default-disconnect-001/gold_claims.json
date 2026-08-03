@@ -1,0 +1,36 @@
+{
+  "case_id": "open-cas-wb-default-disconnect-001",
+  "claims": [
+    {
+      "gold_id": "open-cas:default-flush",
+      "semantic_key": "open_cas.disconnect.default.flush_dirty_data",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "The default userspace disconnect sets flush_data=true; the kernel path prevents new dirty data and flushes a running cache before locking and stopping it.",
+      "evidence_refs": [
+        "source://casadm/cas_lib.c#L1171-L1198",
+        "source://modules/cas_cache/layer_cache_management.c#L3596-L3611"
+      ]
+    },
+    {
+      "gold_id": "open-cas:ioctl-routing",
+      "semantic_key": "open_cas.disconnect.ioctl.kernel_routing",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "KCAS_IOCTL_DISCONNECT_CACHE maps the userspace pass-through and flush flags into cache_mngt_disconnect_cache.",
+      "evidence_refs": [
+        "source://modules/cas_cache/service_ui_ioctl.c#L436-L449"
+      ]
+    },
+    {
+      "gold_id": "open-cas:default-oracle",
+      "semantic_key": "open_cas.disconnect.default.functional_oracle",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "test_disconnect_default constructs a dirty WB cache, disconnects with default flags, and after reconnect checks frozen exported queues, zero dirty blocks, and unchanged core CRCs.",
+      "evidence_refs": [
+        "source://test/functional/tests/disconnect/test_disconnect.py#L67-L116"
+      ]
+    }
+  ]
+}

@@ -7518,7 +7518,7 @@ def test_quality_retry_maps_combined_report_findings_to_declared_report(tmp_path
     assert bundle["quality_retry_required_artifacts"] == ["report.md"]
 
 
-def test_quality_retry_affected_artifacts_are_computed_before_issue_detail_limit(tmp_path):
+def test_quality_retry_preserves_every_failed_obligation_and_affected_artifact(tmp_path):
     from app.services.workbench_workflow_runner import _inject_prior_step_context
 
     task_dir = tmp_path / "task"
@@ -7545,8 +7545,9 @@ def test_quality_retry_affected_artifacts_are_computed_before_issue_detail_limit
 
     feedback = json.loads((artifact_dir / "task_bundle.json").read_text())["retry_quality_feedback"]
     assert feedback["affected_artifacts"] == ["sfmea.json", "black_box_cases.json"]
-    assert feedback["issues_truncated"] is True
+    assert feedback["issues_truncated"] is False
     assert feedback["total_issue_count"] == 51
+    assert len(feedback["issues"]) == 51
     assert feedback["protected_artifacts"] == []
 
 
@@ -7586,8 +7587,11 @@ def test_external_agent_quality_repair_is_artifact_scoped_and_snapshotted(
     artifact_dir.mkdir(parents=True)
     (artifact_dir / "sfmea.json").write_text("[]", encoding="utf-8")
     (artifact_dir / "black_box_cases.json").write_text("[]", encoding="utf-8")
+    (artifact_dir / "evidence_cards.json").write_text(
+        '[{"evidence_id":"accepted"}]', encoding="utf-8"
+    )
     (artifact_dir / "task_bundle.json").write_text(json.dumps({
-        "required_artifacts": ["sfmea.json", "black_box_cases.json"],
+        "required_artifacts": ["sfmea.json", "black_box_cases.json", "evidence_cards.json"],
     }), encoding="utf-8")
     (artifact_dir / "agent_run.json").write_text(json.dumps({
         "run_id": "run-1", "turn_id": "turn_1", "provider": "local-python",
@@ -7595,6 +7599,9 @@ def test_external_agent_quality_repair_is_artifact_scoped_and_snapshotted(
 
     def fake_execute(self, session_id, **kwargs):
         assert session_id == "run-1"
+        (artifact_dir / "evidence_cards.json").write_text(
+            '[{"evidence_id":"rewritten"}]', encoding="utf-8"
+        )
         return SimpleNamespace(status="completed")
 
     monkeypatch.setattr(
@@ -7629,10 +7636,71 @@ def test_external_agent_quality_repair_is_artifact_scoped_and_snapshotted(
     assert result["repair_artifacts"] == ["sfmea.json", "black_box_cases.json"]
     bundle = json.loads((artifact_dir / "task_bundle.json").read_text(encoding="utf-8"))
     assert bundle["quality_retry_required_artifacts"] == ["sfmea.json", "black_box_cases.json"]
-    assert bundle["retry_quality_feedback"]["protected_artifacts"] == []
+    assert bundle["retry_quality_feedback"]["protected_artifacts"] == ["evidence_cards.json"]
     assert "只修改" in bundle["retry_quality_feedback"]["instruction"]
     assert json.loads((artifact_dir / "agent_run.json").read_text())["turn_id"].startswith("quality_repair_")
     assert result["snapshot"]["sfmea.json"] == b"[]"
+    assert json.loads((artifact_dir / "evidence_cards.json").read_text())[0][
+        "evidence_id"
+    ] == "accepted"
+
+
+def test_external_agent_quality_repair_restores_all_artifacts_when_harness_raises(
+    tmp_path, monkeypatch
+):
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+
+    artifact_dir = tmp_path / "task" / "agent_runs" / "analyze"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "sfmea.json").write_text('[{"state":"accepted"}]', encoding="utf-8")
+    (artifact_dir / "evidence_cards.json").write_text(
+        '[{"evidence_id":"accepted"}]', encoding="utf-8"
+    )
+    (artifact_dir / "task_bundle.json").write_text(
+        json.dumps({"required_artifacts": ["sfmea.json", "evidence_cards.json"]}),
+        encoding="utf-8",
+    )
+    (artifact_dir / "agent_run.json").write_text(
+        json.dumps({"run_id": "run-1", "turn_id": "turn_1", "provider": "local-python"}),
+        encoding="utf-8",
+    )
+
+    def fake_execute(self, session_id, **kwargs):
+        (artifact_dir / "sfmea.json").write_text('[{"state":"overwritten"}]', encoding="utf-8")
+        (artifact_dir / "evidence_cards.json").write_text(
+            '[{"evidence_id":"overwritten"}]', encoding="utf-8"
+        )
+        raise RuntimeError("provider failed")
+
+    monkeypatch.setattr(
+        "app.services.workbench_workflow_runner.AgentHarnessFacade.execute",
+        fake_execute,
+    )
+    task_run = SimpleNamespace(
+        agent_runs=[{
+            "step_id": "analyze", "provider": "local-python",
+            "artifact_dir": str(artifact_dir),
+        }],
+    )
+    audit = {
+        "status": "needs_rework",
+        "issues": [{"artifact": "sfmea.json", "code": "bad_sfmea"}],
+    }
+
+    with pytest.raises(RuntimeError, match="provider failed"):
+        WorkbenchWorkflowRunner(tmp_path / "task_runs")._attempt_external_agent_quality_repair(
+            task_run=task_run,
+            step_results=[{
+                "step_id": "analyze", "type": "agent_task", "status": "completed",
+                "provider": "local-python", "artifact_dir": str(artifact_dir),
+            }],
+            audit=audit,
+        )
+
+    assert json.loads((artifact_dir / "sfmea.json").read_text())[0]["state"] == "accepted"
+    assert json.loads((artifact_dir / "evidence_cards.json").read_text())[0][
+        "evidence_id"
+    ] == "accepted"
 
 
 def test_quality_retry_restores_protected_artifacts_when_agent_step_raises(tmp_path, monkeypatch):
@@ -8499,24 +8567,13 @@ def test_sync_deadline_reports_a_worker_that_exits_without_a_result():
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX fork behavior is under test")
-def test_sync_deadline_avoids_forking_quality_audit_from_a_background_thread(monkeypatch):
-    """FastAPI executes this lifecycle from a worker thread in production.
-
-    Forking a multithreaded Python process is unsafe on macOS and can make the
-    child exit before it writes its audit result.  The local audit itself is
-    bounded by the workflow deadline, so the worker-thread path must run it
-    without creating a nested fork.
-    """
-    import app.services.workbench_workflow_runner as runner_module
+def test_sync_deadline_remains_interruptible_from_a_background_thread():
+    """The profile wall clock is a harder bound than the prior no-fork preference."""
     from app.services.workbench_workflow_runner import (
         _run_async_blocking,
         _run_sync_with_absolute_deadline,
     )
 
-    def unexpected_fork(*_args, **_kwargs):
-        raise AssertionError("background quality audit must not fork")
-
-    monkeypatch.setattr(runner_module.multiprocessing, "get_context", unexpected_fork)
     result: dict[str, object] = {}
 
     async def lifecycle():
@@ -8534,6 +8591,116 @@ def test_sync_deadline_avoids_forking_quality_audit_from_a_background_thread(mon
 
     assert not thread.is_alive()
     assert result["value"] == "quality-audit-result"
+
+
+def test_windows_sync_deadline_uses_an_interruptible_spawn_worker(monkeypatch):
+    from app.services.workbench_workflow_runner import (
+        _run_async_blocking,
+        _run_sync_with_absolute_deadline,
+    )
+    import app.services.workbench_workflow_runner as runner_module
+
+    monkeypatch.setattr(
+        runner_module,
+        "_deadline_process_start_method",
+        lambda: "spawn",
+    )
+    monkeypatch.setattr(
+        runner_module.settings,
+        "staged_workflow_shutdown_grace_seconds",
+        0.05,
+    )
+
+    async def lifecycle():
+        return await _run_sync_with_absolute_deadline(
+            lambda: time.sleep(60),
+            deadline=time.monotonic() + 0.1,
+        )
+
+    started = time.monotonic()
+    with pytest.raises(asyncio.TimeoutError):
+        _run_async_blocking(lifecycle())
+
+    assert time.monotonic() - started < 1
+
+
+def test_windows_quality_audit_spawn_request_does_not_serialize_production_runner(
+    tmp_path, monkeypatch
+):
+    from app.services.workbench_task_run import PreparedWorkbenchTaskRun
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+    import app.services.workbench_workflow_runner as runner_module
+
+    root = tmp_path / "task_runs"
+    artifact_dir = root / "run-production-shape"
+    artifact_dir.mkdir(parents=True)
+    task_run = PreparedWorkbenchTaskRun(
+        task_run_id="run-production-shape",
+        workflow_id="workflow",
+        workspace_id="workspace",
+        repo_path=str(tmp_path),
+        artifact_dir=str(artifact_dir),
+        workflow_snapshot={},
+        input_snapshot={},
+        task_bundle={},
+    )
+    (artifact_dir / "task_run.json").write_text(
+        json.dumps(asdict(task_run)),
+        encoding="utf-8",
+    )
+    cancellation = threading.Event()
+    runner = WorkbenchWorkflowRunner(root, is_cancelled=lambda: cancellation.is_set())
+    monkeypatch.setattr(
+        runner_module,
+        "_deadline_process_start_method",
+        lambda: "spawn",
+    )
+
+    result = runner._audit_test_activity_quality_before_deadline(
+        task_run=task_run,
+        deadline_monotonic=time.monotonic() + 5,
+    )
+
+    assert result == {}
+
+
+def test_spawned_quality_audit_preserves_the_effective_staged_artifact_directory(
+    tmp_path,
+):
+    from app.services.workbench_task_run import PreparedWorkbenchTaskRun
+    from app.services.workbench_workflow_runner import (
+        WorkbenchWorkflowRunner,
+        _load_spawned_quality_audit_task,
+    )
+
+    root = tmp_path / "task_runs"
+    persisted_dir = root / "run-staged-view"
+    staged_dir = persisted_dir / "agent_runs" / "analyze"
+    staged_dir.mkdir(parents=True)
+    task_run = PreparedWorkbenchTaskRun(
+        task_run_id="run-staged-view",
+        workflow_id="workflow",
+        workspace_id="workspace",
+        repo_path=str(tmp_path),
+        artifact_dir=str(persisted_dir),
+        workflow_snapshot={},
+        input_snapshot={},
+        task_bundle={},
+    )
+    (persisted_dir / "task_run.json").write_text(
+        json.dumps(asdict(task_run)),
+        encoding="utf-8",
+    )
+    runner = WorkbenchWorkflowRunner(root)
+    request = runner._quality_audit_spawn_request(
+        task_run.__class__(**{**asdict(task_run), "artifact_dir": str(staged_dir)})
+    )
+
+    loaded = _load_spawned_quality_audit_task(runner, request or {})
+
+    assert loaded.task_run_id == task_run.task_run_id
+    assert loaded.artifact_dir == str(staged_dir.resolve())
+    assert runner.store.load(task_run.task_run_id).artifact_dir == str(persisted_dir)
 
 
 @pytest.mark.parametrize(

@@ -1,0 +1,17 @@
+{
+  "schema_version": "quality-benchmark-case-v1",
+  "case_id": "bmcweb-redfish-reset-action-info-001",
+  "project_id": "bmcweb",
+  "truth_package_version": "1",
+  "tier": "S",
+  "truth_package": {
+    "gold_claims": {"path": "gold_claims.json", "sha256": "98015e1f4c75902b1685ed03b7f5739f6d4445cb0b3077545d1bbc22f65683cf"},
+    "coverage_universe": {"path": "coverage_universe.json", "sha256": "e6be03f80a4d3814525600ab36028e0e178ca57729a36412f3f7504a07361034"},
+    "critical_chains": {"path": "critical_chains.json", "sha256": "32d31e8bb5eedf9fd7b13cf749d0b9fc363e641ab5c6c4fbdec90643fb1ca95d"},
+    "execution_oracles": {"path": "execution_oracles.json", "sha256": "594a4e49700564cbfcce5e43e1ebce4b94b2d64fa89c5fac256713d2d2df4762"}
+  },
+  "test_execution": {
+    "policy": "allowlisted",
+    "commands": ["meson test -C builddir system_test --test-args='--gtest_filter=GetAllowedHostTransition.*' --print-errorlogs"]
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "schema_version": "quality-benchmark-case-v1",
+  "case_id": "ucx-roce-reachability-mode-001",
+  "project_id": "ucx",
+  "truth_package_version": "1",
+  "tier": "S",
+  "truth_package": {
+    "gold_claims": {"path": "gold_claims.json", "sha256": "a884965d79602df301fc311033f65b9887e7e484de490a58bc703d9b8d386d4f"},
+    "coverage_universe": {"path": "coverage_universe.json", "sha256": "7c9756f0134fcc45dbc31716a7741356d377afadf83134c4fa840a159246fc21"},
+    "critical_chains": {"path": "critical_chains.json", "sha256": "c28092bb1fdf960847ae03d947e91d8f9165ab5b53ffe5a16421e4d299f1912a"},
+    "execution_oracles": {"path": "execution_oracles.json", "sha256": "12befda5c34970fe4a069ee93aec286f139ced89f30cae645fd19770e0a394eb"}
+  },
+  "test_execution": {"policy": "disabled", "commands": []}
+}

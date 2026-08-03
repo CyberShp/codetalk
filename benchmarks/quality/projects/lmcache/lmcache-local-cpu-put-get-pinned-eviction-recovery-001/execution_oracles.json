@@ -1,0 +1,55 @@
+{
+  "case_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001",
+  "execution_plan": {"schema_version": "quality-depth-execution-v1", "case_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001", "execution_tier": "S", "policy": "disabled", "oracles": [], "limitations": []},
+  "tier_dispositions": [{"tier": "E", "status": "unavailable", "requirements": ["LMCACHE_TEST_ENV", "ISOLATED_ALLOCATOR_FIXTURE"], "limitation": "EXECUTION_ENVIRONMENT_NOT_PROVISIONED"}],
+  "tier": "S",
+  "policy": "disabled",
+  "status": "not_run",
+  "l3": {"status": "not_applicable", "reason": "The case execution tier is S; existing tests are bound as static oracle source and were not executed during corpus authoring."},
+  "evidence_catalog": {
+    "case_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001",
+    "bindings": [
+      {"evidence_ref": "source://tests/v1/storage_backend/test_local_cpu_backend.py#bounded-allocator-setup:L557-L565", "chain_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:put-get-pinned-eviction-recovery", "category": "node", "obligation_id": "client-fills-bounded-allocator-before-pressure"},
+      {"evidence_ref": "source://tests/v1/storage_backend/test_local_cpu_backend.py#two-layer-capacity-and-nonbusy:L558-L572", "chain_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:put-get-pinned-eviction-recovery", "category": "node", "obligation_id": "two-layer-group-fixed-capacity-and-nonbusy-input"},
+      {"evidence_ref": "source://lmcache/v1/storage_backend/local_cpu_backend.py#batched-allocate-entry:L729-L768", "chain_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:put-get-pinned-eviction-recovery", "category": "node", "obligation_id": "initial-batched-allocate-entry"},
+      {"evidence_ref": "source://lmcache/v1/storage_backend/local_cpu_backend.py#initial-allocator-delegation:L770-L775", "chain_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:put-get-pinned-eviction-recovery", "category": "node", "obligation_id": "backend-delegates-to-mixed-memory-allocator"},
+      {"evidence_ref": "source://tests/v1/storage_backend/test_local_cpu_backend.py#initial-allocation-succeeds:L567-L574", "chain_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:put-get-pinned-eviction-recovery", "category": "node", "obligation_id": "initial-layer-memory-objects-allocated"},
+      {"evidence_ref": "source://lmcache/v1/storage_backend/local_cpu_backend.py#hot-cache-reference-ownership:L150-L170", "chain_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:put-get-pinned-eviction-recovery", "category": "node", "obligation_id": "hot-cache-owns-layer-memory-objects"},
+      {"evidence_ref": "source://tests/v1/storage_backend/test_local_cpu_backend.py#pin-before-pressure:L575-L579", "chain_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:put-get-pinned-eviction-recovery", "category": "node", "obligation_id": "pin-makes-one-layer-group-non-evictable"},
+      {"evidence_ref": "source://lmcache/v1/storage_backend/local_cpu_backend.py#whole-group-candidate-validation:L786-L813", "chain_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:put-get-pinned-eviction-recovery", "category": "node", "obligation_id": "pressure-allocation-finds-no-complete-evictable-group"},
+      {"evidence_ref": "source://lmcache/v1/storage_backend/local_cpu_backend.py#nonbusy-pressure-break:L827-L837", "chain_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:put-get-pinned-eviction-recovery", "category": "node", "obligation_id": "nonbusy-pressure-allocation-returns-none"},
+      {"evidence_ref": "source://tests/v1/storage_backend/test_local_cpu_backend.py#unpin-before-retry:L590-L593", "chain_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:put-get-pinned-eviction-recovery", "category": "node", "obligation_id": "caller-unpins-group-before-retry"},
+      {"evidence_ref": "source://lmcache/v1/storage_backend/local_cpu_backend.py#evict-pop-and-batched-free:L797-L822", "chain_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:put-get-pinned-eviction-recovery", "category": "node", "obligation_id": "retry-evicts-group-and-batched-frees-old-objects"},
+      {"evidence_ref": "source://lmcache/v1/storage_backend/local_cpu_backend.py#post-free-replacement-allocation:L851-L864", "chain_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:put-get-pinned-eviction-recovery", "category": "node", "obligation_id": "retry-allocates-replacement-layer-objects"},
+      {"evidence_ref": "source://tests/v1/storage_backend/test_local_cpu_backend.py#old-keys-absent-memcheck:L600-L606", "chain_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:put-get-pinned-eviction-recovery", "category": "node", "obligation_id": "old-keys-absent-and-allocator-memcheck-passes"},
+      {"evidence_ref": "source://tests/v1/storage_backend/test_local_cpu_backend.py#pinned-failure-unpin-recovery-oracle:L557-L606", "chain_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:put-get-pinned-eviction-recovery", "category": "node", "obligation_id": "pinned-failure-then-unpin-recovery-test"},
+      {"evidence_ref": "source://tests/v1/storage_backend/test_local_cpu_backend.py#edge-fill-to-bounded-input:L557-L565", "chain_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:put-get-pinned-eviction-recovery", "category": "edge", "obligation_id": "fill-establishes-bounded-input"},
+      {"evidence_ref": "source://tests/v1/storage_backend/test_local_cpu_backend.py#edge-bounded-to-initial-allocation:L558-L573", "chain_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:put-get-pinned-eviction-recovery", "category": "edge", "obligation_id": "bounded-input-reaches-initial-allocation"},
+      {"evidence_ref": "source://lmcache/v1/storage_backend/local_cpu_backend.py#edge-entry-delegation:L729-L772", "chain_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:put-get-pinned-eviction-recovery", "category": "edge", "obligation_id": "entry-delegates-to-allocator"},
+      {"evidence_ref": "source://tests/v1/storage_backend/test_local_cpu_backend.py#edge-delegation-acquires:L567-L574", "chain_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:put-get-pinned-eviction-recovery", "category": "edge", "obligation_id": "allocator-call-acquires-initial-objects"},
+      {"evidence_ref": "source://lmcache/v1/storage_backend/local_cpu_backend.py#edge-put-owns-reference:L162-L170", "chain_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:put-get-pinned-eviction-recovery", "category": "edge", "obligation_id": "put-transfers-reference-ownership-to-hot-cache"},
+      {"evidence_ref": "source://tests/v1/storage_backend/test_local_cpu_backend.py#edge-owned-group-pin:L575-L579", "chain_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:put-get-pinned-eviction-recovery", "category": "edge", "obligation_id": "owned-group-is-pinned"},
+      {"evidence_ref": "source://lmcache/v1/storage_backend/local_cpu_backend.py#edge-pin-blocks-group:L793-L813", "chain_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:put-get-pinned-eviction-recovery", "category": "edge", "obligation_id": "pin-blocks-whole-group-eviction-under-pressure"},
+      {"evidence_ref": "source://tests/v1/storage_backend/test_local_cpu_backend.py#edge-no-candidate-none:L579-L590", "chain_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:put-get-pinned-eviction-recovery", "category": "edge", "obligation_id": "no-candidate-causes-nonbusy-none"},
+      {"evidence_ref": "source://tests/v1/storage_backend/test_local_cpu_backend.py#edge-failure-preserves-state:L588-L592", "chain_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:put-get-pinned-eviction-recovery", "category": "edge", "obligation_id": "preserved-state-allows-caller-cleanup"},
+      {"evidence_ref": "source://lmcache/v1/storage_backend/local_cpu_backend.py#edge-unpin-enables-free:L797-L822", "chain_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:put-get-pinned-eviction-recovery", "category": "edge", "obligation_id": "unpin-makes-old-group-freeable-on-retry"},
+      {"evidence_ref": "source://lmcache/v1/storage_backend/local_cpu_backend.py#edge-free-restores-capacity:L815-L855", "chain_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:put-get-pinned-eviction-recovery", "category": "edge", "obligation_id": "free-restores-capacity-for-replacement-allocation"},
+      {"evidence_ref": "source://tests/v1/storage_backend/test_local_cpu_backend.py#edge-replacement-observations:L593-L602", "chain_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:put-get-pinned-eviction-recovery", "category": "edge", "obligation_id": "replacement-allocation-produces-release-observations"},
+      {"evidence_ref": "source://tests/v1/storage_backend/test_local_cpu_backend.py#edge-observation-oracle:L600-L606", "chain_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:put-get-pinned-eviction-recovery", "category": "edge", "obligation_id": "observations-are-bound-to-recovery-test"},
+      {"evidence_ref": "test://tests/v1/storage_backend/test_local_cpu_backend.py#pressure-preserves-pinned-group:L579-L590", "chain_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:put-get-pinned-eviction-recovery", "category": "check", "obligation_id": "pressure-failure-preserves-pinned-group"},
+      {"evidence_ref": "test://tests/v1/storage_backend/test_local_cpu_backend.py#safe-group-selected:L608-L660", "chain_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:put-get-pinned-eviction-recovery", "category": "check", "obligation_id": "safe-group-is-evicted-instead-of-pinned-group"},
+      {"evidence_ref": "oracle://lmcache-local-cpu-put-get-pinned-eviction-recovery-001#tier-s-not-applicable", "chain_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:put-get-pinned-eviction-recovery", "category": "l3", "obligation_id": "execution"}
+    ]
+  },
+  "static_bindings": [
+    {"binding_id": "lmcache-local-cpu-allocation-lifecycle", "path": "lmcache/v1/storage_backend/local_cpu_backend.py", "symbols": ["LocalCPUBackend.batched_allocate", "LocalCPUBackend.batched_submit_put_task", "LocalCPUBackend.pin", "LocalCPUBackend.unpin"], "line_ranges": ["150-209", "258-272", "729-864"]}
+  ],
+  "test_bindings": [
+    {"binding_id": "lmcache-pinned-allocation-recovery", "path": "tests/v1/storage_backend/test_local_cpu_backend.py", "tests": ["TestLocalCPUBackendAllocatorRecovery.test_batched_allocate_fails_while_group_pinned_then_recovers", "TestLocalCPUBackendAllocatorRecovery.test_batched_allocate_recovers_with_fully_evictable_group"], "status": "not_run"}
+  ],
+  "limitations": [
+    "Tier S closes static source and existing-test-definition obligations only; it supplies no runtime L3 evidence.",
+    "The bounded allocator tests model local CPU memory and do not cover GPU, remote, distributed, or hardware-backed LMCache storage backends.",
+    "The recovery test proves allocator accounting with memcheck and key eviction, not byte-for-byte KV tensor equality."
+  ]
+}

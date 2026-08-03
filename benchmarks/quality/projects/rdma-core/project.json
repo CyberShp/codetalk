@@ -1,0 +1,25 @@
+{
+  "schema_version": "quality-benchmark-project-v1",
+  "project_id": "rdma-core",
+  "project_kind": "rdma-userspace-stack",
+  "canonical_origin": "https://github.com/linux-rdma/rdma-core.git",
+  "revision": "d45834e0fe3ff1248e40d995f2f51c51739e6f1c",
+  "tree_sha": "e50a1a4f7eeb90608bbd7dc8042bd5b53dce0eff",
+  "license": {
+    "expression": "GPL-2.0-only OR Linux-OpenIB with file-specific exceptions",
+    "evidence": "COPYING.md"
+  },
+  "build_conditions": {
+    "summary": "The documented Linux build uses bash build.sh after installing CMake, compiler, libudev, libnl, Ninja, Python and Cython dependencies; the selected pyverbs test additionally requires a usable RDMA device, RC/QPEx support, and Type-2 memory-window support.",
+    "evidence_refs": [
+      "source://README.md#L41-L57",
+      "source://Documentation/testing.md#L51-L57",
+      "source://tests/test_qpex.py#L266-L271",
+      "source://tests/utils.py#L385-L412"
+    ],
+    "not_executed": true
+  },
+  "case_ids": [
+    "rdma-core-mw-remote-access-denied-001"
+  ]
+}

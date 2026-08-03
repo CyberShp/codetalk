@@ -1,0 +1,24 @@
+{
+  "schema_version": "quality-benchmark-project-v1",
+  "project_id": "ucx",
+  "project_kind": "communication-framework",
+  "canonical_origin": "https://github.com/openucx/ucx.git",
+  "revision": "1ce08f6ed89caa0bc2dcef5c2e9ad837455da168",
+  "tree_sha": "62435473638ce3f1f392d7e4fa43333f759e7f4b",
+  "license": {
+    "expression": "BSD-3-Clause",
+    "evidence": "LICENSE"
+  },
+  "build_conditions": {
+    "summary": "The source build uses autogen.sh, configure-release and make; the selected RoCE test requires Linux verbs/RoCE hardware, a configured port and a peer-capable test environment.",
+    "evidence_refs": [
+      "source://README.md#L50-L65",
+      "source://README.md#L118-L122",
+      "source://test/gtest/uct/ib/test_ib.cc#L285-L314"
+    ],
+    "not_executed": true
+  },
+  "case_ids": [
+    "ucx-roce-reachability-mode-001"
+  ]
+}

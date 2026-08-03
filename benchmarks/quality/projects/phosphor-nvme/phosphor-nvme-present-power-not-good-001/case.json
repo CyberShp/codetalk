@@ -1,0 +1,14 @@
+{
+  "schema_version": "quality-benchmark-case-v1",
+  "case_id": "phosphor-nvme-present-power-not-good-001",
+  "project_id": "phosphor-nvme",
+  "truth_package_version": "1",
+  "tier": "S",
+  "truth_package": {
+    "gold_claims": {"path": "gold_claims.json", "sha256": "fb24d69b6632f16c7945f741a8fc08eb1d299867c23a77b72ad03d8238f5a6f1"},
+    "coverage_universe": {"path": "coverage_universe.json", "sha256": "cf372448570bddfcaff9ac992a5ab60022c818847783bdd8600ba7dec894078c"},
+    "critical_chains": {"path": "critical_chains.json", "sha256": "b1dac7f8826569547b0188bf0fe16453c81ba350832c103409df2d84bd695e13"},
+    "execution_oracles": {"path": "execution_oracles.json", "sha256": "6d2c15f21597f64912b9e67e3085c7813c14cbc70d7b997807ff40a8db79a73a"}
+  },
+  "test_execution": {"policy": "disabled", "commands": []}
+}

@@ -1,0 +1,45 @@
+{
+  "case_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001",
+  "evidence_catalog_sha256": "00f3ac8d366726e688ba3c9f3be88267012cfc0ea5ebf2d01dbaf4367cc14631",
+  "execution_tier": "S",
+  "chains": [
+    {
+      "chain_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:put-get-pinned-eviction-recovery",
+      "nodes": [
+        {"node_id": "client-fills-bounded-allocator-before-pressure", "kind": "trigger", "statement": "The test fills the bounded local allocator before requesting another layer group.", "critical": true},
+        {"node_id": "two-layer-group-fixed-capacity-and-nonbusy-input", "kind": "precondition_input", "statement": "The bounded flow uses a complete two-layer group, fixed capacity, and busy_loop disabled.", "critical": true},
+        {"node_id": "initial-batched-allocate-entry", "kind": "entry", "statement": "The flow enters batched_allocate for the initial layer group.", "critical": true},
+        {"node_id": "backend-delegates-to-mixed-memory-allocator", "kind": "call_chain", "statement": "The local CPU backend delegates batched allocation to its mixed-memory allocator.", "critical": true},
+        {"node_id": "initial-layer-memory-objects-allocated", "kind": "resource_acquisition", "statement": "The initial allocation returns MemoryObj resources for every layer in the group.", "critical": true},
+        {"node_id": "hot-cache-owns-layer-memory-objects", "kind": "resource_ownership", "statement": "submit_put_task increments each MemoryObj reference and stores it in hot_cache under its key.", "critical": true},
+        {"node_id": "pin-makes-one-layer-group-non-evictable", "kind": "state_resource_mutation", "statement": "Pinning one object makes its complete layer group ineligible for eviction.", "critical": true},
+        {"node_id": "pressure-allocation-finds-no-complete-evictable-group", "kind": "downstream_effect", "statement": "Under pressure, candidate validation finds no complete evictable group while the group is pinned.", "critical": true},
+        {"node_id": "nonbusy-pressure-allocation-returns-none", "kind": "error_propagation", "statement": "With busy_loop disabled and no complete candidate, batched_allocate returns None.", "critical": true},
+        {"node_id": "caller-unpins-group-before-retry", "kind": "cleanup", "statement": "The caller releases the pin before retrying allocation.", "critical": true},
+        {"node_id": "retry-evicts-group-and-batched-frees-old-objects", "kind": "resource_release", "statement": "The retry evicts the complete old group, removes its keys, and batched-frees its MemoryObj resources.", "critical": true},
+        {"node_id": "retry-allocates-replacement-layer-objects", "kind": "recovery", "statement": "Freed capacity lets the retry allocate replacement MemoryObj resources for the layer group.", "critical": true},
+        {"node_id": "old-keys-absent-and-allocator-memcheck-passes", "kind": "external_observation", "statement": "After recovery, old keys are absent and allocator memcheck succeeds.", "critical": true},
+        {"node_id": "pinned-failure-then-unpin-recovery-test", "kind": "executable_oracle", "statement": "The pinned-failure and unpin-retry test observes both the initial None result and successful recovery.", "critical": true}
+      ],
+      "edges": [
+        {"edge_id": "fill-establishes-bounded-input", "source_node_id": "client-fills-bounded-allocator-before-pressure", "target_node_id": "two-layer-group-fixed-capacity-and-nonbusy-input", "statement": "Filling the fixed-capacity allocator establishes the pressure precondition for the nonbusy two-layer request.", "critical": true},
+        {"edge_id": "bounded-input-reaches-initial-allocation", "source_node_id": "two-layer-group-fixed-capacity-and-nonbusy-input", "target_node_id": "initial-batched-allocate-entry", "statement": "The bounded two-layer request is passed to batched_allocate.", "critical": true},
+        {"edge_id": "entry-delegates-to-allocator", "source_node_id": "initial-batched-allocate-entry", "target_node_id": "backend-delegates-to-mixed-memory-allocator", "statement": "The backend allocation entry delegates to the mixed-memory allocator.", "critical": true},
+        {"edge_id": "allocator-call-acquires-initial-objects", "source_node_id": "backend-delegates-to-mixed-memory-allocator", "target_node_id": "initial-layer-memory-objects-allocated", "statement": "The delegated initial allocation acquires one MemoryObj per requested layer.", "critical": true},
+        {"edge_id": "put-transfers-reference-ownership-to-hot-cache", "source_node_id": "initial-layer-memory-objects-allocated", "target_node_id": "hot-cache-owns-layer-memory-objects", "statement": "Putting each allocated object increments its reference and transfers a retained reference into hot_cache.", "critical": true},
+        {"edge_id": "owned-group-is-pinned", "source_node_id": "hot-cache-owns-layer-memory-objects", "target_node_id": "pin-makes-one-layer-group-non-evictable", "statement": "A retained hot-cache object is pinned, making its group non-evictable.", "critical": true},
+        {"edge_id": "pin-blocks-whole-group-eviction-under-pressure", "source_node_id": "pin-makes-one-layer-group-non-evictable", "target_node_id": "pressure-allocation-finds-no-complete-evictable-group", "statement": "The pinned member prevents selection of the complete layer group under allocation pressure.", "critical": true},
+        {"edge_id": "no-candidate-causes-nonbusy-none", "source_node_id": "pressure-allocation-finds-no-complete-evictable-group", "target_node_id": "nonbusy-pressure-allocation-returns-none", "statement": "With no complete eviction candidate and nonbusy mode, allocation returns None.", "critical": true},
+        {"edge_id": "preserved-state-allows-caller-cleanup", "source_node_id": "nonbusy-pressure-allocation-returns-none", "target_node_id": "caller-unpins-group-before-retry", "statement": "The failed allocation preserves the group so the caller can unpin it before retrying.", "critical": true},
+        {"edge_id": "unpin-makes-old-group-freeable-on-retry", "source_node_id": "caller-unpins-group-before-retry", "target_node_id": "retry-evicts-group-and-batched-frees-old-objects", "statement": "Unpinning makes the old complete group eligible for eviction and batched free on retry.", "critical": true},
+        {"edge_id": "free-restores-capacity-for-replacement-allocation", "source_node_id": "retry-evicts-group-and-batched-frees-old-objects", "target_node_id": "retry-allocates-replacement-layer-objects", "statement": "Freeing the old group restores enough capacity for replacement allocation.", "critical": true},
+        {"edge_id": "replacement-allocation-produces-release-observations", "source_node_id": "retry-allocates-replacement-layer-objects", "target_node_id": "old-keys-absent-and-allocator-memcheck-passes", "statement": "Successful replacement allocation follows removal of old keys and leaves allocator accounting consistent.", "critical": true},
+        {"edge_id": "observations-are-bound-to-recovery-test", "source_node_id": "old-keys-absent-and-allocator-memcheck-passes", "target_node_id": "pinned-failure-then-unpin-recovery-test", "statement": "The recovery test asserts old-key absence and allocator memcheck after retry.", "critical": true}
+      ],
+      "disconfirming_checks": [
+        {"check_id": "pressure-failure-preserves-pinned-group", "statement": "A failed nonbusy allocation must not remove keys from the pinned group.", "critical": true},
+        {"check_id": "safe-group-is-evicted-instead-of-pinned-group", "statement": "When another complete group is evictable, the allocator evicts that safe group rather than the pinned group.", "critical": true}
+      ]
+    }
+  ]
+}

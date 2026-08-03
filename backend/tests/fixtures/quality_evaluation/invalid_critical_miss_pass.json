@@ -1,0 +1,24 @@
+{
+  "$base": "valid_operational.json",
+  "mutations": [
+    {
+      "op": "set",
+      "path": "/first_pass/accuracy/status",
+      "value": "pass"
+    },
+    {
+      "op": "set",
+      "path": "/first_pass/accuracy/critical_misses",
+      "value": [
+        {
+          "item_id": "claim-critical-001",
+          "reason": "contradicted by exact source evidence",
+          "validation_layer": "L2",
+          "evidence_refs": [
+            "source://lib/example.c#L10-L20"
+          ]
+        }
+      ]
+    }
+  ]
+}

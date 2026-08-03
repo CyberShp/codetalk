@@ -1,0 +1,43 @@
+{
+  "case_id": "perftest-roce-gid-selection-001",
+  "evidence_catalog_sha256": "7dd47e3d13860a34aabed672bf3dafacdc90d8b57d62708a69824ac5eefc1371",
+  "execution_tier": "S",
+  "chains": [
+    {
+      "chain_id": "perftest-roce-gid-chain",
+      "nodes": [
+        {"node_id": "ethernet-auto-selection-trigger", "kind": "trigger", "statement": "An Ethernet link with unset non-user GID index triggers automatic GID selection.", "critical": true},
+        {"node_id": "family-and-gid-table-input", "kind": "precondition_input", "statement": "Automatic selection consumes the requested address family and the device GID table.", "critical": true},
+        {"node_id": "setup-connection-entry", "kind": "entry", "statement": "set_up_connection enters automatic GID selection when no explicit user index is set.", "critical": true},
+        {"node_id": "score-gid-table-call-chain", "kind": "call_chain", "statement": "get_best_gid_index queries each table entry and scores family, scope, and RoCE version.", "critical": true},
+        {"node_id": "acquire-context-and-destinations", "kind": "resource_acquisition", "statement": "Connection setup acquires the verbs context and local and remote destination resources.", "critical": true},
+        {"node_id": "own-selection-state", "kind": "resource_ownership", "statement": "The connection parameters own the requested family, selection flags, and chosen GID index.", "critical": true},
+        {"node_id": "store-best-gid-index", "kind": "state_resource_mutation", "statement": "The first strictly maximal valid score becomes the stored best GID index.", "critical": true},
+        {"node_id": "query-selected-gid", "kind": "downstream_effect", "statement": "Connection setup queries the GID selected by the scoring result.", "critical": true},
+        {"node_id": "propagate-selection-failure", "kind": "error_propagation", "statement": "No valid index or a failed selected-GID query makes set_up_connection return -1.", "critical": true},
+        {"node_id": "destroy-failed-context", "kind": "cleanup_recovery", "statement": "write_bw routes a setup failure into its destroy cleanup path.", "critical": true},
+        {"node_id": "free-owned-resources", "kind": "resource_release", "statement": "The cleanup path destroys the context and frees connection resources after failure.", "critical": true},
+        {"node_id": "observe-index-or-error", "kind": "external_observation", "statement": "The caller observes either a selected sgid_index or an explicit setup failure.", "critical": true},
+        {"node_id": "static-selection-oracle", "kind": "executable_oracle", "statement": "The source-level oracle verifies invalid entries score -1, priorities are ordered, and no valid entry returns -1.", "critical": true}
+      ],
+      "edges": [
+        {"edge_id": "e01", "source_node_id": "ethernet-auto-selection-trigger", "target_node_id": "family-and-gid-table-input", "statement": "The automatic Ethernet path selects using the requested family and current GID table.", "critical": true},
+        {"edge_id": "e02", "source_node_id": "family-and-gid-table-input", "target_node_id": "setup-connection-entry", "statement": "set_up_connection receives the family preference and GID-table context.", "critical": true},
+        {"edge_id": "e03", "source_node_id": "setup-connection-entry", "target_node_id": "score-gid-table-call-chain", "statement": "Without a user-selected index, setup calls get_best_gid_index.", "critical": true},
+        {"edge_id": "e04", "source_node_id": "score-gid-table-call-chain", "target_node_id": "acquire-context-and-destinations", "statement": "GID scoring occurs within connection setup that owns the context and destination resources.", "critical": true},
+        {"edge_id": "e05", "source_node_id": "acquire-context-and-destinations", "target_node_id": "own-selection-state", "statement": "The acquired connection context retains the GID selection parameters and result.", "critical": true},
+        {"edge_id": "e06", "source_node_id": "own-selection-state", "target_node_id": "store-best-gid-index", "statement": "The owned selection state is mutated with the highest-scoring valid index.", "critical": true},
+        {"edge_id": "e07", "source_node_id": "store-best-gid-index", "target_node_id": "query-selected-gid", "statement": "The stored best index is then used for the selected-GID query.", "critical": true},
+        {"edge_id": "e08", "source_node_id": "query-selected-gid", "target_node_id": "propagate-selection-failure", "statement": "A missing best index or failed GID query propagates setup failure.", "critical": true},
+        {"edge_id": "e09", "source_node_id": "propagate-selection-failure", "target_node_id": "destroy-failed-context", "statement": "The propagated setup error sends write_bw to destroy its connection context.", "critical": true},
+        {"edge_id": "e10", "source_node_id": "destroy-failed-context", "target_node_id": "free-owned-resources", "statement": "Destroy cleanup releases the resources owned by the failed connection.", "critical": true},
+        {"edge_id": "e11", "source_node_id": "free-owned-resources", "target_node_id": "observe-index-or-error", "statement": "After cleanup, the caller retains the explicit failure observation; success retains the selected index.", "critical": true},
+        {"edge_id": "e12", "source_node_id": "observe-index-or-error", "target_node_id": "static-selection-oracle", "statement": "The source oracle binds the observable index or -1 result to the declared scoring rules.", "critical": true}
+      ],
+      "disconfirming_checks": [
+        {"check_id": "explicit-index-bypasses-auto", "statement": "A user-supplied GID index sets use_gid_user and bypasses automatic scoring.", "critical": true},
+        {"check_id": "invalid-gids-cannot-win", "statement": "A failed or all-zero GID query scores -1 and cannot become the selected best index.", "critical": true}
+      ]
+    }
+  ]
+}

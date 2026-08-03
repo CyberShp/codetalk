@@ -1,23 +1,90 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import ipaddress
 import json
 import os
+import re
 import shutil
 import socket
 import stat
 import sys
 import tempfile
-import tomllib
-from dataclasses import dataclass
+import urllib.parse
+from collections.abc import Callable, Iterable
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
+
+import tomllib
 
 from app.config import settings
 
 
 class AgentSandboxError(RuntimeError):
     pass
+
+
+CredentialFingerprint = tuple[int, str]
+
+
+@dataclass
+class BenchmarkSandboxSecurity:
+    credential_fingerprints: set[CredentialFingerprint] = field(default_factory=set)
+
+
+@dataclass(frozen=True)
+class _BenchmarkSandboxPolicy:
+    source_dir: Path
+    model: str
+    mode: str
+    approved_network_targets: tuple[str, ...]
+    security: BenchmarkSandboxSecurity
+
+
+_BENCHMARK_SANDBOX_POLICY: ContextVar[_BenchmarkSandboxPolicy | None] = ContextVar(
+    "quality_benchmark_sandbox_policy", default=None
+)
+
+
+@contextmanager
+def benchmark_agent_sandbox(
+    *,
+    source_dir: Path,
+    model: str,
+    mode: str,
+    approved_network_targets: tuple[str, ...] = (),
+):
+    """Opt one synchronous Workbench execution into the strict benchmark boundary."""
+
+    source = Path(source_dir).resolve(strict=True)
+    if not source.is_dir():
+        raise AgentSandboxError("benchmark source boundary is not a directory")
+    if mode not in {"rapid", "deep"}:
+        raise AgentSandboxError("benchmark sandbox mode must be rapid or deep")
+    normalized_model = str(model).strip()
+    if not normalized_model or len(normalized_model) > 200 or any(
+        ord(char) < 32 for char in normalized_model
+    ):
+        raise AgentSandboxError("benchmark model identifier is invalid")
+    normalized_targets = tuple(
+        _validated_benchmark_network_target(item)
+        for item in approved_network_targets
+    )
+    security = BenchmarkSandboxSecurity()
+    token = _BENCHMARK_SANDBOX_POLICY.set(
+        _BenchmarkSandboxPolicy(
+            source, normalized_model, mode, normalized_targets, security
+        )
+    )
+    try:
+        yield security
+    finally:
+        _BENCHMARK_SANDBOX_POLICY.reset(token)
 
 
 _CODEX_RUNTIME_CONFIG_KEYS = (
@@ -30,6 +97,55 @@ _CODEX_RUNTIME_CONFIG_KEYS = (
     "network_access",
     "service_tier",
 )
+
+_BENCHMARK_AUTH_TOP_LEVEL_KEYS = (
+    "auth_mode",
+    "last_refresh",
+    "OPENAI_API_KEY",
+)
+_BENCHMARK_AUTH_TOKEN_KEYS = (
+    "access_token",
+    "account_id",
+    "id_token",
+    "refresh_token",
+)
+_BENCHMARK_AUTH_MAX_BYTES = 1024 * 1024
+
+
+def credential_value_fingerprints(
+    values: Iterable[str],
+) -> tuple[CredentialFingerprint, ...]:
+    fingerprints: set[CredentialFingerprint] = set()
+    for value in values:
+        if not isinstance(value, str) or len(value) < 8:
+            continue
+        raw = value.encode("utf-8")
+        quoted = urllib.parse.quote(value, safe="")
+        quoted_plus = urllib.parse.quote_plus(value, safe="")
+        variants = {
+            value,
+            base64.b64encode(raw).decode("ascii"),
+            base64.urlsafe_b64encode(raw).decode("ascii"),
+            base64.urlsafe_b64encode(raw).decode("ascii").rstrip("="),
+            raw.hex(),
+            raw.hex().upper(),
+            "".join(f"%{byte:02X}" for byte in raw),
+            "".join(f"%{byte:02x}" for byte in raw),
+            quoted,
+            quoted_plus,
+            re.sub(r"%[0-9A-F]{2}", lambda match: match.group(0).lower(), quoted),
+            re.sub(
+                r"%[0-9A-F]{2}",
+                lambda match: match.group(0).lower(),
+                quoted_plus,
+            ),
+        }
+        fingerprints.update(
+            (len(variant), hashlib.sha256(variant.encode("utf-8")).hexdigest())
+            for variant in variants
+            if len(variant) >= 8
+        )
+    return tuple(sorted(fingerprints))
 
 _CODEX_SKILLS_MAX_FILES = 4096
 _CODEX_SKILLS_MAX_ENTRIES = 4096
@@ -507,6 +623,16 @@ def prepare_agent_sandbox(
     platform_name: str | None = None,
     which: Callable[[str], str | None] = shutil.which,
 ) -> AgentSandboxLaunch:
+    benchmark_policy = _BENCHMARK_SANDBOX_POLICY.get()
+    if benchmark_policy is not None:
+        return _prepare_benchmark_agent_sandbox(
+            policy=benchmark_policy,
+            runtime=runtime,
+            cwd=cwd,
+            artifact_dir=artifact_dir,
+            platform_name=platform_name,
+            which=which,
+        )
     mode = str(runtime.get("sandbox_mode") or "auto").strip().lower()
     if mode not in {"auto", "required", "off"}:
         raise AgentSandboxError(f"未知 Agent 隔离模式：{mode}")
@@ -554,6 +680,364 @@ def prepare_agent_sandbox(
         message="Agent OS 隔离未启用；CodeTalk 按当前运行环境直接启动 Agent。",
         audit={**base_audit, "engine": "none"},
     )
+
+
+def _prepare_benchmark_agent_sandbox(
+    *,
+    policy: _BenchmarkSandboxPolicy,
+    runtime: dict[str, Any],
+    cwd: str | None,
+    artifact_dir: Path,
+    platform_name: str | None,
+    which: Callable[[str], str | None],
+) -> AgentSandboxLaunch:
+    platform = str(platform_name or sys.platform).lower()
+    artifact_dir = artifact_dir.resolve(strict=True)
+    workspace = Path(cwd).resolve(strict=True) if cwd else None
+    if workspace != policy.source_dir:
+        raise AgentSandboxError("benchmark workspace differs from the pinned source boundary")
+    task_artifact = _benchmark_task_artifact_root(artifact_dir)
+    codex_home_text = str(runtime.get("sandbox_codex_home") or "").strip()
+    if not codex_home_text:
+        raise AgentSandboxError("benchmark requires an isolated CODEX_HOME")
+    codex_home = Path(codex_home_text).resolve(strict=True)
+    if codex_home != artifact_dir and artifact_dir not in codex_home.parents:
+        raise AgentSandboxError("benchmark CODEX_HOME is outside the current task artifact")
+    credential_mode, credential_fingerprints = _materialize_benchmark_codex_home(
+        codex_home,
+        model=policy.model,
+        mode=policy.mode,
+    )
+    policy.security.credential_fingerprints.update(credential_fingerprints)
+    state_paths = []
+    for name in ("sessions", "log", ".tmp", "tmp", "cache"):
+        path = codex_home / name
+        path.mkdir(mode=0o700, exist_ok=True)
+        state_paths.append(path.resolve(strict=True))
+    command = str(runtime.get("sandbox_command") or "").strip()
+    read_paths = _unique_paths(
+        [
+            *_benchmark_system_read_paths(platform, command),
+            policy.source_dir,
+            task_artifact,
+            codex_home,
+        ]
+    )
+    write_paths = _unique_paths([artifact_dir, *state_paths])
+    network_context = runtime.get("network_context")
+    allow_network = bool(runtime.get("requires_network", True))
+    resolved_network_targets: list[str] = []
+    if allow_network:
+        if not policy.approved_network_targets:
+            raise AgentSandboxError(
+                "benchmark requires an approved network target allowlist"
+            )
+        if platform.startswith("linux"):
+            raise AgentSandboxError(
+                "benchmark target-only network enforcement is unavailable on Linux"
+            )
+        for target in policy.approved_network_targets:
+            for resolved in _resolve_approved_proxy_targets(target):
+                host, _separator, _port = resolved.rpartition(":")
+                if host.lower() != "localhost":
+                    raise AgentSandboxError(
+                        "macOS benchmark networking requires an approved localhost proxy target"
+                    )
+                if resolved not in resolved_network_targets:
+                    resolved_network_targets.append(resolved)
+    audit = {
+        "version": "agent-sandbox-policy-v1",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "mode": "required",
+        "requested_mode": str(runtime.get("sandbox_mode") or "auto"),
+        "platform": platform,
+        "workspace": str(workspace),
+        "workspace_access": "read_only",
+        "read_boundary": "benchmark_pinned_source_task_artifact_isolated_codex_home",
+        "artifact_dir": str(artifact_dir),
+        "read_paths": [str(path) for path in read_paths],
+        "runtime_state_paths": [str(path) for path in state_paths],
+        "write_paths": [str(path) for path in write_paths],
+        "network": "approved_targets_only" if allow_network else "blocked",
+        "approved_network_target_count": len(policy.approved_network_targets),
+        "network_policy": (
+            network_context.snapshot() if network_context is not None else None
+        ),
+        "subprocess": "allowed_and_inherited",
+        "environment": "allowlisted_parent_plus_runtime_explicit",
+        "benchmark_opt_in": True,
+        "codex_home_credentials": credential_mode,
+    }
+    if platform.startswith("darwin"):
+        sandbox_exec = which("sandbox-exec")
+        if not sandbox_exec:
+            raise AgentSandboxError(
+                "benchmark requires macOS sandbox-exec; refusing unsandboxed execution"
+            )
+        profile_root = settings.ensure_runtime_temp_path() / "agent-sandbox-profiles"
+        profile_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        profile_fd, profile_name = tempfile.mkstemp(
+            prefix="benchmark-", suffix=".sb", dir=profile_root
+        )
+        os.close(profile_fd)
+        profile_path = Path(profile_name)
+        profile_path.write_text(
+            _macos_profile(
+                read_paths=read_paths,
+                write_paths=write_paths,
+                allow_network=allow_network,
+                allowed_network_targets=resolved_network_targets,
+            ),
+            encoding="utf-8",
+        )
+        profile_path.chmod(0o600)
+        return _persist_launch(
+            artifact_dir,
+            status="active",
+            wrapper=[sandbox_exec, "-f", str(profile_path)],
+            message="Benchmark macOS read boundary is active.",
+            audit={**audit, "engine": "sandbox-exec", "profile": str(profile_path)},
+        )
+    if platform.startswith("linux"):
+        bwrap = which("bwrap") or which("bubblewrap")
+        if not bwrap:
+            raise AgentSandboxError(
+                "benchmark requires bubblewrap; refusing unsandboxed execution"
+            )
+        wrapper = [bwrap, "--die-with-parent", "--new-session", "--tmpfs", "/"]
+        for path in read_paths:
+            if path not in write_paths:
+                wrapper.extend(["--ro-bind", str(path), str(path)])
+        for path in write_paths:
+            wrapper.extend(["--bind", str(path), str(path)])
+        wrapper.extend(["--dev", "/dev", "--proc", "/proc", "--chdir", str(workspace)])
+        if not allow_network:
+            wrapper.append("--unshare-net")
+        return _persist_launch(
+            artifact_dir,
+            status="active",
+            wrapper=wrapper,
+            message="Benchmark Linux read boundary is active.",
+            audit={**audit, "engine": "bubblewrap"},
+        )
+    raise AgentSandboxError(
+        "benchmark OS read isolation is unsupported on this platform"
+    )
+
+
+def _benchmark_system_read_paths(platform: str, command: str) -> list[Path]:
+    paths = _system_read_paths(platform, "")
+    if command:
+        command_path = Path(command).expanduser()
+        if command_path.is_absolute() and command_path.exists():
+            resolved = command_path.resolve(strict=True)
+            if not any(resolved == root or root in resolved.parents for root in paths):
+                paths.append(resolved)
+    return _unique_paths(paths)
+
+
+def _validated_benchmark_network_target(value: str) -> str:
+    target = str(value or "").strip()
+    host, port = _proxy_target_host_port(target)
+    if not host or port is None:
+        raise AgentSandboxError("benchmark approved network target is invalid")
+    if host == "localhost":
+        return target
+    try:
+        if ipaddress.ip_address(host).is_loopback:
+            raise AgentSandboxError(
+                "benchmark approved network target may not be loopback"
+            )
+    except ValueError:
+        pass
+    return target
+
+
+def _benchmark_task_artifact_root(artifact_dir: Path) -> Path:
+    if artifact_dir.parent.name == "agent_runs":
+        return artifact_dir.parent.parent.resolve(strict=True)
+    return artifact_dir
+
+
+def _materialize_benchmark_codex_home(
+    codex_home: Path,
+    *,
+    model: str,
+    mode: str,
+) -> tuple[str, tuple[CredentialFingerprint, ...]]:
+    auth_path = codex_home / "auth.json"
+    minimal_auth, credential_values = _load_minimal_benchmark_auth(auth_path)
+    if auth_path.is_symlink() or auth_path.is_file():
+        auth_path.unlink()
+    elif auth_path.exists():
+        raise AgentSandboxError("benchmark CODEX_HOME auth path is not a regular file")
+    credential_mode = "absent"
+    if minimal_auth is not None:
+        _write_private_json(auth_path, minimal_auth)
+        credential_mode = "isolated_minimal"
+    for child in codex_home.iterdir():
+        if child.is_symlink():
+            raise AgentSandboxError("benchmark CODEX_HOME contains an unexpected symlink")
+    config_path = codex_home / "config.toml"
+    try:
+        payload = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        payload = {}
+    lines = []
+    for key in _CODEX_RUNTIME_CONFIG_KEYS:
+        if key in {"model", "model_reasoning_effort"}:
+            continue
+        value = payload.get(key)
+        if isinstance(value, bool):
+            rendered = "true" if value else "false"
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            rendered = str(value)
+        elif isinstance(value, str):
+            rendered = json.dumps(value, ensure_ascii=True)
+        else:
+            continue
+        lines.append(f"{key} = {rendered}")
+    lines.extend(
+        [
+            f"model = {json.dumps(model, ensure_ascii=True)}",
+            f'model_reasoning_effort = "{"high" if mode == "deep" else "low"}"',
+        ]
+    )
+    config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    config_path.chmod(0o600)
+    _assert_benchmark_codex_home_allowlist(
+        codex_home, credentials_present=minimal_auth is not None
+    )
+    return credential_mode, credential_value_fingerprints(credential_values)
+
+
+def _load_minimal_benchmark_auth(
+    auth_path: Path,
+) -> tuple[dict[str, Any] | None, tuple[str, ...]]:
+    if not auth_path.exists() and not auth_path.is_symlink():
+        return None, ()
+    if auth_path.is_symlink():
+        source_home = Path(
+            os.environ.get("CODEX_HOME") or Path.home() / ".codex"
+        ).expanduser().resolve()
+        expected_source = source_home / "auth.json"
+        try:
+            source = auth_path.resolve(strict=True)
+            expected = expected_source.resolve(strict=True)
+        except OSError as exc:
+            raise AgentSandboxError(
+                "benchmark CODEX_HOME auth source is unavailable"
+            ) from exc
+        if source != expected:
+            raise AgentSandboxError(
+                "benchmark CODEX_HOME auth symlink has an unapproved source"
+            )
+    elif auth_path.is_file():
+        source = auth_path
+    else:
+        raise AgentSandboxError("benchmark CODEX_HOME auth path is not a regular file")
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(source, flags)
+        try:
+            opened = os.fstat(descriptor)
+            if not stat.S_ISREG(opened.st_mode) or opened.st_size > _BENCHMARK_AUTH_MAX_BYTES:
+                raise AgentSandboxError("benchmark CODEX_HOME auth source is invalid")
+            with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                raw_auth = stream.read(_BENCHMARK_AUTH_MAX_BYTES + 1)
+        finally:
+            os.close(descriptor)
+        if len(raw_auth) > _BENCHMARK_AUTH_MAX_BYTES:
+            raise AgentSandboxError("benchmark CODEX_HOME auth source is invalid")
+        payload = json.loads(raw_auth.decode("utf-8"))
+    except AgentSandboxError:
+        raise
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AgentSandboxError("benchmark CODEX_HOME auth source is invalid") from exc
+    if not isinstance(payload, dict):
+        raise AgentSandboxError("benchmark CODEX_HOME auth source is invalid")
+
+    minimal: dict[str, Any] = {}
+    for key in _BENCHMARK_AUTH_TOP_LEVEL_KEYS:
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            minimal[key] = value
+    token_payload = payload.get("tokens")
+    minimal_tokens: dict[str, str] = {}
+    if isinstance(token_payload, dict):
+        for key in _BENCHMARK_AUTH_TOKEN_KEYS:
+            value = token_payload.get(key)
+            if isinstance(value, str) and value:
+                minimal_tokens[key] = value
+    if minimal_tokens:
+        minimal["tokens"] = minimal_tokens
+    credential_values = tuple(
+        value
+        for value in (
+            minimal.get("OPENAI_API_KEY"),
+            *minimal_tokens.values(),
+        )
+        if isinstance(value, str) and len(value) >= 8
+    )
+    if not credential_values:
+        raise AgentSandboxError(
+            "benchmark CODEX_HOME auth source contains no usable credentials"
+        )
+    return minimal, credential_values
+
+
+def _write_private_json(path: Path, payload: dict[str, Any]) -> None:
+    encoded = (json.dumps(payload, ensure_ascii=True, sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb", closefd=False) as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+    finally:
+        os.close(descriptor)
+
+
+def _assert_benchmark_codex_home_allowlist(
+    codex_home: Path, *, credentials_present: bool
+) -> None:
+    auth_path = codex_home / "auth.json"
+    if credentials_present:
+        if auth_path.is_symlink() or not auth_path.is_file():
+            raise AgentSandboxError(
+                "benchmark CODEX_HOME isolated authentication is invalid"
+            )
+        if stat.S_IMODE(auth_path.stat().st_mode) != 0o600:
+            raise AgentSandboxError(
+                "benchmark CODEX_HOME isolated authentication permissions are invalid"
+            )
+    elif auth_path.exists() or auth_path.is_symlink():
+        raise AgentSandboxError("benchmark CODEX_HOME authentication is unexpected")
+    config_path = codex_home / "config.toml"
+    try:
+        config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise AgentSandboxError("benchmark CODEX_HOME config is invalid") from exc
+    allowed_keys = set(_CODEX_RUNTIME_CONFIG_KEYS)
+    if set(config) - allowed_keys:
+        raise AgentSandboxError("benchmark CODEX_HOME config contains unapproved keys")
+    allowed_entries = {
+        "auth.json",
+        "config.toml",
+        "sessions",
+        "log",
+        ".tmp",
+        "tmp",
+        "cache",
+    }
+    if any(child.name not in allowed_entries for child in codex_home.iterdir()):
+        raise AgentSandboxError("benchmark CODEX_HOME contains an unapproved entry")
 
 
 def _persist_launch(

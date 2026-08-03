@@ -1,0 +1,29 @@
+{
+  "schema_version": "quality-benchmark-case-v1",
+  "case_id": "open-cas-wb-default-disconnect-001",
+  "project_id": "open-cas-linux",
+  "truth_package_version": "1",
+  "tier": "S",
+  "truth_package": {
+    "gold_claims": {
+      "path": "gold_claims.json",
+      "sha256": "42b23928478677a41b776bec699ac34e14c85b8e2b1ad2ac9ce2a335fdde7b13"
+    },
+    "coverage_universe": {
+      "path": "coverage_universe.json",
+      "sha256": "1aaa1c0386230dd208ea9e903d6a56ef729dd19b0d75059db713306b5e8764d9"
+    },
+    "critical_chains": {
+      "path": "critical_chains.json",
+      "sha256": "f950f5e0be61708bc78e5eed02a2b53f64d7ab5b3d114d3233cdd3e3439eabb8"
+    },
+    "execution_oracles": {
+      "path": "execution_oracles.json",
+      "sha256": "50616b555a7b90c825e359b385c54ab5607769b5fc9c41999792a4a7af65a20c"
+    }
+  },
+  "test_execution": {
+    "policy": "disabled",
+    "commands": []
+  }
+}

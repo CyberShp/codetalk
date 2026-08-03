@@ -1,0 +1,61 @@
+{
+  "case_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001",
+  "claims": [
+    {
+      "gold_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:put-owns-object",
+      "semantic_key": "lmcache.local_cpu.put.hot_cache_refcount_ownership",
+      "critical": true,
+      "applicability": "applicable",
+      "statement": "submit_put_task increments the supplied MemoryObj reference count and stores that object under the key in hot_cache.",
+      "evidence_refs": [
+        "source://lmcache/v1/storage_backend/local_cpu_backend.py#submit_put_task_refcount_and_store:L162-L170",
+        "test://tests/v1/storage_backend/test_local_cpu_backend.py#test_submit_put_task:L198-L212"
+      ]
+    },
+    {
+      "gold_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:get-retains-object",
+      "semantic_key": "lmcache.local_cpu.get.same_object_refcount_increment",
+      "critical": true,
+      "applicability": "applicable",
+      "statement": "get_blocking returns the stored MemoryObj for an existing key and increments its reference count for the caller.",
+      "evidence_refs": [
+        "source://lmcache/v1/storage_backend/local_cpu_backend.py#get_blocking_retains_for_caller:L211-L223",
+        "test://tests/v1/storage_backend/test_local_cpu_backend.py#test_get_blocking_key_exists:L270-L287"
+      ]
+    },
+    {
+      "gold_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:lru-skips-pinned",
+      "semantic_key": "lmcache.local_cpu.lru.hit_order_and_non_evictable_skip",
+      "critical": true,
+      "applicability": "applicable",
+      "statement": "An LRU hit moves the key to the end, while candidate selection skips entries whose MemoryObj cannot be evicted.",
+      "evidence_refs": [
+        "source://lmcache/v1/storage_backend/cache_policy/lru.py#hit_order_and_evictable_candidates:L45-L80",
+        "test://tests/v1/test_cache_policy.py#test_lru:L14-L33",
+        "test://tests/v1/test_cache_policy.py#test_lru_with_pin:L36-L55"
+      ]
+    },
+    {
+      "gold_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:pinned-group-fails-closed",
+      "semantic_key": "lmcache.local_cpu.batched_allocate.pinned_group_failure_preserves_keys",
+      "critical": true,
+      "applicability": "applicable",
+      "statement": "When a complete layer group cannot be evicted and busy_loop is false, batched_allocate returns None without removing that group's keys.",
+      "evidence_refs": [
+        "source://lmcache/v1/storage_backend/local_cpu_backend.py#whole_group_validation_and_nonbusy_failure:L786-L837",
+        "test://tests/v1/storage_backend/test_local_cpu_backend.py#pinned_failure:L579-L590"
+      ]
+    },
+    {
+      "gold_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:unpin-recovers",
+      "semantic_key": "lmcache.local_cpu.batched_allocate.unpin_evict_retry_recovery",
+      "critical": true,
+      "applicability": "applicable",
+      "statement": "After the pinned layer is unpinned, a second batched allocation can evict the full group, return new objects, remove the old keys, and leave allocator memcheck successful.",
+      "evidence_refs": [
+        "source://lmcache/v1/storage_backend/local_cpu_backend.py#group_eviction_free_and_replacement_allocation:L797-L864",
+        "test://tests/v1/storage_backend/test_local_cpu_backend.py#unpin_recovery:L592-L606"
+      ]
+    }
+  ]
+}

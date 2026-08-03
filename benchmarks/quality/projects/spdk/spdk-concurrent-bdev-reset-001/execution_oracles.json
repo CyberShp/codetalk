@@ -1,0 +1,199 @@
+{
+  "case_id": "spdk-concurrent-bdev-reset-001",
+  "execution_plan": {"schema_version": "quality-depth-execution-v1", "case_id": "spdk-concurrent-bdev-reset-001", "execution_tier": "S", "policy": "disabled", "oracles": [], "limitations": []},
+  "tier_dispositions": [{"tier": "E", "status": "unavailable", "requirements": ["SPDK_UNIT_TEST_BUILD", "ISOLATED_BDEV_FIXTURE"], "limitation": "EXECUTION_ENVIRONMENT_NOT_PROVISIONED"}],
+  "execution_tier": "S",
+  "policy": "disabled",
+  "oracle": {
+    "oracle_id": "spdk:test_pending_reset",
+    "kind": "existing_unit_test",
+    "source_path": "test/unit/lib/bdev/nvme/bdev_nvme.c/bdev_nvme_ut.c",
+    "symbol": "test_pending_reset",
+    "line_range": "L1945-L2106",
+    "status": "not_run",
+    "expected_observations": [
+      "second reset enters pending_resets while the first reset is active",
+      "both reset I/Os succeed after a normal controller reset",
+      "both reset I/Os fail when the controller reset fails"
+    ],
+    "test_execution": {
+      "policy": "disabled",
+      "commands": [],
+      "reason": "Third-party code is not executed during corpus authoring."
+    }
+  },
+  "l3": {
+    "status": "not_run",
+    "limitations": [
+      "L3_NOT_RUN:TIER_S",
+      "The existing unit test is registered as an oracle but was not built or executed during authoring."
+    ]
+  },
+  "evidence_catalog": {
+    "case_id": "spdk-concurrent-bdev-reset-001",
+    "bindings": [
+      {
+        "evidence_ref": "source://test/unit/lib/bdev/nvme/bdev_nvme.c/bdev_nvme_ut.c#L2015-L2029:node-trigger-second-reset",
+        "chain_id": "spdk-reset-chain",
+        "category": "node",
+        "obligation_id": "trigger"
+      },
+      {
+        "evidence_ref": "source://test/unit/lib/bdev/nvme/bdev_nvme.c/bdev_nvme_ut.c#L2024-L2025:node-first-reset-active",
+        "chain_id": "spdk-reset-chain",
+        "category": "node",
+        "obligation_id": "bounded-input"
+      },
+      {
+        "evidence_ref": "source://module/bdev/nvme/bdev_nvme.c#L3452-L3455:node-reset-dispatch",
+        "chain_id": "spdk-reset-chain",
+        "category": "node",
+        "obligation_id": "api-entry"
+      },
+      {
+        "evidence_ref": "source://module/bdev/nvme/bdev_nvme.c#L3206-L3209:node-app-thread-call",
+        "chain_id": "spdk-reset-chain",
+        "category": "node",
+        "obligation_id": "call-chain"
+      },
+      {
+        "evidence_ref": "source://module/bdev/nvme/bdev_nvme.c#L3164-L3169:node-controller-resource",
+        "chain_id": "spdk-reset-chain",
+        "category": "node",
+        "obligation_id": "acquire-resource"
+      },
+      {
+        "evidence_ref": "source://module/bdev/nvme/bdev_nvme.c#L3173-L3182:node-pending-reset-ownership",
+        "chain_id": "spdk-reset-chain",
+        "category": "node",
+        "obligation_id": "own-resource"
+      },
+      {
+        "evidence_ref": "source://module/bdev/nvme/bdev_nvme.c#L3180-L3182:node-tailq-mutation",
+        "chain_id": "spdk-reset-chain",
+        "category": "node",
+        "obligation_id": "mutate-state"
+      },
+      {
+        "evidence_ref": "source://module/bdev/nvme/bdev_nvme.c#L2143-L2157:node-drain-pending",
+        "chain_id": "spdk-reset-chain",
+        "category": "node",
+        "obligation_id": "downstream-effect"
+      },
+      {
+        "evidence_ref": "source://module/bdev/nvme/bdev_nvme.c#L2148-L2156:node-result-propagation",
+        "chain_id": "spdk-reset-chain",
+        "category": "node",
+        "obligation_id": "propagate-error"
+      },
+      {
+        "evidence_ref": "source://module/bdev/nvme/bdev_nvme.c#L2152-L2157:node-remove-and-resume",
+        "chain_id": "spdk-reset-chain",
+        "category": "node",
+        "obligation_id": "recover-cleanup"
+      },
+      {
+        "evidence_ref": "source://module/bdev/nvme/bdev_nvme.c#L3097-L3118:node-unfreeze-and-complete",
+        "chain_id": "spdk-reset-chain",
+        "category": "node",
+        "obligation_id": "release-resource"
+      },
+      {
+        "evidence_ref": "source://test/unit/lib/bdev/nvme/bdev_nvme.c/bdev_nvme_ut.c#L2037-L2045:node-success-observation",
+        "chain_id": "spdk-reset-chain",
+        "category": "node",
+        "obligation_id": "external-observation"
+      },
+      {
+        "evidence_ref": "source://test/unit/lib/bdev/nvme/bdev_nvme.c/bdev_nvme_ut.c#L1945-L2106:node-test-oracle",
+        "chain_id": "spdk-reset-chain",
+        "category": "node",
+        "obligation_id": "oracle"
+      },
+      {
+        "evidence_ref": "source://test/unit/lib/bdev/nvme/bdev_nvme.c/bdev_nvme_ut.c#L2015-L2029:edge-e01",
+        "chain_id": "spdk-reset-chain",
+        "category": "edge",
+        "obligation_id": "e01"
+      },
+      {
+        "evidence_ref": "source://module/bdev/nvme/bdev_nvme.c#L3452-L3455:edge-e02",
+        "chain_id": "spdk-reset-chain",
+        "category": "edge",
+        "obligation_id": "e02"
+      },
+      {
+        "evidence_ref": "source://module/bdev/nvme/bdev_nvme.c#L3206-L3209:edge-e03",
+        "chain_id": "spdk-reset-chain",
+        "category": "edge",
+        "obligation_id": "e03"
+      },
+      {
+        "evidence_ref": "source://module/bdev/nvme/bdev_nvme.c#L3164-L3169:edge-e04",
+        "chain_id": "spdk-reset-chain",
+        "category": "edge",
+        "obligation_id": "e04"
+      },
+      {
+        "evidence_ref": "source://module/bdev/nvme/bdev_nvme.c#L3173-L3182:edge-e05",
+        "chain_id": "spdk-reset-chain",
+        "category": "edge",
+        "obligation_id": "e05"
+      },
+      {
+        "evidence_ref": "source://module/bdev/nvme/bdev_nvme.c#L3180-L3182:edge-e06",
+        "chain_id": "spdk-reset-chain",
+        "category": "edge",
+        "obligation_id": "e06"
+      },
+      {
+        "evidence_ref": "source://module/bdev/nvme/bdev_nvme.c#L2143-L2157:edge-e07",
+        "chain_id": "spdk-reset-chain",
+        "category": "edge",
+        "obligation_id": "e07"
+      },
+      {
+        "evidence_ref": "source://module/bdev/nvme/bdev_nvme.c#L2148-L2157:edge-e08",
+        "chain_id": "spdk-reset-chain",
+        "category": "edge",
+        "obligation_id": "e08"
+      },
+      {
+        "evidence_ref": "source://module/bdev/nvme/bdev_nvme.c#L2152-L2157:edge-e09",
+        "chain_id": "spdk-reset-chain",
+        "category": "edge",
+        "obligation_id": "e09"
+      },
+      {
+        "evidence_ref": "source://module/bdev/nvme/bdev_nvme.c#L3097-L3118:edge-e10",
+        "chain_id": "spdk-reset-chain",
+        "category": "edge",
+        "obligation_id": "e10"
+      },
+      {
+        "evidence_ref": "source://test/unit/lib/bdev/nvme/bdev_nvme.c/bdev_nvme_ut.c#L2037-L2045:edge-e11",
+        "chain_id": "spdk-reset-chain",
+        "category": "edge",
+        "obligation_id": "e11"
+      },
+      {
+        "evidence_ref": "source://test/unit/lib/bdev/nvme/bdev_nvme.c/bdev_nvme_ut.c#L1945-L2106:edge-e12",
+        "chain_id": "spdk-reset-chain",
+        "category": "edge",
+        "obligation_id": "e12"
+      },
+      {
+        "evidence_ref": "test://test/unit/lib/bdev/nvme/bdev_nvme.c/bdev_nvme_ut.c#L2047-L2085:check-controller-removal-failure",
+        "chain_id": "spdk-reset-chain",
+        "category": "check",
+        "obligation_id": "controller-removal-failure"
+      },
+      {
+        "evidence_ref": "oracle://test_pending_reset#tier-s-not-executed",
+        "chain_id": "spdk-reset-chain",
+        "category": "l3",
+        "obligation_id": "execution"
+      }
+    ]
+  }
+}

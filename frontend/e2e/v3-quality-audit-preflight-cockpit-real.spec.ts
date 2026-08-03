@@ -1,4 +1,8 @@
 import { expect, test } from "@playwright/test";
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import { assertCanMutatePublicRuntime } from "../scripts/playwright-runtime-policy.mjs";
 
@@ -7,26 +11,38 @@ assertCanMutatePublicRuntime({
   flowName: "V3 independent quality-audit preflight cockpit E2E",
 });
 
-test("a Codex workflow blocks missing independent quality audit before analysis starts", async ({ page }) => {
-  test.setTimeout(90_000);
+test("a Codex workflow blocks missing independent quality audit before analysis starts", async ({ page, request }) => {
+  test.setTimeout(5 * 60_000);
   const stamp = Date.now();
   const workspaceName = `V3 质量门禁 SPDK ${stamp}`;
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-quality-preflight-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "# Quality preflight fixture\n", "utf8");
+  execFileSync("git", ["init", "-q", repo]);
 
   await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/tasks/task_route_warmup/runs/task_run_route_warmup", {
+    waitUntil: "domcontentloaded",
+  });
   await page.goto("/workspaces/new", { waitUntil: "domcontentloaded" });
   await page.getByLabel("工作空间名称").fill(workspaceName);
-  await page.getByLabel("代码仓库路径").fill("/Volumes/Media/dpdk/spdk");
+  await page.getByLabel(/本地文件夹路径\s*（可选）/).fill(repo);
   await page.getByRole("button", { name: "创建工作空间" }).hover();
   await page.getByRole("button", { name: "创建工作空间" }).click();
   await expect(page).toHaveURL(/\/workspaces\//, { timeout: 30_000 });
 
+  const backendPort = process.env.CODETALK_BACKEND_PORT ?? "3004";
+  const installed = await request.post(
+    `http://localhost:${backendPort}/api/workbench/workflow-presets/basic_source_report_codex/install`,
+  );
+  expect(installed.status()).toBe(201);
   await page.goto("/tasks/new", { waitUntil: "domcontentloaded" });
-  await page.getByRole("radio", { name: /基础源码报告（Codex CLI）/ }).check();
+  await page.getByRole("button", { name: "全部场景" }).click();
+  await page.getByRole("radio", { name: /Legacy · SPDK\/iSCSI 专业源码报告/ }).check();
   await page.getByRole("button", { name: "保存并继续" }).click();
   await page.getByLabel("任务名称 *").fill(`V3 Codex 质量门禁 ${stamp}`);
   const workspaceSelector = page.getByLabel("工作空间 *");
-  await expect(workspaceSelector.locator("option")).toHaveCount(2);
-  await workspaceSelector.selectOption({ index: 1 });
+  await expect(workspaceSelector.locator("option", { hasText: workspaceName })).toHaveCount(1);
+  await workspaceSelector.selectOption({ label: workspaceName });
   await page.getByRole("button", { name: "保存并继续" }).click();
   await page.getByRole("textbox", { name: "分析目标 *" }).fill(
     "分析 SPDK iSCSI login 流程及其异常、资源、并发与恢复测试设计。",

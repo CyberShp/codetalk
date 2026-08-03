@@ -1,0 +1,29 @@
+{
+  "schema_version": "quality-benchmark-case-v1",
+  "case_id": "nvme-csd-sync-compute-passthru-001",
+  "project_id": "nvme-csd",
+  "truth_package_version": "1",
+  "tier": "S",
+  "truth_package": {
+    "gold_claims": {
+      "path": "gold_claims.json",
+      "sha256": "0fa41303fc8eeba0265f4850cc7c0b32efbfbb2633a383097e7678b0828af670"
+    },
+    "coverage_universe": {
+      "path": "coverage_universe.json",
+      "sha256": "803e12adfa65039d8e2c67f3522f7b4ba7c075c32ad57ff83b4b8cf07ed47287"
+    },
+    "critical_chains": {
+      "path": "critical_chains.json",
+      "sha256": "e03a92c42006c1feac7fea468b20b48407127df3bb683dbf45d6edcb8d961835"
+    },
+    "execution_oracles": {
+      "path": "execution_oracles.json",
+      "sha256": "72992945cb147f9e5c0fbb0fb2297df4e9eb0ca049d040900e8703c630c00ac4"
+    }
+  },
+  "test_execution": {
+    "policy": "disabled",
+    "commands": []
+  }
+}

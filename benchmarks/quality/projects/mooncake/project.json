@@ -1,0 +1,33 @@
+{
+  "schema_version": "quality-benchmark-project-v1",
+  "project_id": "mooncake",
+  "display_name": "Mooncake",
+  "canonical_source": {
+    "origin": "https://github.com/kvcache-ai/Mooncake.git",
+    "revision": "131d6addae64c31b340f1909350049eb41fcb790",
+    "tree_sha": "0b1a5c2baf5b98ebe1d44f09dd03a256aaa31290",
+    "source_dir": "mooncake"
+  },
+  "license": {
+    "spdx": "Apache-2.0",
+    "path": "LICENSE-APACHE",
+    "git_blob_sha": "7a4a3ea2424c09fbe48d455aed1eaa94d9124835"
+  },
+  "build_conditions": {
+    "status": "not_run",
+    "requirements": [
+      "The source build guide recommends Ubuntu 22.04 LTS or newer, CMake 3.20.x, and GCC 9.4 or newer.",
+      "The dependency script installs system packages, initializes submodules, installs Go, and builds or installs yalantinglibs, and therefore requires network and system changes."
+    ],
+    "evidence": [
+      "docs/source/getting_started/build.md:5-30"
+    ],
+    "limitations": [
+      "No dependency script, build, import, or project test execution was performed while authoring this Tier S case.",
+      "This case covers Mooncake Store metadata readiness only; it does not validate payload transfer, RDMA transport, or RoCE behavior."
+    ]
+  },
+  "cases": [
+    "mooncake-store-put-commit-readiness-recovery-001"
+  ]
+}

@@ -1,0 +1,1594 @@
+{
+  "$defs": {
+    "AxisResult": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "critical_misses": {
+                "minItems": 1
+              }
+            },
+            "required": [
+              "critical_misses"
+            ]
+          },
+          "then": {
+            "properties": {
+              "status": {
+                "const": "fail"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "validation_layers": {
+                "anyOf": [
+                  {
+                    "properties": {
+                      "L0": {
+                        "properties": {
+                          "status": {
+                            "const": "fail"
+                          }
+                        },
+                        "required": [
+                          "status"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "L0"
+                    ]
+                  },
+                  {
+                    "properties": {
+                      "L1": {
+                        "properties": {
+                          "status": {
+                            "const": "fail"
+                          }
+                        },
+                        "required": [
+                          "status"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "L1"
+                    ]
+                  },
+                  {
+                    "properties": {
+                      "L2": {
+                        "properties": {
+                          "status": {
+                            "const": "fail"
+                          }
+                        },
+                        "required": [
+                          "status"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "L2"
+                    ]
+                  },
+                  {
+                    "properties": {
+                      "L3": {
+                        "properties": {
+                          "status": {
+                            "const": "fail"
+                          }
+                        },
+                        "required": [
+                          "status"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "L3"
+                    ]
+                  }
+                ]
+              }
+            },
+            "required": [
+              "validation_layers"
+            ]
+          },
+          "then": {
+            "properties": {
+              "status": {
+                "const": "fail"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "anyOf": [
+              {
+                "properties": {
+                  "limitations": {
+                    "minItems": 1
+                  }
+                },
+                "required": [
+                  "limitations"
+                ]
+              },
+              {
+                "properties": {
+                  "validation_layers": {
+                    "anyOf": [
+                      {
+                        "properties": {
+                          "L0": {
+                            "anyOf": [
+                              {
+                                "properties": {
+                                  "status": {
+                                    "const": "not_run"
+                                  }
+                                },
+                                "required": [
+                                  "status"
+                                ]
+                              },
+                              {
+                                "properties": {
+                                  "limitations": {
+                                    "minItems": 1
+                                  }
+                                },
+                                "required": [
+                                  "limitations"
+                                ]
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "L0"
+                        ]
+                      },
+                      {
+                        "properties": {
+                          "L1": {
+                            "anyOf": [
+                              {
+                                "properties": {
+                                  "status": {
+                                    "const": "not_run"
+                                  }
+                                },
+                                "required": [
+                                  "status"
+                                ]
+                              },
+                              {
+                                "properties": {
+                                  "limitations": {
+                                    "minItems": 1
+                                  }
+                                },
+                                "required": [
+                                  "limitations"
+                                ]
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "L1"
+                        ]
+                      },
+                      {
+                        "properties": {
+                          "L2": {
+                            "anyOf": [
+                              {
+                                "properties": {
+                                  "status": {
+                                    "const": "not_run"
+                                  }
+                                },
+                                "required": [
+                                  "status"
+                                ]
+                              },
+                              {
+                                "properties": {
+                                  "limitations": {
+                                    "minItems": 1
+                                  }
+                                },
+                                "required": [
+                                  "limitations"
+                                ]
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "L2"
+                        ]
+                      },
+                      {
+                        "properties": {
+                          "L3": {
+                            "anyOf": [
+                              {
+                                "properties": {
+                                  "status": {
+                                    "const": "not_run"
+                                  }
+                                },
+                                "required": [
+                                  "status"
+                                ]
+                              },
+                              {
+                                "properties": {
+                                  "limitations": {
+                                    "minItems": 1
+                                  }
+                                },
+                                "required": [
+                                  "limitations"
+                                ]
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "L3"
+                        ]
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "validation_layers"
+                ]
+              }
+            ]
+          },
+          "then": {
+            "properties": {
+              "status": {
+                "not": {
+                  "const": "pass"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "critical_misses": {
+          "items": {
+            "$ref": "#/$defs/CriticalMiss"
+          },
+          "title": "Critical Misses",
+          "type": "array"
+        },
+        "denominator": {
+          "exclusiveMinimum": 0,
+          "title": "Denominator",
+          "type": "integer"
+        },
+        "evidence_refs": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "limitations": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Limitations",
+          "type": "array"
+        },
+        "metrics": {
+          "items": {
+            "$ref": "#/$defs/RatioMetric"
+          },
+          "title": "Metrics",
+          "type": "array"
+        },
+        "numerator": {
+          "minimum": 0,
+          "title": "Numerator",
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/$defs/AxisStatus"
+        },
+        "validation_layers": {
+          "$ref": "#/$defs/ValidationLayers"
+        }
+      },
+      "required": [
+        "status",
+        "numerator",
+        "denominator",
+        "critical_misses",
+        "evidence_refs",
+        "limitations",
+        "validation_layers",
+        "metrics"
+      ],
+      "title": "AxisResult",
+      "type": "object"
+    },
+    "AxisStatus": {
+      "enum": [
+        "pass",
+        "limited",
+        "fail"
+      ],
+      "title": "AxisStatus",
+      "type": "string"
+    },
+    "BenchmarkIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "case_id": {
+          "minLength": 1,
+          "title": "Case Id",
+          "type": "string"
+        },
+        "source_revision": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Source Revision",
+          "type": "string"
+        },
+        "truth_package_version": {
+          "pattern": "^[1-9][0-9]*$",
+          "title": "Truth Package Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "case_id",
+        "source_revision",
+        "truth_package_version"
+      ],
+      "title": "BenchmarkIdentity",
+      "type": "object"
+    },
+    "CriticalMiss": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_refs": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "item_id": {
+          "minLength": 1,
+          "title": "Item Id",
+          "type": "string"
+        },
+        "reason": {
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "validation_layer": {
+          "$ref": "#/$defs/ValidationLayer"
+        }
+      },
+      "required": [
+        "item_id",
+        "reason",
+        "validation_layer",
+        "evidence_refs"
+      ],
+      "title": "CriticalMiss",
+      "type": "object"
+    },
+    "DeliveryStatus": {
+      "enum": [
+        "ready",
+        "limited",
+        "not_ready"
+      ],
+      "title": "DeliveryStatus",
+      "type": "string"
+    },
+    "EvaluationScope": {
+      "enum": [
+        "operational",
+        "independent_benchmark"
+      ],
+      "title": "EvaluationScope",
+      "type": "string"
+    },
+    "EvaluationSnapshot": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "properties": {
+            "accuracy": {
+              "properties": {
+                "metrics": {
+                  "allOf": [
+                    {
+                      "contains": {
+                        "properties": {
+                          "name": {
+                            "const": "claim_precision"
+                          }
+                        },
+                        "required": [
+                          "name"
+                        ]
+                      }
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "metrics"
+              ]
+            }
+          },
+          "required": [
+            "accuracy"
+          ]
+        },
+        {
+          "properties": {
+            "breadth": {
+              "properties": {
+                "metrics": {
+                  "allOf": [
+                    {
+                      "contains": {
+                        "properties": {
+                          "name": {
+                            "const": "discovery_recall"
+                          }
+                        },
+                        "required": [
+                          "name"
+                        ]
+                      }
+                    },
+                    {
+                      "contains": {
+                        "properties": {
+                          "name": {
+                            "const": "critical_coverage"
+                          }
+                        },
+                        "required": [
+                          "name"
+                        ]
+                      }
+                    },
+                    {
+                      "contains": {
+                        "properties": {
+                          "name": {
+                            "const": "scenario_realization"
+                          }
+                        },
+                        "required": [
+                          "name"
+                        ]
+                      }
+                    },
+                    {
+                      "contains": {
+                        "properties": {
+                          "name": {
+                            "const": "disposition_completeness"
+                          }
+                        },
+                        "required": [
+                          "name"
+                        ]
+                      }
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "metrics"
+              ]
+            }
+          },
+          "required": [
+            "breadth"
+          ]
+        },
+        {
+          "properties": {
+            "depth": {
+              "properties": {
+                "metrics": {
+                  "allOf": [
+                    {
+                      "contains": {
+                        "properties": {
+                          "name": {
+                            "const": "minimum_critical_chain_closure"
+                          }
+                        },
+                        "required": [
+                          "name"
+                        ]
+                      }
+                    },
+                    {
+                      "contains": {
+                        "properties": {
+                          "name": {
+                            "const": "average_chain_closure"
+                          }
+                        },
+                        "required": [
+                          "name"
+                        ]
+                      }
+                    },
+                    {
+                      "contains": {
+                        "properties": {
+                          "name": {
+                            "const": "state_closure"
+                          }
+                        },
+                        "required": [
+                          "name"
+                        ]
+                      }
+                    },
+                    {
+                      "contains": {
+                        "properties": {
+                          "name": {
+                            "const": "resource_lifecycle_closure"
+                          }
+                        },
+                        "required": [
+                          "name"
+                        ]
+                      }
+                    },
+                    {
+                      "contains": {
+                        "properties": {
+                          "name": {
+                            "const": "error_recovery_closure"
+                          }
+                        },
+                        "required": [
+                          "name"
+                        ]
+                      }
+                    },
+                    {
+                      "contains": {
+                        "properties": {
+                          "name": {
+                            "const": "disconfirming_checks"
+                          }
+                        },
+                        "required": [
+                          "name"
+                        ]
+                      }
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "metrics"
+              ]
+            }
+          },
+          "required": [
+            "depth"
+          ]
+        }
+      ],
+      "properties": {
+        "accuracy": {
+          "$ref": "#/$defs/AxisResult"
+        },
+        "breadth": {
+          "$ref": "#/$defs/AxisResult"
+        },
+        "depth": {
+          "$ref": "#/$defs/AxisResult"
+        }
+      },
+      "required": [
+        "accuracy",
+        "breadth",
+        "depth"
+      ],
+      "title": "EvaluationSnapshot",
+      "type": "object"
+    },
+    "HardFailure": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "minLength": 1,
+          "title": "Code",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "message": {
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "unrecoverable": {
+          "title": "Unrecoverable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "evidence_refs",
+        "unrecoverable"
+      ],
+      "title": "HardFailure",
+      "type": "object"
+    },
+    "LayerStatus": {
+      "enum": [
+        "pass",
+        "fail",
+        "not_run",
+        "not_applicable"
+      ],
+      "title": "LayerStatus",
+      "type": "string"
+    },
+    "MetricName": {
+      "enum": [
+        "claim_precision",
+        "gold_recall",
+        "discovery_recall",
+        "critical_coverage",
+        "scenario_realization",
+        "disposition_completeness",
+        "minimum_critical_chain_closure",
+        "average_chain_closure",
+        "state_closure",
+        "resource_lifecycle_closure",
+        "error_recovery_closure",
+        "disconfirming_checks"
+      ],
+      "title": "MetricName",
+      "type": "string"
+    },
+    "RatioMetric": {
+      "additionalProperties": false,
+      "properties": {
+        "denominator": {
+          "exclusiveMinimum": 0,
+          "title": "Denominator",
+          "type": "integer"
+        },
+        "miss_ids": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Miss Ids",
+          "type": "array"
+        },
+        "name": {
+          "$ref": "#/$defs/MetricName"
+        },
+        "numerator": {
+          "minimum": 0,
+          "title": "Numerator",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "numerator",
+        "denominator",
+        "miss_ids"
+      ],
+      "title": "RatioMetric",
+      "type": "object"
+    },
+    "RepairSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt_count": {
+          "minimum": 0,
+          "title": "Attempt Count",
+          "type": "integer"
+        },
+        "elapsed_seconds": {
+          "minimum": 0,
+          "title": "Elapsed Seconds",
+          "type": "number"
+        },
+        "terminal_block_reason": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Terminal Block Reason"
+        }
+      },
+      "required": [
+        "attempt_count",
+        "elapsed_seconds",
+        "terminal_block_reason"
+      ],
+      "title": "RepairSummary",
+      "type": "object"
+    },
+    "ValidationLayer": {
+      "enum": [
+        "L0",
+        "L1",
+        "L2",
+        "L3"
+      ],
+      "title": "ValidationLayer",
+      "type": "string"
+    },
+    "ValidationLayerOutcome": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "critical_miss_ids": {
+                "minItems": 1
+              }
+            },
+            "required": [
+              "critical_miss_ids"
+            ]
+          },
+          "then": {
+            "properties": {
+              "status": {
+                "const": "fail"
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "critical_miss_ids": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Critical Miss Ids",
+          "type": "array"
+        },
+        "denominator": {
+          "exclusiveMinimum": 0,
+          "title": "Denominator",
+          "type": "integer"
+        },
+        "evidence_refs": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "limitations": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Limitations",
+          "type": "array"
+        },
+        "numerator": {
+          "minimum": 0,
+          "title": "Numerator",
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/$defs/LayerStatus"
+        }
+      },
+      "required": [
+        "status",
+        "numerator",
+        "denominator",
+        "critical_miss_ids",
+        "evidence_refs",
+        "limitations"
+      ],
+      "title": "ValidationLayerOutcome",
+      "type": "object"
+    },
+    "ValidationLayers": {
+      "additionalProperties": false,
+      "properties": {
+        "L0": {
+          "$ref": "#/$defs/ValidationLayerOutcome"
+        },
+        "L1": {
+          "$ref": "#/$defs/ValidationLayerOutcome"
+        },
+        "L2": {
+          "$ref": "#/$defs/ValidationLayerOutcome"
+        },
+        "L3": {
+          "$ref": "#/$defs/ValidationLayerOutcome"
+        }
+      },
+      "required": [
+        "L0",
+        "L1",
+        "L2",
+        "L3"
+      ],
+      "title": "ValidationLayers",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "scope": {
+            "const": "operational"
+          }
+        },
+        "required": [
+          "scope"
+        ]
+      },
+      "then": {
+        "properties": {
+          "benchmark_identity": {
+            "type": "null"
+          },
+          "final_after_auto_repair": {
+            "properties": {
+              "accuracy": {
+                "properties": {
+                  "metrics": {
+                    "not": {
+                      "contains": {
+                        "properties": {
+                          "name": {
+                            "const": "gold_recall"
+                          }
+                        },
+                        "required": [
+                          "name"
+                        ]
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "metrics"
+                ]
+              }
+            },
+            "required": [
+              "accuracy"
+            ]
+          },
+          "first_pass": {
+            "properties": {
+              "accuracy": {
+                "properties": {
+                  "metrics": {
+                    "not": {
+                      "contains": {
+                        "properties": {
+                          "name": {
+                            "const": "gold_recall"
+                          }
+                        },
+                        "required": [
+                          "name"
+                        ]
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "metrics"
+                ]
+              }
+            },
+            "required": [
+              "accuracy"
+            ]
+          }
+        },
+        "required": [
+          "benchmark_identity",
+          "first_pass",
+          "final_after_auto_repair"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "scope": {
+            "const": "independent_benchmark"
+          }
+        },
+        "required": [
+          "scope"
+        ]
+      },
+      "then": {
+        "properties": {
+          "benchmark_identity": {
+            "not": {
+              "type": "null"
+            }
+          },
+          "final_after_auto_repair": {
+            "properties": {
+              "accuracy": {
+                "properties": {
+                  "metrics": {
+                    "contains": {
+                      "properties": {
+                        "name": {
+                          "const": "gold_recall"
+                        }
+                      },
+                      "required": [
+                        "name"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "metrics"
+                ]
+              }
+            },
+            "required": [
+              "accuracy"
+            ]
+          },
+          "first_pass": {
+            "properties": {
+              "accuracy": {
+                "properties": {
+                  "metrics": {
+                    "contains": {
+                      "properties": {
+                        "name": {
+                          "const": "gold_recall"
+                        }
+                      },
+                      "required": [
+                        "name"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "metrics"
+                ]
+              }
+            },
+            "required": [
+              "accuracy"
+            ]
+          }
+        },
+        "required": [
+          "benchmark_identity",
+          "first_pass",
+          "final_after_auto_repair"
+        ]
+      }
+    },
+    {
+      "if": {
+        "anyOf": [
+          {
+            "properties": {
+              "hard_failures": {
+                "minItems": 1
+              }
+            },
+            "required": [
+              "hard_failures"
+            ]
+          },
+          {
+            "properties": {
+              "repair_summary": {
+                "properties": {
+                  "terminal_block_reason": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "terminal_block_reason"
+                ]
+              }
+            },
+            "required": [
+              "repair_summary"
+            ]
+          },
+          {
+            "properties": {
+              "final_after_auto_repair": {
+                "anyOf": [
+                  {
+                    "properties": {
+                      "accuracy": {
+                        "properties": {
+                          "status": {
+                            "const": "fail"
+                          }
+                        },
+                        "required": [
+                          "status"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "accuracy"
+                    ]
+                  },
+                  {
+                    "properties": {
+                      "breadth": {
+                        "properties": {
+                          "status": {
+                            "const": "fail"
+                          }
+                        },
+                        "required": [
+                          "status"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "breadth"
+                    ]
+                  },
+                  {
+                    "properties": {
+                      "depth": {
+                        "properties": {
+                          "status": {
+                            "const": "fail"
+                          }
+                        },
+                        "required": [
+                          "status"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "depth"
+                    ]
+                  }
+                ]
+              }
+            },
+            "required": [
+              "final_after_auto_repair"
+            ]
+          }
+        ]
+      },
+      "then": {
+        "properties": {
+          "delivery_status": {
+            "const": "not_ready"
+          }
+        },
+        "required": [
+          "delivery_status"
+        ]
+      }
+    },
+    {
+      "if": {
+        "allOf": [
+          {
+            "not": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "hard_failures": {
+                      "minItems": 1
+                    }
+                  },
+                  "required": [
+                    "hard_failures"
+                  ]
+                },
+                {
+                  "properties": {
+                    "repair_summary": {
+                      "properties": {
+                        "terminal_block_reason": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "terminal_block_reason"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "repair_summary"
+                  ]
+                },
+                {
+                  "properties": {
+                    "final_after_auto_repair": {
+                      "anyOf": [
+                        {
+                          "properties": {
+                            "accuracy": {
+                              "properties": {
+                                "status": {
+                                  "const": "fail"
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "accuracy"
+                          ]
+                        },
+                        {
+                          "properties": {
+                            "breadth": {
+                              "properties": {
+                                "status": {
+                                  "const": "fail"
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "breadth"
+                          ]
+                        },
+                        {
+                          "properties": {
+                            "depth": {
+                              "properties": {
+                                "status": {
+                                  "const": "fail"
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "depth"
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "final_after_auto_repair"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "anyOf": [
+              {
+                "properties": {
+                  "limitations": {
+                    "minItems": 1
+                  }
+                },
+                "required": [
+                  "limitations"
+                ]
+              },
+              {
+                "properties": {
+                  "final_after_auto_repair": {
+                    "anyOf": [
+                      {
+                        "properties": {
+                          "accuracy": {
+                            "properties": {
+                              "status": {
+                                "const": "limited"
+                              }
+                            },
+                            "required": [
+                              "status"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "accuracy"
+                        ]
+                      },
+                      {
+                        "properties": {
+                          "breadth": {
+                            "properties": {
+                              "status": {
+                                "const": "limited"
+                              }
+                            },
+                            "required": [
+                              "status"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "breadth"
+                        ]
+                      },
+                      {
+                        "properties": {
+                          "depth": {
+                            "properties": {
+                              "status": {
+                                "const": "limited"
+                              }
+                            },
+                            "required": [
+                              "status"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "depth"
+                        ]
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "final_after_auto_repair"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "then": {
+        "properties": {
+          "delivery_status": {
+            "const": "limited"
+          }
+        },
+        "required": [
+          "delivery_status"
+        ]
+      }
+    },
+    {
+      "if": {
+        "allOf": [
+          {
+            "not": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "hard_failures": {
+                      "minItems": 1
+                    }
+                  },
+                  "required": [
+                    "hard_failures"
+                  ]
+                },
+                {
+                  "properties": {
+                    "repair_summary": {
+                      "properties": {
+                        "terminal_block_reason": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "terminal_block_reason"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "repair_summary"
+                  ]
+                },
+                {
+                  "properties": {
+                    "final_after_auto_repair": {
+                      "anyOf": [
+                        {
+                          "properties": {
+                            "accuracy": {
+                              "properties": {
+                                "status": {
+                                  "const": "fail"
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "accuracy"
+                          ]
+                        },
+                        {
+                          "properties": {
+                            "breadth": {
+                              "properties": {
+                                "status": {
+                                  "const": "fail"
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "breadth"
+                          ]
+                        },
+                        {
+                          "properties": {
+                            "depth": {
+                              "properties": {
+                                "status": {
+                                  "const": "fail"
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "depth"
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "final_after_auto_repair"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "not": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "limitations": {
+                      "minItems": 1
+                    }
+                  },
+                  "required": [
+                    "limitations"
+                  ]
+                },
+                {
+                  "properties": {
+                    "final_after_auto_repair": {
+                      "anyOf": [
+                        {
+                          "properties": {
+                            "accuracy": {
+                              "properties": {
+                                "status": {
+                                  "const": "limited"
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "accuracy"
+                          ]
+                        },
+                        {
+                          "properties": {
+                            "breadth": {
+                              "properties": {
+                                "status": {
+                                  "const": "limited"
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "breadth"
+                          ]
+                        },
+                        {
+                          "properties": {
+                            "depth": {
+                              "properties": {
+                                "status": {
+                                  "const": "limited"
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "depth"
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "final_after_auto_repair"
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "then": {
+        "properties": {
+          "delivery_status": {
+            "const": "ready"
+          }
+        },
+        "required": [
+          "delivery_status"
+        ]
+      }
+    }
+  ],
+  "properties": {
+    "benchmark_identity": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BenchmarkIdentity"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "delivery_status": {
+      "$ref": "#/$defs/DeliveryStatus"
+    },
+    "final_after_auto_repair": {
+      "$ref": "#/$defs/EvaluationSnapshot"
+    },
+    "first_pass": {
+      "$ref": "#/$defs/EvaluationSnapshot"
+    },
+    "hard_failures": {
+      "items": {
+        "$ref": "#/$defs/HardFailure"
+      },
+      "title": "Hard Failures",
+      "type": "array"
+    },
+    "limitations": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Limitations",
+      "type": "array"
+    },
+    "repair_summary": {
+      "$ref": "#/$defs/RepairSummary"
+    },
+    "run_ref": {
+      "minLength": 1,
+      "title": "Run Ref",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "quality-evaluation-v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "scope": {
+      "$ref": "#/$defs/EvaluationScope"
+    }
+  },
+  "required": [
+    "schema_version",
+    "scope",
+    "run_ref",
+    "benchmark_identity",
+    "delivery_status",
+    "first_pass",
+    "final_after_auto_repair",
+    "repair_summary",
+    "hard_failures",
+    "limitations"
+  ],
+  "title": "QualityEvaluationReport",
+  "type": "object",
+  "x-codetalk-runtime-validation": {
+    "authority": "pydantic",
+    "invariants": [
+      {
+        "id": "numerator_lte_denominator",
+        "reason": "Draft 2020-12 cannot compare sibling numerator and denominator values."
+      },
+      {
+        "id": "snapshot_change_requires_positive_attempt_count",
+        "reason": "Draft 2020-12 cannot compare nested snapshot equality with attempt_count."
+      }
+    ],
+    "public_validator": "app.services.quality_evaluation_contract.validate_quality_evaluation"
+  }
+}

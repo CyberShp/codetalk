@@ -1,0 +1,96 @@
+{
+  "case_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001",
+  "items": [
+    {
+      "item_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:entrypoints",
+      "dimension": "entrypoints",
+      "critical": true,
+      "applicability": "required",
+      "evidence_refs": [
+        "source://lmcache/v1/storage_backend/local_cpu_backend.py#submit_put_task:L150-L187",
+        "source://lmcache/v1/storage_backend/local_cpu_backend.py#get_blocking:L211-L223",
+        "source://lmcache/v1/storage_backend/local_cpu_backend.py#batched_allocate:L729-L864"
+      ]
+    },
+    {
+      "item_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:flows",
+      "dimension": "flows",
+      "critical": true,
+      "applicability": "required",
+      "evidence_refs": [
+        "test://tests/v1/storage_backend/test_local_cpu_backend.py#put_get_refcount_flow:L529-L547",
+        "test://tests/v1/storage_backend/test_local_cpu_backend.py#pinned_recovery_flow:L557-L606"
+      ]
+    },
+    {
+      "item_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:branches",
+      "dimension": "branches",
+      "critical": true,
+      "applicability": "required",
+      "evidence_refs": [
+        "source://lmcache/v1/storage_backend/local_cpu_backend.py#complete_group_branch:L797-L837",
+        "test://tests/v1/storage_backend/test_local_cpu_backend.py#safe_group_branch:L608-L660"
+      ]
+    },
+    {
+      "item_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:states",
+      "dimension": "states",
+      "critical": true,
+      "applicability": "required",
+      "evidence_refs": [
+        "source://lmcache/v1/storage_backend/local_cpu_backend.py#hot_cache_and_refcount:L162-L170",
+        "test://tests/v1/storage_backend/test_local_cpu_backend.py#state_observations:L579-L602"
+      ]
+    },
+    {
+      "item_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:resources",
+      "dimension": "resources",
+      "critical": true,
+      "applicability": "required",
+      "evidence_refs": [
+        "source://lmcache/v1/storage_backend/local_cpu_backend.py#allocator_acquire_and_free:L770-L822",
+        "test://tests/v1/storage_backend/test_local_cpu_backend.py#allocator_memcheck:L557-L606"
+      ]
+    },
+    {
+      "item_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:boundaries",
+      "dimension": "boundaries",
+      "critical": true,
+      "applicability": "required",
+      "evidence_refs": [
+        "source://lmcache/v1/storage_backend/local_cpu_backend.py#batch_layer_group_boundary:L793-L813",
+        "test://tests/v1/storage_backend/test_local_cpu_backend.py#capacity_boundary:L557-L590"
+      ]
+    },
+    {
+      "item_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:concurrency",
+      "dimension": "concurrency",
+      "critical": true,
+      "applicability": "required",
+      "evidence_refs": [
+        "source://lmcache/v1/storage_backend/local_cpu_backend.py#caller_ref_ownership:L215-L223",
+        "source://lmcache/v1/storage_backend/local_cpu_backend.py#cpu_lock_eviction:L788-L821"
+      ]
+    },
+    {
+      "item_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:errors",
+      "dimension": "errors",
+      "critical": true,
+      "applicability": "required",
+      "evidence_refs": [
+        "source://lmcache/v1/storage_backend/local_cpu_backend.py#no_candidate_nonbusy_failure:L827-L837",
+        "test://tests/v1/storage_backend/test_local_cpu_backend.py#failure_then_recovery:L579-L602"
+      ]
+    },
+    {
+      "item_id": "lmcache-local-cpu-put-get-pinned-eviction-recovery-001:mutation-put",
+      "dimension": "mutation",
+      "critical": true,
+      "applicability": "required",
+      "description": "Under the CPU lock, a new put increments the MemoryObj reference count, inserts the key into hot_cache, and updates the cache policy.",
+      "evidence_refs": [
+        "source://lmcache/v1/storage_backend/local_cpu_backend.py#L162-L170"
+      ]
+    }
+  ]
+}

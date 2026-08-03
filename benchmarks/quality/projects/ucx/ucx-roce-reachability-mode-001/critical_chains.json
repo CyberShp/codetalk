@@ -1,0 +1,43 @@
+{
+  "case_id": "ucx-roce-reachability-mode-001",
+  "evidence_catalog_sha256": "da91dd5cfca0f33d16c5c9feb5e0fa23896b103a7457dfec7d4429e902a331df",
+  "execution_tier": "S",
+  "chains": [
+    {
+      "chain_id": "ucx-roce-route-recovery-chain",
+      "nodes": [
+        {"node_id": "route-misclassification-trigger", "kind": "trigger", "statement": "A RoCE peer with no accepted route triggers the route-mode unreachable classification.", "critical": true},
+        {"node_id": "matching-roce-envelope", "kind": "precondition_input", "statement": "The compared addresses have already passed link-layer and PKEY checks and both use RoCE.", "critical": true},
+        {"node_id": "reachability-entry", "kind": "entry", "statement": "uct_ib_iface_is_reachable_v2 enters RoCE reachability classification for the peer address.", "critical": true},
+        {"node_id": "dispatch-roce-classifier", "kind": "call_chain", "statement": "The entry dispatches according to route, local_subnet, or all RoCE reachability mode.", "critical": true},
+        {"node_id": "acquire-gid-route-state", "kind": "resource_acquisition", "statement": "Route classification obtains GID, address-family, netdev, and route information needed for the check.", "critical": true},
+        {"node_id": "own-iface-config-state", "kind": "resource_ownership", "statement": "The interface owns its configured reachability mode, GID prefix, and route-related state.", "critical": true},
+        {"node_id": "evaluate-route-state", "kind": "state_resource_mutation", "statement": "Route mode evaluates best-netdev, loopback, and kernel-local route candidates for the peer.", "critical": true},
+        {"node_id": "classify-peer-unreachable", "kind": "downstream_effect", "statement": "When none of the accepted route conditions hold, route mode classifies the peer unreachable.", "critical": true},
+        {"node_id": "propagate-unreachable-info", "kind": "error_propagation", "statement": "The no-route branch fills an explanatory information string and returns false.", "critical": true},
+        {"node_id": "recover-with-all-mode", "kind": "cleanup_recovery", "statement": "Reconfiguring to all mode bypasses version, family, GID conversion, subnet, and route checks after the outer envelope.", "critical": true},
+        {"node_id": "release-old-iface-resources", "kind": "resource_release", "statement": "Replacing or closing the old interface releases the route-mode interface resources before the new configuration is used.", "critical": true},
+        {"node_id": "observe-all-short-circuit", "kind": "external_observation", "statement": "In all mode the same RoCE envelope is observed as reachable immediately, without proving transport connectivity.", "critical": true},
+        {"node_id": "static-mode-oracle", "kind": "executable_oracle", "statement": "The source oracle distinguishes route failure, local-subnet prefix behavior, and the all-mode short circuit.", "critical": true}
+      ],
+      "edges": [
+        {"edge_id": "e01", "source_node_id": "route-misclassification-trigger", "target_node_id": "matching-roce-envelope", "statement": "The route-mode failure is evaluated only after confirming the common RoCE and PKEY envelope.", "critical": true},
+        {"edge_id": "e02", "source_node_id": "matching-roce-envelope", "target_node_id": "reachability-entry", "statement": "A matching RoCE envelope enters the interface reachability function.", "critical": true},
+        {"edge_id": "e03", "source_node_id": "reachability-entry", "target_node_id": "dispatch-roce-classifier", "statement": "The reachability entry dispatches to the classifier selected by the interface mode.", "critical": true},
+        {"edge_id": "e04", "source_node_id": "dispatch-roce-classifier", "target_node_id": "acquire-gid-route-state", "statement": "Route and local-subnet classifiers acquire the address and route state needed by their checks.", "critical": true},
+        {"edge_id": "e05", "source_node_id": "acquire-gid-route-state", "target_node_id": "own-iface-config-state", "statement": "The acquired state is interpreted under the mode and prefix owned by the interface configuration.", "critical": true},
+        {"edge_id": "e06", "source_node_id": "own-iface-config-state", "target_node_id": "evaluate-route-state", "statement": "Route mode uses the interface-owned configuration to evaluate accepted route candidates.", "critical": true},
+        {"edge_id": "e07", "source_node_id": "evaluate-route-state", "target_node_id": "classify-peer-unreachable", "statement": "Failure of every accepted route condition yields an unreachable classification.", "critical": true},
+        {"edge_id": "e08", "source_node_id": "classify-peer-unreachable", "target_node_id": "propagate-unreachable-info", "statement": "The unreachable branch records no-route information and returns false to the caller.", "critical": true},
+        {"edge_id": "e09", "source_node_id": "propagate-unreachable-info", "target_node_id": "recover-with-all-mode", "statement": "Changing the configured mode to all avoids the route branch that produced the false result.", "critical": true},
+        {"edge_id": "e10", "source_node_id": "recover-with-all-mode", "target_node_id": "release-old-iface-resources", "statement": "Applying a new interface configuration replaces the prior route-mode interface state and releases its resources.", "critical": true},
+        {"edge_id": "e11", "source_node_id": "release-old-iface-resources", "target_node_id": "observe-all-short-circuit", "statement": "The all-mode interface returns reachable before consulting the route state used by the old mode.", "critical": true},
+        {"edge_id": "e12", "source_node_id": "observe-all-short-circuit", "target_node_id": "static-mode-oracle", "statement": "The source oracle identifies the all-mode true result as a short circuit rather than route proof.", "critical": true}
+      ],
+      "disconfirming_checks": [
+        {"check_id": "all-does-not-prove-connectivity", "statement": "The all-mode true result assumes reachability and must not be treated as evidence of transport connectivity.", "critical": true},
+        {"check_id": "local-subnet-test-does-not-cover-all", "statement": "The existing local_subnet traffic test does not validate route mode or all-mode semantics.", "critical": true}
+      ]
+    }
+  ]
+}

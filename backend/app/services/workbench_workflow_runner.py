@@ -17,6 +17,7 @@ import time
 import tokenize
 import traceback
 import uuid
+import cloudpickle
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -834,6 +835,321 @@ def _should_apply_final_deterministic_repairs(
     )
 
 
+def _fast_result_requires_quality_continuation(
+    *,
+    elapsed_seconds: float,
+    audit: dict[str, Any],
+    cache_reused: bool,
+    remaining_seconds: float,
+    minimum_remaining_seconds: float,
+) -> bool:
+    """Flag a cold sub-five-minute result only when its audit is insufficient."""
+
+    return (
+        0 <= elapsed_seconds < 5 * 60
+        and not cache_reused
+        and str(audit.get("status") or "") in {"needs_rework", "invalid"}
+        and remaining_seconds >= minimum_remaining_seconds
+    )
+
+
+def _apply_fast_result_work_sufficiency(
+    *,
+    audit: dict[str, Any],
+    elapsed_seconds: float,
+    cache_reused: bool,
+    remaining_seconds: float,
+    minimum_remaining_seconds: float,
+    repair_artifact: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Turn a cold, fast, under-evidenced result into actionable repair work."""
+
+    updated = json.loads(json.dumps(audit))
+    if elapsed_seconds >= 5 * 60:
+        return updated, {
+            "status": "not_applicable",
+            "auto_continue": False,
+            "elapsed_seconds": round(elapsed_seconds, 3),
+            "reasons": [],
+        }
+    if cache_reused:
+        return updated, {
+            "status": "reused",
+            "auto_continue": False,
+            "elapsed_seconds": round(elapsed_seconds, 3),
+            "reasons": [],
+        }
+
+    profile = updated.get("profile_execution_evidence")
+    reasons: list[str] = []
+    if not isinstance(profile, dict):
+        reasons.append("profile_execution_missing")
+    else:
+        if str(profile.get("status") or "") not in {
+            "completed",
+            "deliverable",
+            "passed",
+            "sufficient",
+        }:
+            reasons.append("profile_execution_not_sufficient")
+        if int(profile.get("provider_call_count") or 0) <= 0:
+            reasons.append("provider_work_not_recorded")
+        if int(profile.get("branch_count") or 0) <= 0:
+            reasons.append("branch_traversal_not_recorded")
+        if profile.get("missing_branch_provider_work"):
+            reasons.append("branch_provider_work_missing")
+        if profile.get("under_evidenced_branches"):
+            reasons.append("under_evidenced_branches")
+
+    fact_verification = updated.get("fact_verification")
+    if not isinstance(fact_verification, dict) or int(
+        fact_verification.get("total") or 0
+    ) <= 0:
+        reasons.append("claim_verification_not_recorded")
+    axes = updated.get("quality_axes")
+    breadth = axes.get("coverage_breadth") if isinstance(axes, dict) else None
+    if not isinstance(breadth, dict) or int(breadth.get("total") or 0) <= 0:
+        reasons.append("coverage_breadth_not_recorded")
+
+    auto_continue = bool(reasons) and remaining_seconds >= minimum_remaining_seconds
+    diagnostic = {
+        "status": "insufficient" if reasons else "sufficient",
+        "auto_continue": auto_continue,
+        "elapsed_seconds": round(elapsed_seconds, 3),
+        "remaining_seconds": round(max(0.0, remaining_seconds), 3),
+        "reasons": reasons,
+    }
+    updated["work_sufficiency"] = diagnostic
+    if auto_continue:
+        updated["status"] = "needs_rework"
+        updated["deliverable"] = False
+        issues = updated.get("issues")
+        if not isinstance(issues, list):
+            issues = []
+            updated["issues"] = issues
+        if not any(
+            isinstance(issue, dict)
+            and issue.get("code") == "fast_result_work_sufficiency_incomplete"
+            for issue in issues
+        ):
+            issues.append(
+                {
+                    "artifact": repair_artifact,
+                    "code": "fast_result_work_sufficiency_incomplete",
+                    "message": "Cold sub-five-minute result lacks recorded work-sufficiency evidence.",
+                    "reasons": reasons,
+                }
+            )
+        updated["issue_count"] = len(issues)
+    return updated, diagnostic
+
+
+def _apply_benchmark_work_sufficiency(
+    *,
+    audit: dict[str, Any],
+    task_run: Any,
+    elapsed_seconds: float,
+    remaining_seconds: float,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Audit cold sub-five-minute benchmark work without evaluator truth."""
+
+    workflow = getattr(task_run, "workflow_snapshot", {})
+    if not isinstance(workflow, dict) or str(workflow.get("id") or "") != (
+        "quality-benchmark-generation-v1"
+    ):
+        return audit, {}
+
+    updated = json.loads(json.dumps(audit))
+    agent_runs = [
+        item
+        for item in getattr(task_run, "agent_runs", [])
+        if isinstance(item, dict) and str(item.get("step_id") or "") == "analyze"
+    ]
+    agent_dir = Path(
+        str(agent_runs[-1].get("artifact_dir") or "") if agent_runs else ""
+    )
+    response = _read_json(agent_dir / "benchmark_response.json")
+    if not isinstance(response, dict):
+        response = {}
+
+    cache_reused = any(
+        bool(item.get("cache_reused") or item.get("reuse_source"))
+        for item in agent_runs
+    )
+    if elapsed_seconds >= 5 * 60:
+        diagnostic = {
+            "status": "not_sampled",
+            "auto_continue": False,
+            "elapsed_seconds": round(elapsed_seconds, 3),
+            "cache_reused": cache_reused,
+            "reasons": [],
+        }
+        updated["work_sufficiency"] = diagnostic
+        return updated, diagnostic
+    if cache_reused:
+        diagnostic = {
+            "status": "reused",
+            "auto_continue": False,
+            "elapsed_seconds": round(elapsed_seconds, 3),
+            "cache_reused": True,
+            "reasons": [],
+        }
+        updated["work_sufficiency"] = diagnostic
+        return updated, diagnostic
+
+    profile = getattr(task_run, "execution_profile", {})
+    if not isinstance(profile, dict) or not profile:
+        bundle = getattr(task_run, "task_bundle", {})
+        profile = (
+            bundle.get("execution_profile")
+            if isinstance(bundle, dict)
+            and isinstance(bundle.get("execution_profile"), dict)
+            else {}
+        )
+    profile_id = str(profile.get("id") or "rapid").strip().lower()
+    claims = [item for item in response.get("claims") or [] if isinstance(item, dict)]
+    candidates = [
+        item
+        for item in response.get("breadth_candidates") or []
+        if isinstance(item, dict)
+    ]
+    scenarios = [
+        item
+        for item in response.get("breadth_scenarios") or []
+        if isinstance(item, dict)
+    ]
+    chains = [
+        item
+        for item in response.get("depth_chains") or []
+        if isinstance(item, dict)
+    ]
+    node_count = sum(len(item.get("nodes") or []) for item in chains)
+    edge_count = sum(len(item.get("edges") or []) for item in chains)
+    check_count = sum(len(item.get("disconfirming_checks") or []) for item in chains)
+    evidence_refs = {
+        json.dumps(ref, ensure_ascii=True, sort_keys=True)
+        for value in (claims, candidates, scenarios, chains)
+        for item in value
+        for ref in _nested_benchmark_evidence_refs(item)
+    }
+    minimums = (
+        {
+            "claims": 6,
+            "breadth_candidates": 6,
+            "breadth_scenarios": 4,
+            "depth_nodes": 4,
+            "depth_edges": 2,
+            "disconfirming_checks": 2,
+            "distinct_evidence_refs": 6,
+        }
+        if profile_id == "deep"
+        else {
+            "claims": 3,
+            "breadth_candidates": 3,
+            "breadth_scenarios": 2,
+            "depth_nodes": 2,
+            "depth_edges": 1,
+            "disconfirming_checks": 1,
+            "distinct_evidence_refs": 3,
+        }
+    )
+    axis_evidence = {
+        "claims": len(claims),
+        "breadth_candidates": len(candidates),
+        "breadth_scenarios": len(scenarios),
+        "depth_chains": len(chains),
+        "depth_nodes": node_count,
+        "depth_edges": edge_count,
+        "disconfirming_checks": check_count,
+        "distinct_evidence_refs": len(evidence_refs),
+        "provider_invocation_recorded": (
+            agent_dir / "benchmark_codex_invocation.json"
+        ).is_file(),
+    }
+    reasons = [
+        f"{name}_below_{minimum}"
+        for name, minimum in minimums.items()
+        if int(axis_evidence[name]) < minimum
+    ]
+    if not axis_evidence["provider_invocation_recorded"]:
+        reasons.append("provider_invocation_not_recorded")
+    minimum_remaining_seconds = float(
+        settings.staged_quality_repair_min_remaining_seconds
+    )
+    auto_continue = bool(reasons) and remaining_seconds >= minimum_remaining_seconds
+    diagnostic = {
+        "status": "insufficient" if reasons else "sufficient",
+        "auto_continue": auto_continue,
+        "elapsed_seconds": round(elapsed_seconds, 3),
+        "remaining_seconds": round(max(0.0, remaining_seconds), 3),
+        "minimum_remaining_seconds": minimum_remaining_seconds,
+        "cache_reused": False,
+        "profile": profile_id,
+        "axis_evidence": axis_evidence,
+        "minimums": minimums,
+        "reasons": reasons,
+    }
+    updated["work_sufficiency"] = diagnostic
+    if reasons:
+        updated["status"] = "needs_rework"
+        updated["deliverable"] = False
+        issues = updated.get("issues")
+        if not isinstance(issues, list):
+            issues = []
+            updated["issues"] = issues
+        issues = [
+            issue
+            for issue in issues
+            if not (
+                isinstance(issue, dict)
+                and issue.get("code") == "fast_benchmark_work_insufficient"
+            )
+        ]
+        issues.append(
+            {
+                "artifact": "benchmark_response.json",
+                "code": "fast_benchmark_work_insufficient",
+                "severity": "error",
+                "message": (
+                    "Cold sub-five-minute benchmark result lacks substantive "
+                    "three-axis work evidence."
+                ),
+                "reasons": reasons,
+                "repairable": auto_continue,
+            }
+        )
+        updated["issues"] = issues
+        updated["issue_count"] = len(issues)
+    return updated, diagnostic
+
+
+def _nested_benchmark_evidence_refs(value: Any) -> list[Any]:
+    refs: list[Any] = []
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            if key == "evidence_refs" and isinstance(nested, list):
+                refs.extend(nested)
+            else:
+                refs.extend(_nested_benchmark_evidence_refs(nested))
+    elif isinstance(value, list):
+        for item in value:
+            refs.extend(_nested_benchmark_evidence_refs(item))
+    return refs
+
+
+def _task_run_elapsed_seconds(task_run: Any) -> float:
+    raw = str(getattr(task_run, "created_at", "") or "").strip()
+    if not raw:
+        return 0.0
+    try:
+        created = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return 0.0
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    return max(0.0, (datetime.now(timezone.utc) - created).total_seconds())
+
+
 def _snapshot_quality_repair_artifacts(
     *,
     artifact_dir: Path,
@@ -1088,6 +1404,53 @@ def _mark_staged_workflow_deadline_exceeded(
     }
 
 
+def _quality_profile_deadline_seconds(profile_id: str) -> int:
+    """Return the absolute F012 lifecycle budget for the selected profile."""
+
+    if str(profile_id).strip().lower() == "deep":
+        return int(settings.quality_deep_deadline_seconds)
+    return int(settings.quality_rapid_deadline_seconds)
+
+
+def _quality_run_deadline_monotonic(task_run: Any, *, timeout_sec: int) -> float:
+    now = time.monotonic()
+    bundle = task_run.task_bundle if isinstance(task_run.task_bundle, dict) else {}
+    profile = bundle.get("execution_profile")
+    profile_id = (
+        str(profile.get("id") or "rapid")
+        if isinstance(profile, dict)
+        else "rapid"
+    )
+    profile_deadline = now + _quality_profile_deadline_seconds(profile_id)
+    persisted = _v3_total_execution_deadline_monotonic(
+        task_run, timeout_sec=timeout_sec
+    )
+    if persisted is not None:
+        return min(persisted, profile_deadline)
+    return profile_deadline
+
+
+def _remaining_deadline_timeout(deadline_monotonic: float, requested: int) -> int:
+    remaining = math.ceil(deadline_monotonic - time.monotonic())
+    if remaining <= 0:
+        return 0
+    if requested > 0:
+        return min(requested, remaining)
+    return remaining
+
+
+def _deadline_bounded_agent_run(
+    agent_run: dict[str, Any], *, remaining_timeout: int
+) -> dict[str, Any]:
+    bounded = dict(agent_run)
+    configured = _positive_number(agent_run.get("timeout_seconds"))
+    bounded["timeout_seconds"] = min(
+        int(configured) if configured is not None else remaining_timeout,
+        remaining_timeout,
+    )
+    return bounded
+
+
 def _profile_execution_evidence_for_quality_audit(
     *, artifact_dir: Path, execution_profile: Any
 ) -> dict[str, Any]:
@@ -1290,6 +1653,9 @@ class WorkbenchWorkflowRunner:
     ) -> WorkbenchWorkflowExecutionResult:
         self._record_builtin_provider_readiness_if_applicable(task_run)
         started_at = _now()
+        execution_deadline_monotonic = _quality_run_deadline_monotonic(
+            task_run, timeout_sec=timeout_sec
+        )
         step_results: list[dict[str, Any]] = []
         agent_runs_by_step = {
             str(item.get("step_id") or ""): item
@@ -1304,11 +1670,13 @@ class WorkbenchWorkflowRunner:
                 compiled_plan=compiled_plan,
                 agent_runs_by_step=agent_runs_by_step,
                 timeout_sec=timeout_sec,
+                deadline_monotonic=execution_deadline_monotonic,
             )
             return self._finalize_execution(
                 task_run=task_run,
                 started_at=started_at,
                 step_results=step_results,
+                deadline_monotonic=execution_deadline_monotonic,
             )
 
         for step in task_run.workflow_snapshot.get("steps") or []:
@@ -1354,13 +1722,28 @@ class WorkbenchWorkflowRunner:
                     break
                 continue
 
+            effective_timeout = _remaining_deadline_timeout(
+                execution_deadline_monotonic, timeout_sec
+            )
+            if effective_timeout <= 0:
+                step_result = {
+                    "step_id": step_id,
+                    "type": step_type,
+                    "status": "error",
+                    "error": "workflow_deadline_exceeded",
+                }
+                step_results.append(step_result)
+                self._emit_step_finished(step_result)
+                break
             step_result = self._execute_agent_step(
                 task_run_id=task_run.task_run_id,
                 step=step,
-                agent_run=agent_run,
+                agent_run=_deadline_bounded_agent_run(
+                    agent_run, remaining_timeout=effective_timeout
+                ),
                 prior_step_results=step_results,
                 resolved_inputs={},
-                timeout_sec=timeout_sec,
+                timeout_sec=effective_timeout if timeout_sec > 0 else 0,
             )
             step_results.append(step_result)
             self._emit_step_finished(step_result)
@@ -1373,6 +1756,7 @@ class WorkbenchWorkflowRunner:
             task_run=task_run,
             started_at=started_at,
             step_results=step_results,
+            deadline_monotonic=execution_deadline_monotonic,
         )
 
     def _execute_v3_task_run(
@@ -2314,6 +2698,7 @@ class WorkbenchWorkflowRunner:
         compiled_plan: dict[str, Any],
         agent_runs_by_step: dict[str, dict[str, Any]],
         timeout_sec: int,
+        deadline_monotonic: float,
     ) -> list[dict[str, Any]]:
         from app.services.workflow_scheduler import WorkflowDagScheduler
 
@@ -2379,14 +2764,29 @@ class WorkbenchWorkflowRunner:
                         prior_step_results=prior_step_results,
                         resolved_inputs=resolved_inputs,
                     )
-                    result = self._execute_agent_step(
-                        task_run_id=task_run.task_run_id,
-                        step=step,
-                        agent_run=agent_run,
-                        prior_step_results=prior_step_results,
-                        resolved_inputs=resolved_inputs,
-                        timeout_sec=timeout_sec,
+                    effective_timeout = _remaining_deadline_timeout(
+                        deadline_monotonic, timeout_sec
                     )
+                    if effective_timeout <= 0:
+                        result = {
+                            "step_id": step_id,
+                            "type": "agent_task",
+                            "status": "error",
+                            "error": "workflow_deadline_exceeded",
+                        }
+                    else:
+                        result = self._execute_agent_step(
+                            task_run_id=task_run.task_run_id,
+                            step=step,
+                            agent_run=_deadline_bounded_agent_run(
+                                agent_run, remaining_timeout=effective_timeout
+                            ),
+                            prior_step_results=prior_step_results,
+                            resolved_inputs=resolved_inputs,
+                            timeout_sec=(
+                                effective_timeout if timeout_sec > 0 else 0
+                            ),
+                        )
             else:
                 result = self._execute_builtin_step(
                     task_run=task_run,
@@ -2425,6 +2825,7 @@ class WorkbenchWorkflowRunner:
         task_run: Any,
         started_at: str,
         step_results: list[dict[str, Any]],
+        deadline_monotonic: float,
     ) -> WorkbenchWorkflowExecutionResult:
         outputs = self._collect_workflow_outputs(
             task_run=task_run,
@@ -2485,6 +2886,7 @@ class WorkbenchWorkflowRunner:
         self._materialize_final_behavior_validation(
             task_run=task_run,
             step_results=step_results,
+            deadline_monotonic=deadline_monotonic,
         )
         # The source-driven judge combines L1 bindings with the independent
         # L2 behavior verdict. Rebuild it only after the final validation
@@ -2494,7 +2896,10 @@ class WorkbenchWorkflowRunner:
             artifact_dir=Path(str(task_run.artifact_dir)),
             plan={},
         )
-        test_activity_quality = self.audit_test_activity_quality(task_run=task_run)
+        test_activity_quality = self._audit_test_activity_quality_before_deadline(
+            task_run=task_run,
+            deadline_monotonic=deadline_monotonic,
+        )
         final_deterministic_repairs: dict[str, list[str]] = {}
         # One repair can reveal the next deterministic contract mismatch (for
         # example, a corrected source statement can expose a missing formal
@@ -2530,8 +2935,12 @@ class WorkbenchWorkflowRunner:
             self._materialize_final_behavior_validation(
                 task_run=task_run,
                 step_results=step_results,
+                deadline_monotonic=deadline_monotonic,
             )
-            test_activity_quality = self.audit_test_activity_quality(task_run=task_run)
+            test_activity_quality = self._audit_test_activity_quality_before_deadline(
+                task_run=task_run,
+                deadline_monotonic=deadline_monotonic,
+            )
         if final_deterministic_repairs:
             test_activity_quality["final_deterministic_quality_repair"] = {
                 "changed_fields": final_deterministic_repairs,
@@ -2545,17 +2954,32 @@ class WorkbenchWorkflowRunner:
             task_run=task_run,
             step_results=step_results,
             audit=test_activity_quality,
+            deadline_monotonic=deadline_monotonic,
         )
         if external_repair.get("candidate_ready"):
             self._materialize_final_behavior_validation(
                 task_run=task_run,
                 step_results=step_results,
+                deadline_monotonic=deadline_monotonic,
             )
-            candidate_audit = self.audit_test_activity_quality(task_run=task_run)
-            if _quality_repair_regressed(
+            candidate_audit = self._audit_test_activity_quality_before_deadline(
+                task_run=task_run,
+                deadline_monotonic=deadline_monotonic,
+            )
+            candidate_regressed = _quality_repair_regressed(
                 before=test_activity_quality,
                 after=candidate_audit,
-            ):
+            )
+            candidate_stalled = _quality_repair_stalled(
+                before=test_activity_quality,
+                after=candidate_audit,
+                candidate_regressed=candidate_regressed,
+                salvaged_rows={},
+            )
+            external_repair["audit_signature_after"] = list(
+                _quality_audit_signature(candidate_audit)
+            )
+            if candidate_regressed:
                 _restore_quality_repair_artifacts(
                     artifact_dir=Path(str(external_repair["artifact_dir"])),
                     snapshot=external_repair["snapshot"],
@@ -2591,10 +3015,30 @@ class WorkbenchWorkflowRunner:
                 self._materialize_final_behavior_validation(
                     task_run=task_run,
                     step_results=step_results,
+                    deadline_monotonic=deadline_monotonic,
                 )
-                test_activity_quality = self.audit_test_activity_quality(task_run=task_run)
+                test_activity_quality = self._audit_test_activity_quality_before_deadline(
+                    task_run=task_run,
+                    deadline_monotonic=deadline_monotonic,
+                )
                 external_repair["accepted"] = False
                 external_repair["reason"] = "candidate_quality_regressed"
+            elif candidate_stalled:
+                _restore_quality_repair_artifacts(
+                    artifact_dir=Path(str(external_repair["artifact_dir"])),
+                    snapshot=external_repair["snapshot"],
+                )
+                self._materialize_final_behavior_validation(
+                    task_run=task_run,
+                    step_results=step_results,
+                    deadline_monotonic=deadline_monotonic,
+                )
+                test_activity_quality = self._audit_test_activity_quality_before_deadline(
+                    task_run=task_run,
+                    deadline_monotonic=deadline_monotonic,
+                )
+                external_repair["accepted"] = False
+                external_repair["reason"] = "no_quality_progress"
             else:
                 test_activity_quality = candidate_audit
                 external_repair["accepted"] = True
@@ -2607,7 +3051,7 @@ class WorkbenchWorkflowRunner:
                 Path(str(task_run.artifact_dir)) / "test_activity_quality_audit.json",
                 test_activity_quality,
             )
-        elif external_repair.get("attempted"):
+        elif external_repair.get("attempted") or external_repair.get("recordable"):
             test_activity_quality["external_agent_quality_repair"] = {
                 key: value
                 for key, value in external_repair.items()
@@ -2649,11 +3093,15 @@ class WorkbenchWorkflowRunner:
         self._materialize_final_behavior_validation(
             task_run=task_run,
             step_results=step_results,
+            deadline_monotonic=deadline_monotonic,
         )
         # Markdown delivery is rendered from the repaired canonical JSON above.
         # Re-audit those final bytes before publishing any status or cache entry;
         # otherwise the cockpit and the repair directory can disagree.
-        final_quality_audit = self.audit_test_activity_quality(task_run=task_run)
+        final_quality_audit = self._audit_test_activity_quality_before_deadline(
+            task_run=task_run,
+            deadline_monotonic=deadline_monotonic,
+        )
         # The final renderer may surface a syntactic Markdown defect or a
         # deterministic observability alias that was not present when the
         # earlier repair loop ran. Give only the bounded repairer one last
@@ -2692,12 +3140,16 @@ class WorkbenchWorkflowRunner:
             self._materialize_final_behavior_validation(
                 task_run=task_run,
                 step_results=step_results,
+                deadline_monotonic=deadline_monotonic,
             )
             _refresh_source_delivery_governance_after_finalizing(
                 artifact_dir=Path(str(task_run.artifact_dir)),
                 plan={},
             )
-            final_quality_audit = self.audit_test_activity_quality(task_run=task_run)
+            final_quality_audit = self._audit_test_activity_quality_before_deadline(
+                task_run=task_run,
+                deadline_monotonic=deadline_monotonic,
+            )
         if isinstance(test_activity_quality.get("external_agent_quality_repair"), dict):
             final_quality_audit["external_agent_quality_repair"] = dict(
                 test_activity_quality["external_agent_quality_repair"]
@@ -2790,6 +3242,7 @@ class WorkbenchWorkflowRunner:
         task_run: Any,
         step_results: list[dict[str, Any]],
         audit: dict[str, Any],
+        deadline_monotonic: float | None = None,
     ) -> dict[str, Any]:
         """Run one artifact-scoped repair turn for a completed external Agent.
 
@@ -2797,12 +3250,36 @@ class WorkbenchWorkflowRunner:
         contract. It never re-runs discovery and cannot replace protected
         artifacts. The caller audits candidate bytes before accepting them.
         """
-        if (
-            not settings.external_agent_quality_repair_enabled
-            or str(audit.get("status") or "") not in {"needs_rework", "invalid"}
-            or self._is_cancelled()
-        ):
+        if str(audit.get("status") or "") not in {"needs_rework", "invalid"}:
             return {"attempted": False}
+        if self._is_cancelled():
+            return {
+                "attempted": False,
+                "recordable": True,
+                "reason": "task_run_cancelled",
+            }
+        if not settings.external_agent_quality_repair_enabled:
+            return {
+                "attempted": False,
+                "recordable": True,
+                "reason": "external_quality_repair_disabled",
+            }
+        remaining_seconds = (
+            deadline_monotonic - time.monotonic()
+            if deadline_monotonic is not None
+            else float(settings.external_agent_quality_repair_timeout_seconds)
+        )
+        minimum_remaining_seconds = float(
+            settings.staged_quality_repair_min_remaining_seconds
+        )
+        if remaining_seconds < minimum_remaining_seconds:
+            return {
+                "attempted": False,
+                "recordable": True,
+                "reason": "insufficient_remaining_time",
+                "remaining_seconds": round(max(0.0, remaining_seconds), 3),
+                "minimum_remaining_seconds": minimum_remaining_seconds,
+            }
         agent_runs = {
             str(item.get("step_id") or ""): item
             for item in task_run.agent_runs
@@ -2817,7 +3294,11 @@ class WorkbenchWorkflowRunner:
             and str(item.get("step_id") or "") in agent_runs
         ]
         if not eligible:
-            return {"attempted": False}
+            return {
+                "attempted": False,
+                "recordable": True,
+                "reason": "no_eligible_external_agent_run",
+            }
         step_result = eligible[-1]
         step_id = str(step_result.get("step_id") or "")
         agent_run = agent_runs[step_id]
@@ -2837,7 +3318,18 @@ class WorkbenchWorkflowRunner:
         )
         repair_artifacts = [item for item in required if Path(item).name in affected]
         if not repair_artifacts:
-            return {"attempted": False, "reason": "no_repairable_declared_artifacts"}
+            return {
+                "attempted": False,
+                "recordable": True,
+                "reason": "unrecoverable_or_no_repairable_obligations",
+                "blocked_reasons": list(feedback.get("blocked_reasons") or []),
+                "repairable_issue_count": int(
+                    feedback.get("repairable_issue_count") or 0
+                ),
+                "non_repairable_issue_count": int(
+                    feedback.get("non_repairable_issue_count") or 0
+                ),
+            }
         protected = [item for item in required if item not in repair_artifacts]
         snapshot = _snapshot_quality_repair_artifacts(
             artifact_dir=artifact_dir,
@@ -2871,17 +3363,35 @@ class WorkbenchWorkflowRunner:
                 "user_message": "质量门禁发现问题，正在要求执行器只修复失败交付件。",
             },
         )
-        execution = AgentHarnessFacade(artifact_dir).execute(
-            str(run_payload.get("run_id") or ""),
-            timeout_sec=int(settings.external_agent_quality_repair_timeout_seconds),
-            idle_timeout_sec=_effective_agent_idle_timeout_sec(
-                agent_run=agent_run, run_payload=run_payload,
-            ),
-            is_cancelled=self._is_cancelled,
-            event_sink=lambda kind, payload: self._emit_event(
-                kind, {"step_id": step_id, "repair_turn": repair_turn, **dict(payload)}
-            ),
-        )
+        try:
+            execution = AgentHarnessFacade(artifact_dir).execute(
+                str(run_payload.get("run_id") or ""),
+                timeout_sec=max(
+                    1,
+                    min(
+                        int(settings.external_agent_quality_repair_timeout_seconds),
+                        int(remaining_seconds),
+                    ),
+                ),
+                idle_timeout_sec=_effective_agent_idle_timeout_sec(
+                    agent_run=agent_run, run_payload=run_payload,
+                ),
+                is_cancelled=self._is_cancelled,
+                event_sink=lambda kind, payload: self._emit_event(
+                    kind, {"step_id": step_id, "repair_turn": repair_turn, **dict(payload)}
+                ),
+            )
+        except BaseException:
+            _restore_quality_repair_artifacts(
+                artifact_dir=artifact_dir,
+                snapshot=snapshot,
+            )
+            raise
+        finally:
+            _restore_quality_repair_artifacts(
+                artifact_dir=artifact_dir,
+                snapshot={name: snapshot[name] for name in protected},
+            )
         _snapshot_agent_turn_artifacts(artifact_dir, turn_id=repair_turn)
         validation = _validate_step_artifacts(artifact_dir, repair_artifacts)
         if execution.status != "completed" or validation.status != "ok":
@@ -2899,6 +3409,7 @@ class WorkbenchWorkflowRunner:
             }
         return {
             "attempted": True,
+            "recordable": True,
             "candidate_ready": True,
             "accepted": False,
             "reason": "candidate_pending_quality_audit",
@@ -2907,6 +3418,7 @@ class WorkbenchWorkflowRunner:
             "validation_status": validation.status,
             "artifact_dir": str(artifact_dir),
             "snapshot": snapshot,
+            "audit_signature_before": list(_quality_audit_signature(audit)),
         }
 
     def _materialize_final_behavior_validation(
@@ -2914,6 +3426,7 @@ class WorkbenchWorkflowRunner:
         *,
         task_run: Any,
         step_results: list[dict[str, Any]],
+        deadline_monotonic: float | None = None,
     ) -> dict[str, Any]:
         """Run the independent fact audit for external-Agent test deliverables."""
 
@@ -2946,19 +3459,30 @@ class WorkbenchWorkflowRunner:
             )
 
         try:
-            validation = _run_async_blocking(
-                legacy_execution.materialize_behavior_claim_validation(
-                    artifact_dir=Path(str(task_run.artifact_dir)),
-                    repo_path=Path(str(task_run.repo_path)),
-                    generator_identity=generator_identity,
-                    on_progress=progress,
-                )
+            validation_awaitable = legacy_execution.materialize_behavior_claim_validation(
+                artifact_dir=Path(str(task_run.artifact_dir)),
+                repo_path=Path(str(task_run.repo_path)),
+                generator_identity=generator_identity,
+                on_progress=progress,
             )
-        except (OSError, RuntimeError, ValueError) as exc:
+            validation = _run_async_blocking(
+                _await_with_absolute_deadline(
+                    validation_awaitable,
+                    deadline=deadline_monotonic,
+                )
+                if deadline_monotonic is not None
+                else validation_awaitable
+            )
+        except (asyncio.TimeoutError, OSError, RuntimeError, ValueError) as exc:
+            reason = (
+                "workflow_deadline_exceeded"
+                if isinstance(exc, asyncio.TimeoutError)
+                else f"{type(exc).__name__}: {exc}"
+            )
             validation = {
                 "status": "unavailable",
                 "claims": [],
-                "reason": f"独立源码事实核验执行失败：{type(exc).__name__}: {exc}",
+                "reason": f"独立源码事实核验执行失败：{reason}",
             }
         self._emit_event(
             "behavior_claim_validation_completed",
@@ -2974,6 +3498,79 @@ class WorkbenchWorkflowRunner:
             },
         )
         return validation
+
+    def _audit_test_activity_quality_before_deadline(
+        self,
+        *,
+        task_run: Any,
+        deadline_monotonic: float,
+    ) -> dict[str, Any]:
+        try:
+            audit = _run_async_blocking(
+                _run_sync_with_absolute_deadline(
+                    lambda: self.audit_test_activity_quality(task_run=task_run),
+                    deadline=deadline_monotonic,
+                    spawn_request=self._quality_audit_spawn_request(task_run),
+                )
+            )
+        except asyncio.TimeoutError:
+            audit = self._deadline_exceeded_quality_audit()
+        elapsed = _task_run_elapsed_seconds(task_run)
+        audit, diagnostic = _apply_benchmark_work_sufficiency(
+            audit=audit,
+            task_run=task_run,
+            elapsed_seconds=elapsed,
+            remaining_seconds=max(0.0, deadline_monotonic - time.monotonic()),
+        )
+        if diagnostic:
+            _write_json(
+                Path(str(task_run.artifact_dir))
+                / "benchmark_work_sufficiency.json",
+                diagnostic,
+            )
+            if diagnostic.get("status") == "insufficient":
+                self._emit_event(
+                    "work_sufficiency_checked",
+                    {
+                        **diagnostic,
+                        "user_message": (
+                            "快速完成结果的三轴工作证据不足，"
+                            "正在继续同轮定向质量修复。"
+                        ),
+                    },
+                )
+        return audit
+
+    @staticmethod
+    def _deadline_exceeded_quality_audit() -> dict[str, Any]:
+        return {
+            "status": "invalid",
+            "deliverable": False,
+            "issues": [
+                {
+                    "code": "workflow_deadline_exceeded",
+                    "severity": "error",
+                    "artifact": "test_activity_quality_audit.json",
+                    "message": "质量终审超过运行时限，当前结果不能标记为可交付。",
+                    "repairable": False,
+                }
+            ],
+            "repairable_issues": [],
+            "limitations": ["workflow_deadline_exceeded"],
+        }
+
+    def _quality_audit_spawn_request(self, task_run: Any) -> dict[str, str] | None:
+        task_run_id = str(getattr(task_run, "task_run_id", "") or "").strip()
+        if not task_run_id:
+            return None
+        return {
+            "artifact_root": str(self.artifact_root.resolve()),
+            "task_run_id": task_run_id,
+            "artifact_dir": str(
+                Path(str(getattr(task_run, "artifact_dir", "") or "")).resolve()
+            ),
+            "material_db_path": str(self._material_db_path.resolve()),
+        }
 
     def _emit_step_finished(self, step_result: dict[str, Any]) -> None:
         status = str(step_result.get("status") or "")
@@ -4026,11 +4623,16 @@ class WorkbenchWorkflowRunner:
                     required_artifacts=generation_artifacts,
                 )
                 requested_staged_timeout = float(timeout_sec or 0)
+                profile_deadline_seconds = _quality_profile_deadline_seconds(profile_id)
+                configured_staged_ceiling = float(
+                    settings.staged_workflow_timeout_seconds
+                )
                 staged_lifecycle_budget_seconds = min(
                     requested_staged_timeout
                     if requested_staged_timeout > 0
-                    else float(settings.staged_workflow_timeout_seconds),
-                    float(settings.staged_workflow_timeout_seconds),
+                    else float(profile_deadline_seconds),
+                    float(profile_deadline_seconds),
+                    configured_staged_ceiling,
                 )
                 staged_lifecycle_deadline = (
                     started_monotonic + max(0.001, staged_lifecycle_budget_seconds)
@@ -4329,6 +4931,9 @@ class WorkbenchWorkflowRunner:
                                     task_run=staged_task_run
                                 ),
                                 deadline=staged_lifecycle_deadline,
+                                spawn_request=self._quality_audit_spawn_request(
+                                    staged_task_run
+                                ),
                             )
                         except ValueError as exc:
                             # Some test/dev reload paths can materialize the
@@ -4425,6 +5030,50 @@ class WorkbenchWorkflowRunner:
                                         },
                                     )
                                     break
+                                remaining_seconds = remaining_lifecycle_seconds()
+                                minimum_remaining_seconds = float(
+                                    settings.staged_quality_repair_min_remaining_seconds
+                                )
+                                repair_artifact = next(
+                                    (
+                                        str(value)
+                                        for value in required_artifacts
+                                        if Path(str(value)).suffix.lower()
+                                        in {".md", ".txt"}
+                                    ),
+                                    str(required_artifacts[0])
+                                    if required_artifacts
+                                    else "assistant-output.md",
+                                )
+                                audit, work_sufficiency = (
+                                    _apply_fast_result_work_sufficiency(
+                                        audit=audit,
+                                        elapsed_seconds=(
+                                            time.monotonic() - started_monotonic
+                                        ),
+                                        cache_reused=bool(
+                                            staged_result.get("reuse_source")
+                                            or staged_result.get("cache_reused")
+                                        ),
+                                        remaining_seconds=remaining_seconds,
+                                        minimum_remaining_seconds=(
+                                            minimum_remaining_seconds
+                                        ),
+                                        repair_artifact=repair_artifact,
+                                    )
+                                )
+                                if work_sufficiency.get("status") == "insufficient":
+                                    emit_event(
+                                        "work_sufficiency_checked",
+                                        {
+                                            "step_id": step_id,
+                                            **work_sufficiency,
+                                            "user_message": (
+                                                "快速完成结果的工作证据不足，"
+                                                "正在继续同轮质量修复。"
+                                            ),
+                                        },
+                                    )
                                 if not audit or str(audit.get("status") or "") not in {
                                     "needs_rework",
                                     "invalid",
@@ -4440,10 +5089,6 @@ class WorkbenchWorkflowRunner:
                                         "workflow_deadline_exceeded"
                                     )
                                     break
-                                remaining_seconds = remaining_lifecycle_seconds()
-                                minimum_remaining_seconds = float(
-                                    settings.staged_quality_repair_min_remaining_seconds
-                                )
                                 if remaining_seconds < minimum_remaining_seconds:
                                     quality_repair_stop_reason = (
                                         "insufficient_remaining_time"
@@ -4531,6 +5176,22 @@ class WorkbenchWorkflowRunner:
                                         ),
                                         "affected_artifacts": list(
                                             feedback.get("affected_artifacts") or []
+                                        ),
+                                        "fast_result_quality_suspect": (
+                                            _fast_result_requires_quality_continuation(
+                                                elapsed_seconds=(
+                                                    time.monotonic() - started_monotonic
+                                                ),
+                                                audit=audit,
+                                                cache_reused=bool(
+                                                    staged_result.get("reuse_source")
+                                                    or staged_result.get("cache_reused")
+                                                ),
+                                                remaining_seconds=remaining_seconds,
+                                                minimum_remaining_seconds=(
+                                                    minimum_remaining_seconds
+                                                ),
+                                            )
                                         ),
                                         "user_message": (
                                             "质量门禁发现问题，正在复用已验证证据并定向修复受影响产物"
@@ -7138,41 +7799,27 @@ async def _run_sync_with_absolute_deadline(
     callback: Callable[[], Any],
     *,
     deadline: float,
+    spawn_request: dict[str, str] | None = None,
 ) -> Any:
     if time.monotonic() >= deadline:
         raise asyncio.TimeoutError
-    if os.name == "nt":
-        result = callback()
-        if time.monotonic() >= deadline:
-            raise asyncio.TimeoutError
-        return result
-
-    # FastAPI's synchronous background runner invokes this lifecycle from a
-    # worker thread.  Forking an already multithreaded interpreter is unsafe
-    # on macOS and can make the child die before it sends the audit result.
-    # The quality audit is local file/JSON work, so preserve the shared
-    # deadline with a cancellable await instead of introducing a nested fork.
-    if threading.current_thread() is not threading.main_thread():
-        remaining = max(0.0, deadline - time.monotonic())
-        if remaining <= 0:
-            raise asyncio.TimeoutError
-        return await asyncio.wait_for(asyncio.to_thread(callback), timeout=remaining)
-
-    context = multiprocessing.get_context("fork")
+    start_method = _deadline_process_start_method()
+    context = multiprocessing.get_context(start_method)
     receive_connection, send_connection = context.Pipe(duplex=False)
-
-    def run_callback() -> None:
-        try:
-            send_connection.send(("result", callback()))
-        except BaseException as exc:
-            try:
-                send_connection.send(("error", exc))
-            except BaseException:
-                send_connection.send(("error_text", repr(exc)))
-        finally:
-            send_connection.close()
-
-    process = context.Process(target=run_callback, daemon=True)
+    if start_method == "spawn" and spawn_request is not None:
+        target = _run_spawned_quality_audit
+        callback_argument = dict(spawn_request)
+    elif start_method == "spawn":
+        target = _run_serialized_deadline_callback
+        callback_argument: Any = cloudpickle.dumps(callback)
+    else:
+        target = _run_deadline_callback
+        callback_argument = callback
+    process = context.Process(
+        target=target,
+        args=(send_connection, callback_argument),
+        daemon=True,
+    )
     process.start()
     send_connection.close()
     try:
@@ -7216,6 +7863,64 @@ async def _run_sync_with_absolute_deadline(
             process.join(
                 timeout=float(settings.staged_workflow_shutdown_grace_seconds)
             )
+
+
+def _run_deadline_callback(send_connection: Any, callback: Callable[[], Any]) -> None:
+    _send_deadline_callback_result(send_connection, callback)
+
+
+def _run_serialized_deadline_callback(
+    send_connection: Any,
+    callback_payload: bytes,
+) -> None:
+    _send_deadline_callback_result(send_connection, cloudpickle.loads(callback_payload))
+
+
+def _run_spawned_quality_audit(
+    send_connection: Any,
+    request: dict[str, str],
+) -> None:
+    def audit() -> dict[str, Any]:
+        runner = WorkbenchWorkflowRunner(
+            request["artifact_root"],
+            material_db_path=request["material_db_path"],
+        )
+        task_run = _load_spawned_quality_audit_task(runner, request)
+        return runner.audit_test_activity_quality(task_run=task_run)
+
+    _send_deadline_callback_result(send_connection, audit)
+
+
+def _load_spawned_quality_audit_task(
+    runner: WorkbenchWorkflowRunner,
+    request: dict[str, str],
+) -> Any:
+    task_run = runner.store.load(request["task_run_id"])
+    effective_artifact_dir = str(request.get("artifact_dir") or "").strip()
+    return (
+        replace(task_run, artifact_dir=effective_artifact_dir)
+        if effective_artifact_dir
+        else task_run
+    )
+
+
+def _send_deadline_callback_result(
+    send_connection: Any,
+    callback: Callable[[], Any],
+) -> None:
+    try:
+        send_connection.send(("result", callback()))
+    except BaseException as exc:
+        try:
+            send_connection.send(("error", exc))
+        except BaseException:
+            send_connection.send(("error_text", repr(exc)))
+    finally:
+        send_connection.close()
+
+
+def _deadline_process_start_method() -> str:
+    return "spawn" if os.name == "nt" else "fork"
 
 
 async def _close_llm_clients(
@@ -11739,7 +12444,7 @@ def _quality_feedback_from_audit(
     for raw_issue in audit.get("issues") or []:
         if not isinstance(raw_issue, dict):
             continue
-        issue = dict(raw_issue)
+        issue = _sanitize_quality_repair_value(raw_issue)
         source_artifact = str(issue.get("artifact") or "").strip()
         code = str(issue.get("code") or "").strip()
         artifact = report_artifact if source_artifact == "assistant-output.md" else source_artifact
@@ -11767,7 +12472,10 @@ def _quality_feedback_from_audit(
             # is an actual delivery change, unlike asking the model to invent
             # a missing source path from the same prompt.
             artifact = "black_box_cases.json"
-        is_repairable = code not in non_repairable_codes
+        is_repairable = (
+            code not in non_repairable_codes
+            and not bool(issue.get("unrecoverable"))
+        )
         issue["repairable"] = is_repairable
         if artifact and is_repairable:
             issue["artifact"] = artifact
@@ -11826,9 +12534,9 @@ def _quality_feedback_from_audit(
         "quality_artifact": quality_artifact,
         "status": str(audit.get("status") or "needs_rework"),
         "issue_count": len(issues),
-        "issues": issues[:50],
+        "issues": issues,
         "repairable_issue_count": len(repairable_issues),
-        "repairable_issues": repairable_issues[:50],
+        "repairable_issues": repairable_issues,
         "non_repairable_issue_count": len(non_repairable_issues),
         "blocked_reasons": list(
             dict.fromkeys(
@@ -11850,6 +12558,42 @@ def _quality_feedback_from_audit(
             "绕过或弱化门禁，也不能把设计期望改写成实现事实。"
         ),
     }
+
+
+_QUALITY_REPAIR_FORBIDDEN_TRUTH_FIELDS = frozenset(
+    {
+        "gold_claim",
+        "gold_claims",
+        "gold_id",
+        "gold_ids",
+        "coverage_universe",
+        "critical_chain",
+        "critical_chains",
+        "execution_oracles",
+        "truth",
+        "truth_path",
+        "truth_package",
+        "truth_package_path",
+        "evaluator_truth",
+        "expected_answer",
+    }
+)
+
+
+def _sanitize_quality_repair_value(value: Any) -> Any:
+    """Remove evaluator-only truth while retaining actionable failure details."""
+
+    if isinstance(value, dict):
+        return {
+            str(key): _sanitize_quality_repair_value(nested)
+            for key, nested in value.items()
+            if str(key).strip().lower() not in _QUALITY_REPAIR_FORBIDDEN_TRUTH_FIELDS
+        }
+    if isinstance(value, list):
+        return [_sanitize_quality_repair_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_quality_repair_value(item) for item in value)
+    return value
 
 
 def _apply_quality_feedback_to_staged_plan(

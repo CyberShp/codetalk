@@ -1,0 +1,199 @@
+{
+  "case_id": "open-cas-wb-default-disconnect-001",
+  "execution_plan": {"schema_version": "quality-depth-execution-v1", "case_id": "open-cas-wb-default-disconnect-001", "execution_tier": "S", "policy": "disabled", "oracles": [], "limitations": []},
+  "tier_dispositions": [{"tier": "E", "status": "unavailable", "requirements": ["OPEN_CAS_KERNEL_MODULE", "ISOLATED_BLOCK_FIXTURE"], "limitation": "EXECUTION_ENVIRONMENT_NOT_PROVISIONED"}],
+  "execution_tier": "S",
+  "policy": "disabled",
+  "oracle": {
+    "oracle_id": "open-cas:test_disconnect_default",
+    "kind": "existing_functional_test",
+    "source_path": "test/functional/tests/disconnect/test_disconnect.py",
+    "symbol": "test_disconnect_default",
+    "line_range": "L67-L116",
+    "status": "not_run",
+    "expected_observations": [
+      "default disconnect freezes exported object queues",
+      "reconnected cache has zero dirty blocks",
+      "core CRCs match values captured before disconnect"
+    ],
+    "test_execution": {
+      "policy": "disabled",
+      "commands": [],
+      "reason": "The functional test requires privileged destructive access to at least two physical disks."
+    }
+  },
+  "l3": {
+    "status": "not_run",
+    "limitations": [
+      "L3_NOT_RUN:TIER_S",
+      "The existing functional oracle requires hardware disks and privileged, destructive setup; it was not executed."
+    ]
+  },
+  "evidence_catalog": {
+    "case_id": "open-cas-wb-default-disconnect-001",
+    "bindings": [
+      {
+        "evidence_ref": "source://test/functional/tests/disconnect/test_disconnect.py#L81-L92:node-default-disconnect",
+        "chain_id": "open-cas-disconnect-chain",
+        "category": "node",
+        "obligation_id": "trigger"
+      },
+      {
+        "evidence_ref": "source://test/functional/tests/disconnect/test_disconnect.py#L81-L89:node-dirty-wb-precondition",
+        "chain_id": "open-cas-disconnect-chain",
+        "category": "node",
+        "obligation_id": "bounded-input"
+      },
+      {
+        "evidence_ref": "source://casadm/cas_lib.c#L1171-L1198:node-userspace-entry",
+        "chain_id": "open-cas-disconnect-chain",
+        "category": "node",
+        "obligation_id": "api-entry"
+      },
+      {
+        "evidence_ref": "source://modules/cas_cache/service_ui_ioctl.c#L436-L449:node-ioctl-call",
+        "chain_id": "open-cas-disconnect-chain",
+        "category": "node",
+        "obligation_id": "call-chain"
+      },
+      {
+        "evidence_ref": "source://modules/cas_cache/layer_cache_management.c#L3581-L3594:node-cache-reference",
+        "chain_id": "open-cas-disconnect-chain",
+        "category": "node",
+        "obligation_id": "acquire-resource"
+      },
+      {
+        "evidence_ref": "source://modules/cas_cache/layer_cache_management.c#L3596-L3600:node-no-dirty-ownership",
+        "chain_id": "open-cas-disconnect-chain",
+        "category": "node",
+        "obligation_id": "own-resource"
+      },
+      {
+        "evidence_ref": "source://modules/cas_cache/layer_cache_management.c#L3601-L3607:node-default-flush",
+        "chain_id": "open-cas-disconnect-chain",
+        "category": "node",
+        "obligation_id": "mutate-state"
+      },
+      {
+        "evidence_ref": "source://modules/cas_cache/layer_cache_management.c#L3623-L3655:node-freeze-and-stop",
+        "chain_id": "open-cas-disconnect-chain",
+        "category": "node",
+        "obligation_id": "downstream-effect"
+      },
+      {
+        "evidence_ref": "source://modules/cas_cache/layer_cache_management.c#L3603-L3611:node-error-gotos",
+        "chain_id": "open-cas-disconnect-chain",
+        "category": "node",
+        "obligation_id": "propagate-error"
+      },
+      {
+        "evidence_ref": "source://modules/cas_cache/layer_cache_management.c#L3670-L3682:node-error-cleanup",
+        "chain_id": "open-cas-disconnect-chain",
+        "category": "node",
+        "obligation_id": "recover-cleanup"
+      },
+      {
+        "evidence_ref": "source://modules/cas_cache/layer_cache_management.c#L3651-L3668:node-deposit-and-release",
+        "chain_id": "open-cas-disconnect-chain",
+        "category": "node",
+        "obligation_id": "release-resource"
+      },
+      {
+        "evidence_ref": "source://test/functional/tests/disconnect/test_disconnect.py#L94-L113:node-functional-observation",
+        "chain_id": "open-cas-disconnect-chain",
+        "category": "node",
+        "obligation_id": "external-observation"
+      },
+      {
+        "evidence_ref": "source://test/functional/tests/disconnect/test_disconnect.py#L67-L116:node-test-oracle",
+        "chain_id": "open-cas-disconnect-chain",
+        "category": "node",
+        "obligation_id": "oracle"
+      },
+      {
+        "evidence_ref": "source://test/functional/tests/disconnect/test_disconnect.py#L81-L92:edge-e01",
+        "chain_id": "open-cas-disconnect-chain",
+        "category": "edge",
+        "obligation_id": "e01"
+      },
+      {
+        "evidence_ref": "source://casadm/cas_lib.c#L1171-L1198:edge-e02",
+        "chain_id": "open-cas-disconnect-chain",
+        "category": "edge",
+        "obligation_id": "e02"
+      },
+      {
+        "evidence_ref": "source://modules/cas_cache/service_ui_ioctl.c#L436-L449:edge-e03",
+        "chain_id": "open-cas-disconnect-chain",
+        "category": "edge",
+        "obligation_id": "e03"
+      },
+      {
+        "evidence_ref": "source://modules/cas_cache/layer_cache_management.c#L3581-L3594:edge-e04",
+        "chain_id": "open-cas-disconnect-chain",
+        "category": "edge",
+        "obligation_id": "e04"
+      },
+      {
+        "evidence_ref": "source://modules/cas_cache/layer_cache_management.c#L3596-L3600:edge-e05",
+        "chain_id": "open-cas-disconnect-chain",
+        "category": "edge",
+        "obligation_id": "e05"
+      },
+      {
+        "evidence_ref": "source://modules/cas_cache/layer_cache_management.c#L3601-L3607:edge-e06",
+        "chain_id": "open-cas-disconnect-chain",
+        "category": "edge",
+        "obligation_id": "e06"
+      },
+      {
+        "evidence_ref": "source://modules/cas_cache/layer_cache_management.c#L3623-L3655:edge-e07",
+        "chain_id": "open-cas-disconnect-chain",
+        "category": "edge",
+        "obligation_id": "e07"
+      },
+      {
+        "evidence_ref": "source://modules/cas_cache/layer_cache_management.c#L3603-L3611:edge-e08",
+        "chain_id": "open-cas-disconnect-chain",
+        "category": "edge",
+        "obligation_id": "e08"
+      },
+      {
+        "evidence_ref": "source://modules/cas_cache/layer_cache_management.c#L3670-L3682:edge-e09",
+        "chain_id": "open-cas-disconnect-chain",
+        "category": "edge",
+        "obligation_id": "e09"
+      },
+      {
+        "evidence_ref": "source://modules/cas_cache/layer_cache_management.c#L3651-L3668:edge-e10",
+        "chain_id": "open-cas-disconnect-chain",
+        "category": "edge",
+        "obligation_id": "e10"
+      },
+      {
+        "evidence_ref": "source://test/functional/tests/disconnect/test_disconnect.py#L94-L113:edge-e11",
+        "chain_id": "open-cas-disconnect-chain",
+        "category": "edge",
+        "obligation_id": "e11"
+      },
+      {
+        "evidence_ref": "source://test/functional/tests/disconnect/test_disconnect.py#L67-L116:edge-e12",
+        "chain_id": "open-cas-disconnect-chain",
+        "category": "edge",
+        "obligation_id": "e12"
+      },
+      {
+        "evidence_ref": "test://test/functional/tests/disconnect/test_disconnect.py#L119-L174:check-no-flush-retains-dirty-data",
+        "chain_id": "open-cas-disconnect-chain",
+        "category": "check",
+        "obligation_id": "no-flush-retains-dirty-data"
+      },
+      {
+        "evidence_ref": "oracle://test_disconnect_default#tier-s-not-executed",
+        "chain_id": "open-cas-disconnect-chain",
+        "category": "l3",
+        "obligation_id": "execution"
+      }
+    ]
+  }
+}

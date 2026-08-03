@@ -1,0 +1,14 @@
+{
+  "case_id": "femu-bbssd-out-of-range-write-001",
+  "items": [
+    {"item_id": "femu-bbssd:entry", "dimension": "entrypoints", "critical": true, "applicability": "required", "evidence_refs": ["source://hw/femu/nvme-io.c#L1071-L1119", "source://hw/femu/bbssd/bb.c#L85-L99"]},
+    {"item_id": "femu-bbssd:flow", "dimension": "flows", "critical": true, "applicability": "required", "evidence_refs": ["source://hw/femu/nvme-io.c#L443-L466", "source://hw/femu/nvme-util.c#L204-L214"]},
+    {"item_id": "femu-bbssd:branches", "dimension": "branches", "critical": true, "applicability": "required", "evidence_refs": ["source://hw/femu/nvme-util.c#L210-L219", "source://hw/femu/bbssd/ftl.c#L2780-L2812"]},
+    {"item_id": "femu-bbssd:states", "dimension": "states", "critical": true, "applicability": "required", "evidence_refs": ["source://hw/femu/nvme-io.c#L145-L160", "source://hw/femu/bbssd/ftl.c#L2814-L2819"]},
+    {"item_id": "femu-bbssd:resources", "dimension": "resources", "critical": true, "applicability": "required", "evidence_refs": ["source://hw/femu/nvme-io.c#L134-L153", "source://hw/femu/nvme-io.c#L284-L293"]},
+    {"item_id": "femu-bbssd:boundaries", "dimension": "boundaries", "critical": true, "applicability": "required", "evidence_refs": ["source://hw/femu/nvme-io.c#L447-L457"]},
+    {"item_id": "femu-bbssd:concurrency", "dimension": "concurrency", "critical": false, "applicability": "required", "evidence_refs": ["source://hw/femu/nvme-io.c#L190-L202", "source://hw/femu/bbssd/ftl.c#L2768-L2819"]},
+    {"item_id": "femu-bbssd:errors", "dimension": "errors", "critical": true, "applicability": "required", "evidence_refs": ["source://hw/femu/nvme-util.c#L210-L214", "source://hw/femu/nvme-io.c#L162-L169"]},
+    {"item_id": "femu-bbssd:protocol-lba-range-status", "dimension": "protocol", "critical": true, "applicability": "required", "description": "An NVMe request whose end LBA exceeds the namespace size records an error and returns NVME_LBA_RANGE with NVME_DNR.", "evidence_refs": ["source://hw/femu/nvme-util.c#L204-L220"]}
+  ]
+}

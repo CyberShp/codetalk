@@ -1,0 +1,52 @@
+{
+  "case_id": "perftest-roce-gid-selection-001",
+  "execution_plan": {"schema_version": "quality-depth-execution-v1", "case_id": "perftest-roce-gid-selection-001", "execution_tier": "S", "policy": "disabled", "oracles": [], "limitations": []},
+  "tier_dispositions": [{"tier": "E", "status": "unavailable", "requirements": ["PERFTEST_BUILD", "ISOLATED_GID_FIXTURE"], "limitation": "EXECUTION_ENVIRONMENT_NOT_PROVISIONED"}, {"tier": "H", "status": "unavailable", "requirements": ["ROCE_DEVICE", "ROCE_FABRIC"], "limitation": "HARDWARE_ENVIRONMENT_NOT_PROVISIONED"}],
+  "execution_tier": "S",
+  "policy": "disabled",
+  "oracle": {
+    "oracle_id": "perftest:roce-gid-selection-static",
+    "kind": "static_source_oracle",
+    "source_path": "src/perftest_communication.c",
+    "line_range": "L600-L723,L892-L945",
+    "status": "not_run",
+    "bounded_input_contract": ["link_type is IBV_LINK_LAYER_ETHERNET", "no -x/--gid-index was supplied so use_gid_user remains zero", "the verbs context and port GID table metadata are available"],
+    "expected_observations": ["invalid or empty GID entries score -1", "the selected index maximizes family, then scope, then RoCE-version score", "no valid entry returns -1 and reaches write_bw cleanup", "an explicit gid index bypasses automatic scoring"],
+    "disconfirming_observation": "The pinned repository contains no independent unit test for compute_gid_score or get_best_gid_index; static source agreement is not runtime proof of provider GID-table behavior.",
+    "test_execution": {"policy": "disabled", "commands": [], "reason": "Tier S authoring forbids execution of third-party binaries and this path requires verbs/RoCE devices and provider GID tables."}
+  },
+  "l3": {"status": "not_run", "limitations": ["L3_NOT_RUN:TIER_S", "No perftest binary, verbs provider, Ethernet/RoCE port, GID table, peer connection, or cleanup path was exercised."]},
+  "evidence_catalog": {
+    "case_id": "perftest-roce-gid-selection-001",
+    "bindings": [
+      {"evidence_ref": "source://src/perftest_parameters.c#L4483-L4493:node-trigger", "chain_id": "perftest-roce-gid-chain", "category": "node", "obligation_id": "ethernet-auto-selection-trigger"},
+      {"evidence_ref": "source://src/perftest_parameters.c#L1113-L1121:node-input", "chain_id": "perftest-roce-gid-chain", "category": "node", "obligation_id": "family-and-gid-table-input"},
+      {"evidence_ref": "source://src/write_bw.c#L187-L191:node-entry", "chain_id": "perftest-roce-gid-chain", "category": "node", "obligation_id": "setup-connection-entry"},
+      {"evidence_ref": "source://src/perftest_communication.c#L663-L723:node-call-chain", "chain_id": "perftest-roce-gid-chain", "category": "node", "obligation_id": "score-gid-table-call-chain"},
+      {"evidence_ref": "source://src/write_bw.c#L143-L178:node-acquire", "chain_id": "perftest-roce-gid-chain", "category": "node", "obligation_id": "acquire-context-and-destinations"},
+      {"evidence_ref": "source://src/perftest_parameters.h#L489-L520:node-own", "chain_id": "perftest-roce-gid-chain", "category": "node", "obligation_id": "own-selection-state"},
+      {"evidence_ref": "source://src/perftest_communication.c#L914-L925:node-store", "chain_id": "perftest-roce-gid-chain", "category": "node", "obligation_id": "store-best-gid-index"},
+      {"evidence_ref": "source://src/perftest_communication.c#L923-L928:node-query", "chain_id": "perftest-roce-gid-chain", "category": "node", "obligation_id": "query-selected-gid"},
+      {"evidence_ref": "source://src/write_bw.c#L187-L191:node-error", "chain_id": "perftest-roce-gid-chain", "category": "node", "obligation_id": "propagate-selection-failure"},
+      {"evidence_ref": "source://src/write_bw.c#L611-L621:node-cleanup", "chain_id": "perftest-roce-gid-chain", "category": "node", "obligation_id": "destroy-failed-context"},
+      {"evidence_ref": "source://src/write_bw.c#L622-L639:node-release", "chain_id": "perftest-roce-gid-chain", "category": "node", "obligation_id": "free-owned-resources"},
+      {"evidence_ref": "source://src/perftest_resources.c#L3472-L3490:node-observe", "chain_id": "perftest-roce-gid-chain", "category": "node", "obligation_id": "observe-index-or-error"},
+      {"evidence_ref": "source://src/perftest_communication.c#L600-L723:node-oracle", "chain_id": "perftest-roce-gid-chain", "category": "node", "obligation_id": "static-selection-oracle"},
+      {"evidence_ref": "source://src/perftest_parameters.c#L4483-L4493:edge-e01", "chain_id": "perftest-roce-gid-chain", "category": "edge", "obligation_id": "e01"},
+      {"evidence_ref": "source://src/write_bw.c#L187-L191:edge-e02", "chain_id": "perftest-roce-gid-chain", "category": "edge", "obligation_id": "e02"},
+      {"evidence_ref": "source://src/perftest_communication.c#L663-L723:edge-e03", "chain_id": "perftest-roce-gid-chain", "category": "edge", "obligation_id": "e03"},
+      {"evidence_ref": "source://src/write_bw.c#L143-L178:edge-e04", "chain_id": "perftest-roce-gid-chain", "category": "edge", "obligation_id": "e04"},
+      {"evidence_ref": "source://src/perftest_parameters.h#L489-L520:edge-e05", "chain_id": "perftest-roce-gid-chain", "category": "edge", "obligation_id": "e05"},
+      {"evidence_ref": "source://src/perftest_communication.c#L914-L925:edge-e06", "chain_id": "perftest-roce-gid-chain", "category": "edge", "obligation_id": "e06"},
+      {"evidence_ref": "source://src/perftest_communication.c#L923-L928:edge-e07", "chain_id": "perftest-roce-gid-chain", "category": "edge", "obligation_id": "e07"},
+      {"evidence_ref": "source://src/write_bw.c#L187-L191:edge-e08", "chain_id": "perftest-roce-gid-chain", "category": "edge", "obligation_id": "e08"},
+      {"evidence_ref": "source://src/write_bw.c#L611-L621:edge-e09", "chain_id": "perftest-roce-gid-chain", "category": "edge", "obligation_id": "e09"},
+      {"evidence_ref": "source://src/write_bw.c#L622-L639:edge-e10", "chain_id": "perftest-roce-gid-chain", "category": "edge", "obligation_id": "e10"},
+      {"evidence_ref": "source://src/perftest_resources.c#L3472-L3490:edge-e11", "chain_id": "perftest-roce-gid-chain", "category": "edge", "obligation_id": "e11"},
+      {"evidence_ref": "source://src/perftest_communication.c#L600-L723:edge-e12", "chain_id": "perftest-roce-gid-chain", "category": "edge", "obligation_id": "e12"},
+      {"evidence_ref": "test://src/perftest_parameters.c#L3114-L3347:check-explicit", "chain_id": "perftest-roce-gid-chain", "category": "check", "obligation_id": "explicit-index-bypasses-auto"},
+      {"evidence_ref": "test://src/perftest_communication.c#L663-L723:check-invalid", "chain_id": "perftest-roce-gid-chain", "category": "check", "obligation_id": "invalid-gids-cannot-win"},
+      {"evidence_ref": "oracle://src/perftest_communication.c#L600-L723:tier-s-not-executed", "chain_id": "perftest-roce-gid-chain", "category": "l3", "obligation_id": "execution"}
+    ]
+  }
+}

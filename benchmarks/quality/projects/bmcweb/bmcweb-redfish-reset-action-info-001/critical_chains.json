@@ -1,0 +1,43 @@
+{
+  "case_id": "bmcweb-redfish-reset-action-info-001",
+  "evidence_catalog_sha256": "8a720a8e499d04fcaa23e3745a3466df4f977f86e39f0a9582c433861642e307",
+  "execution_tier": "S",
+  "chains": [
+    {
+      "chain_id": "bmcweb-reset-action-info-chain",
+      "nodes": [
+        {"node_id": "get-trigger", "kind": "trigger", "statement": "A ResetActionInfo GET invokes the host reset-action information handler.", "critical": true},
+        {"node_id": "system-valid-precondition", "kind": "precondition_input", "statement": "The handler proceeds only for a resolved system whose index is valid for the host-state service.", "critical": true},
+        {"node_id": "handler-entry", "kind": "entry", "statement": "The reset-action handler enters the asynchronous AllowedHostTransitions lookup path.", "critical": true},
+        {"node_id": "dbus-allowed-transitions-call", "kind": "call_chain", "statement": "getAllowedHostTransitions reads the host AllowedHostTransitions property and dispatches its callback.", "critical": true},
+        {"node_id": "allowable-values-acquire", "kind": "resource_acquisition", "statement": "The callback creates a local allowable ResetType value list.", "critical": false},
+        {"node_id": "allowable-values-own", "kind": "resource_ownership", "statement": "The callback owns and mutates the local allowable ResetType list until it returns.", "critical": false},
+        {"node_id": "default-values-mutation", "kind": "resource_mutation", "statement": "The callback initializes the list with ForceOff, PowerCycle, and Nmi before error disposition.", "critical": true},
+        {"node_id": "error-disposition-downstream", "kind": "downstream_effect", "statement": "Missing-property errors append fallback reset types, while unexpected D-Bus errors take the internal-error branch.", "critical": true},
+        {"node_id": "internal-error-propagation", "kind": "error_propagation", "statement": "An unexpected D-Bus error is propagated to the HTTP response as an internal error.", "critical": true},
+        {"node_id": "return-before-parameters", "kind": "cleanup_recovery", "statement": "After recording an unexpected internal error, the callback returns before publishing Parameters.", "critical": true},
+        {"node_id": "allowable-values-release", "kind": "resource_release", "statement": "Returning from the callback releases its local allowable ResetType list.", "critical": false},
+        {"node_id": "http-500-observation", "kind": "external_observation", "statement": "The unexpected-error test observes an Internal Server Error response instead of a ResetType parameter list.", "critical": true},
+        {"node_id": "system-test-oracle", "kind": "executable_oracle", "statement": "The GetAllowedHostTransition tests distinguish unexpected errors from missing-property fallback behavior.", "critical": true}
+      ],
+      "edges": [
+        {"edge_id": "trigger-to-precondition", "source_node_id": "get-trigger", "target_node_id": "system-valid-precondition", "statement": "The GET route resolves and validates the requested system before reset-action handling.", "critical": true},
+        {"edge_id": "precondition-to-entry", "source_node_id": "system-valid-precondition", "target_node_id": "handler-entry", "statement": "A valid system index permits entry into reset-action information handling.", "critical": true},
+        {"edge_id": "entry-to-call", "source_node_id": "handler-entry", "target_node_id": "dbus-allowed-transitions-call", "statement": "The handler requests AllowedHostTransitions through its D-Bus helper.", "critical": true},
+        {"edge_id": "call-to-acquire", "source_node_id": "dbus-allowed-transitions-call", "target_node_id": "allowable-values-acquire", "statement": "The D-Bus callback begins by creating the allowable ResetType list.", "critical": false},
+        {"edge_id": "acquire-to-own", "source_node_id": "allowable-values-acquire", "target_node_id": "allowable-values-own", "statement": "The newly created list remains local to and owned by the callback.", "critical": false},
+        {"edge_id": "own-to-mutation", "source_node_id": "allowable-values-own", "target_node_id": "default-values-mutation", "statement": "The callback populates its owned list with the three default reset types.", "critical": true},
+        {"edge_id": "mutation-to-downstream", "source_node_id": "default-values-mutation", "target_node_id": "error-disposition-downstream", "statement": "After defaults are installed, the callback classifies the D-Bus result and chooses fallback or error handling.", "critical": true},
+        {"edge_id": "downstream-to-error", "source_node_id": "error-disposition-downstream", "target_node_id": "internal-error-propagation", "statement": "An error outside the missing-property cases causes the internal-error response path.", "critical": true},
+        {"edge_id": "error-to-recovery", "source_node_id": "internal-error-propagation", "target_node_id": "return-before-parameters", "statement": "Recording the internal error is immediately followed by return from the callback.", "critical": true},
+        {"edge_id": "recovery-to-release", "source_node_id": "return-before-parameters", "target_node_id": "allowable-values-release", "statement": "Returning from the callback ends the lifetime of the local allowable-values resource.", "critical": false},
+        {"edge_id": "release-to-observation", "source_node_id": "allowable-values-release", "target_node_id": "http-500-observation", "statement": "The early return leaves the response in the observable Internal Server Error state.", "critical": true},
+        {"edge_id": "observation-to-oracle", "source_node_id": "http-500-observation", "target_node_id": "system-test-oracle", "statement": "The system test asserts the unexpected-error HTTP result and separately verifies fallback behavior.", "critical": true}
+      ],
+      "disconfirming_checks": [
+        {"check_id": "check-unexpected-vs-missing-property", "statement": "An unexpected invalid_argument error must produce Internal Server Error, whereas a missing property must produce fallback ResetTypes.", "critical": true},
+        {"check_id": "check-transition-mapping", "statement": "The transition mapping test verifies the supported D-Bus transitions map to their declared Redfish ResetTypes.", "critical": false}
+      ]
+    }
+  ]
+}

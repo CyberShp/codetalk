@@ -1,0 +1,126 @@
+{
+  "schema_version": "quality-benchmark-registry-v1",
+  "truth_package_version": "1",
+  "projects": [
+    {
+      "id": "spdk",
+      "source_dir": "spdk",
+      "origin": "https://github.com/spdk/spdk.git",
+      "commit": "d64c4fa89233397460e2e4ff55a1c69b8e498598",
+      "expected_tree": "b8c41cac12ca9c9cb34a8da6e028d35f826f581b",
+      "license": "BSD-3-Clause",
+      "tiers": ["S", "E"],
+      "test_execution": {"policy": "case_allowlist_only", "loader_execution": "forbidden", "network": "disabled"}
+    },
+    {
+      "id": "femu",
+      "source_dir": "femu",
+      "origin": "https://github.com/MoatLab/FEMU.git",
+      "commit": "b130c614afbc6e77f88e272533e9d71f8509e234",
+      "expected_tree": "012c1d0277ac77a77f90bcb480bb99538382f768",
+      "license": "GPL-2.0 with mixed file licenses",
+      "tiers": ["S", "E"],
+      "test_execution": {"policy": "case_allowlist_only", "loader_execution": "forbidden", "network": "disabled"}
+    },
+    {
+      "id": "nvme-csd",
+      "source_dir": "nvme-csd",
+      "origin": "https://github.com/rick-heig/nvme_csd.git",
+      "commit": "d906b6a29e559a3d613a1eccf3712611587311ba",
+      "expected_tree": "c90d9ef4c47b2c1c7551ef481d0a8978e3503940",
+      "license": "NOASSERTION",
+      "tiers": ["S", "E"],
+      "test_execution": {"policy": "case_allowlist_only", "loader_execution": "forbidden", "network": "disabled"}
+    },
+    {
+      "id": "open-cas-linux",
+      "source_dir": "open-cas-linux",
+      "origin": "https://github.com/Open-CAS/open-cas-linux.git",
+      "commit": "f1befa8dddf810733e720dec07c71de892951e39",
+      "expected_tree": "509e5c7987cd3c83aa213ac23b715a9180d65a6b",
+      "license": "BSD-3-Clause",
+      "tiers": ["S", "E"],
+      "test_execution": {"policy": "case_allowlist_only", "loader_execution": "forbidden", "network": "disabled"}
+    },
+    {
+      "id": "phosphor-nvme",
+      "source_dir": "phosphor-nvme",
+      "origin": "https://github.com/openbmc/phosphor-nvme.git",
+      "commit": "5ef51383d77fc32f5d5d314e70f860126de623e7",
+      "expected_tree": "18fbb0cd8c9a0dd93bbeb54b8f19474a53b7c354",
+      "license": "Apache-2.0",
+      "tiers": ["S"],
+      "test_execution": {"policy": "case_allowlist_only", "loader_execution": "forbidden", "network": "disabled"}
+    },
+    {
+      "id": "phosphor-state-manager",
+      "source_dir": "phosphor-state-manager",
+      "origin": "https://github.com/openbmc/phosphor-state-manager.git",
+      "commit": "3f6517cbce44f84f9cea95f3f72b4f6401a52d49",
+      "expected_tree": "4fbec101d4be874fed853e0f344d174f977450a0",
+      "license": "Apache-2.0",
+      "tiers": ["S", "E"],
+      "test_execution": {"policy": "case_allowlist_only", "loader_execution": "forbidden", "network": "disabled"}
+    },
+    {
+      "id": "bmcweb",
+      "source_dir": "bmcweb",
+      "origin": "https://github.com/openbmc/bmcweb.git",
+      "commit": "9e59f0a176aac9dfa7f029370ea03c25a088d9a2",
+      "expected_tree": "4e4e40cb4850fb110375ead0c1cd6d5b05425e05",
+      "license": "Apache-2.0",
+      "tiers": ["S", "E"],
+      "test_execution": {"policy": "case_allowlist_only", "loader_execution": "forbidden", "network": "disabled"}
+    },
+    {
+      "id": "lmcache",
+      "source_dir": "lmcache",
+      "origin": "https://github.com/LMCache/LMCache.git",
+      "commit": "f625b9733ad38c6b1bb3ba3d5083998ab5307ffb",
+      "expected_tree": "c970140ccbe796aec9a25a915ea62390223100ec",
+      "license": "Apache-2.0",
+      "tiers": ["S", "E"],
+      "test_execution": {"policy": "case_allowlist_only", "loader_execution": "forbidden", "network": "disabled"}
+    },
+    {
+      "id": "mooncake",
+      "source_dir": "mooncake",
+      "origin": "https://github.com/kvcache-ai/Mooncake.git",
+      "commit": "131d6addae64c31b340f1909350049eb41fcb790",
+      "expected_tree": "0b1a5c2baf5b98ebe1d44f09dd03a256aaa31290",
+      "license": "Apache-2.0",
+      "tiers": ["S", "E", "H"],
+      "test_execution": {"policy": "case_allowlist_only", "loader_execution": "forbidden", "network": "disabled"}
+    },
+    {
+      "id": "rdma-core",
+      "source_dir": "rdma-core",
+      "origin": "https://github.com/linux-rdma/rdma-core.git",
+      "commit": "d45834e0fe3ff1248e40d995f2f51c51739e6f1c",
+      "expected_tree": "e50a1a4f7eeb90608bbd7dc8042bd5b53dce0eff",
+      "license": "GPL-2.0-or-later OR LGPL-2.1-or-later",
+      "tiers": ["S", "E", "H"],
+      "test_execution": {"policy": "case_allowlist_only", "loader_execution": "forbidden", "network": "disabled"}
+    },
+    {
+      "id": "ucx",
+      "source_dir": "ucx",
+      "origin": "https://github.com/openucx/ucx.git",
+      "commit": "1ce08f6ed89caa0bc2dcef5c2e9ad837455da168",
+      "expected_tree": "62435473638ce3f1f392d7e4fa43333f759e7f4b",
+      "license": "BSD-3-Clause",
+      "tiers": ["S", "E", "H"],
+      "test_execution": {"policy": "case_allowlist_only", "loader_execution": "forbidden", "network": "disabled"}
+    },
+    {
+      "id": "perftest",
+      "source_dir": "perftest",
+      "origin": "https://github.com/linux-rdma/perftest.git",
+      "commit": "00b55b6660d0170dabe2c1b49193e8fbe265086e",
+      "expected_tree": "0fa1b3385f5193d09915c247d1bb7266efa5c7aa",
+      "license": "GPL-2.0",
+      "tiers": ["S", "E", "H"],
+      "test_execution": {"policy": "case_allowlist_only", "loader_execution": "forbidden", "network": "disabled"}
+    }
+  ]
+}

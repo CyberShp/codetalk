@@ -1,0 +1,53 @@
+{
+  "case_id": "rdma-core-mw-remote-access-denied-001",
+  "claims": [
+    {
+      "gold_id": "rdma-mw:generic-rdma-scope",
+      "semantic_key": "rdma_core.qpex.bind_mw.generic_rdma_scope",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "This case is stated entirely in RC verbs primitives (QPEx, MR, Type-2 MW, rkey, RDMA write, and work-completion status) and asserts no Ethernet, IP-route, or RoCE-mode rule; it is a generic RDMA access/lifecycle case rather than a RoCE configuration case.",
+      "evidence_refs": ["source://tests/test_qpex.py#L137-L144", "source://tests/test_qpex.py#L247-L285"]
+    },
+    {
+      "gold_id": "rdma-mw:capability-shape",
+      "semantic_key": "rdma_core.qpex.bind_mw.capability_shape",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "QpExRCBindMw creates an RC extended QP with RDMA-write and bind-MW send operations, and registers its MR with remote-write and MW-bind access in addition to local write.",
+      "evidence_refs": ["source://tests/test_qpex.py#L137-L144", "source://tests/utils.py#L440-L458"]
+    },
+    {
+      "gold_id": "rdma-mw:restricted-bind",
+      "semantic_key": "rdma_core.qpex.bind_mw.local_write_only_rkey",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "The test allocates a Type-2 MW, increments its rkey, and binds the full MR through MWBindInfo carrying only IBV_ACCESS_LOCAL_WRITE before requiring a successful bind completion.",
+      "evidence_refs": ["source://tests/test_qpex.py#L247-L275"]
+    },
+    {
+      "gold_id": "rdma-mw:remote-access-error",
+      "semantic_key": "rdma_core.qpex.bind_mw.remote_write_completion_error",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "An RDMA write using the restricted MW rkey is accepted for posting but the polled client completion must have status IBV_WC_REM_ACCESS_ERR; any other status raises PyverbsRDMAError.",
+      "evidence_refs": ["source://tests/test_qpex.py#L276-L285", "source://tests/utils.py#L659-L694"]
+    },
+    {
+      "gold_id": "rdma-mw:unsupported-is-skip",
+      "semantic_key": "rdma_core.qpex.bind_mw.unsupported_skip",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "EOPNOTSUPP while creating the extended QP player or allocating the MW is converted to SkipTest, so an unsupported device is not evidence that the denial behavior passed.",
+      "evidence_refs": ["source://tests/base.py#L337-L351", "source://tests/test_qpex.py#L266-L271", "source://tests/utils.py#L406-L412"]
+    },
+    {
+      "gold_id": "rdma-mw:lifecycle-cleanup",
+      "semantic_key": "rdma_core.qpex.bind_mw.context_owned_cleanup",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "Test teardown closes both endpoint contexts; Context.close closes dependent weak references before closing the device, while the MW is retained by its PD and QP and deallocated by MW.close.",
+      "evidence_refs": ["source://tests/base.py#L359-L371", "source://pyverbs/device.pyx#L180-L192", "source://pyverbs/mr.pyx#L314-L350", "source://pyverbs/qp.pyx#L1405-L1410"]
+    }
+  ]
+}

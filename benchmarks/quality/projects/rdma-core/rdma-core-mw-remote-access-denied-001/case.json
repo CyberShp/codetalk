@@ -1,0 +1,14 @@
+{
+  "schema_version": "quality-benchmark-case-v1",
+  "case_id": "rdma-core-mw-remote-access-denied-001",
+  "project_id": "rdma-core",
+  "truth_package_version": "1",
+  "tier": "S",
+  "truth_package": {
+    "gold_claims": {"path": "gold_claims.json", "sha256": "01677e7d953e1694d7264299b28b6166c1d35d6cf2821656b5235278e5eb0a5c"},
+    "coverage_universe": {"path": "coverage_universe.json", "sha256": "092006963072efcad3aa0d325a6f23b2eef4b6f4ee61840cdd5d7299c8af2be4"},
+    "critical_chains": {"path": "critical_chains.json", "sha256": "56d1543904da477612754241c502dc77f3c2a14addafc9a71c3e1e728ded2c95"},
+    "execution_oracles": {"path": "execution_oracles.json", "sha256": "43fe639cd6a27dc74cab90d00610e04ed48c002086ad9acec47570dc3ea70e8c"}
+  },
+  "test_execution": {"policy": "disabled", "commands": []}
+}

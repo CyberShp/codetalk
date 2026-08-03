@@ -1,0 +1,14 @@
+{
+  "schema_version": "quality-benchmark-case-v1",
+  "case_id": "mooncake-store-put-commit-readiness-recovery-001",
+  "project_id": "mooncake",
+  "truth_package_version": "1",
+  "tier": "S",
+  "truth_package": {
+    "gold_claims": {"path": "gold_claims.json", "sha256": "65e964c0307d61fa8feb50e78eefa6b2a603baa22dbc5c140dce1a9523c087b7"},
+    "coverage_universe": {"path": "coverage_universe.json", "sha256": "956ef52d1c9bc89efbb5b899a2d24afd0aa6205b9a3b662a1607e3e8af055ea4"},
+    "critical_chains": {"path": "critical_chains.json", "sha256": "540daeca64f953c4e11379aceeb07bb225c01c186075438d94144538b4c1c096"},
+    "execution_oracles": {"path": "execution_oracles.json", "sha256": "cc2725ff707e2cc764943326b5e9cb7192be753a091df0a525d75c120b6906cd"}
+  },
+  "test_execution": {"policy": "disabled", "commands": []}
+}

@@ -1,0 +1,15 @@
+{
+  "$base": "valid_operational.json",
+  "mutations": [
+    {
+      "op": "append",
+      "path": "/first_pass/accuracy/metrics",
+      "value": {
+        "name": "gold_recall",
+        "numerator": 1,
+        "denominator": 1,
+        "miss_ids": []
+      }
+    }
+  ]
+}

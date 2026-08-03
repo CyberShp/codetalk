@@ -1,0 +1,14 @@
+{
+  "case_id": "phosphor-state-hypervisor-boot-progress-001",
+  "items": [
+    {"item_id": "state-entry-properties-changed", "dimension": "entrypoints", "critical": true, "applicability": "required", "evidence_refs": ["source://hypervisor_state_manager.hpp#L42-L46"]},
+    {"item_id": "state-flow-signal-to-state-update", "dimension": "flows", "critical": true, "applicability": "required", "evidence_refs": ["source://hypervisor_state_manager.cpp#L91-L112"]},
+    {"item_id": "state-branch-boot-progress-mapping", "dimension": "branches", "critical": true, "applicability": "required", "evidence_refs": ["source://hypervisor_state_manager.cpp#L60-L89"]},
+    {"item_id": "state-current-host-state", "dimension": "states", "critical": true, "applicability": "required", "evidence_refs": ["source://hypervisor_state_manager.cpp#L45-L89"]},
+    {"item_id": "state-resource-message-payload", "dimension": "resources", "critical": false, "applicability": "required", "evidence_refs": ["source://hypervisor_state_manager.cpp#L93-L110"]},
+    {"item_id": "state-boundary-dbus-signal-property", "dimension": "boundaries", "critical": true, "applicability": "required", "evidence_refs": ["source://hypervisor_state_manager.hpp#L47-L49"]},
+    {"item_id": "state-concurrency-dbus-match-callback", "dimension": "concurrency", "critical": false, "applicability": "required", "evidence_refs": ["source://hypervisor_state_manager.hpp#L45-L50"]},
+    {"item_id": "state-error-message-parse-return", "dimension": "errors", "critical": true, "applicability": "required", "evidence_refs": ["source://hypervisor_state_manager.cpp#L91-L104"]},
+    {"item_id": "state-mutation-boot-progress-host-state", "dimension": "mutation", "critical": true, "applicability": "required", "description": "SystemInitComplete sets the current host state to Standby, OSRunning sets Running, and Unspecified sets both current state and requested transition to Off.", "evidence_refs": ["source://hypervisor_state_manager.cpp#L64-L82"]}
+  ]
+}

@@ -46,23 +46,25 @@ def test_versioned_workbench_is_enabled_by_default_and_rejects_legacy_rollback(m
         Settings(_env_file=None)
 
 
-def test_staged_quality_repair_defaults_to_two_bounded_attempts(monkeypatch):
+def test_staged_quality_repair_defaults_to_three_bounded_attempts(monkeypatch):
     monkeypatch.delenv("STAGED_QUALITY_REPAIR_MAX_ATTEMPTS", raising=False)
 
     configured = Settings(_env_file=None)
 
     assert configured.staged_quality_repair_max_attempts == 3
-    assert configured.staged_workflow_timeout_seconds == 1180
+    assert configured.staged_workflow_timeout_seconds == 90 * 60
+    assert configured.quality_rapid_deadline_seconds == 15 * 60
+    assert configured.quality_deep_deadline_seconds == 90 * 60
     assert configured.staged_quality_repair_min_remaining_seconds == 120
     assert configured.staged_workflow_shutdown_grace_seconds == 2.0
 
 
-def test_external_cli_agent_quality_repair_is_opt_in(monkeypatch):
+def test_external_cli_agent_quality_repair_is_enabled_before_fallback_block(monkeypatch):
     from app.config import Settings
 
     monkeypatch.delenv("EXTERNAL_AGENT_QUALITY_REPAIR_ENABLED", raising=False)
 
-    assert Settings().external_agent_quality_repair_enabled is False
+    assert Settings().external_agent_quality_repair_enabled is True
 
 
 def test_regular_stage_quality_repair_uses_primary_model_by_default(monkeypatch):

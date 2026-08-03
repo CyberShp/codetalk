@@ -1,0 +1,14 @@
+{
+  "$base": "valid_operational.json",
+  "mutations": [
+    {
+      "op": "set",
+      "path": "/benchmark_identity",
+      "value": {
+        "case_id": "hidden-case",
+        "source_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "truth_package_version": "1"
+      }
+    }
+  ]
+}

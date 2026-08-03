@@ -1,0 +1,14 @@
+{
+  "case_id": "spdk-concurrent-bdev-reset-001",
+  "items": [
+    {"item_id": "spdk-reset:entry", "dimension": "entrypoints", "critical": true, "applicability": "required", "evidence_refs": ["source://module/bdev/nvme/bdev_nvme.c#L3378-L3386", "source://module/bdev/nvme/bdev_nvme.c#L3452-L3455"]},
+    {"item_id": "spdk-reset:flow", "dimension": "flows", "critical": true, "applicability": "required", "evidence_refs": ["source://module/bdev/nvme/bdev_nvme.c#L3206-L3209", "source://module/bdev/nvme/bdev_nvme.c#L3162-L3204"]},
+    {"item_id": "spdk-reset:branches", "dimension": "branches", "critical": true, "applicability": "required", "evidence_refs": ["source://module/bdev/nvme/bdev_nvme.c#L3173-L3195"]},
+    {"item_id": "spdk-reset:states", "dimension": "states", "critical": true, "applicability": "required", "evidence_refs": ["source://module/bdev/nvme/bdev_nvme.c#L3149-L3158", "source://module/bdev/nvme/bdev_nvme.c#L3238-L3254"]},
+    {"item_id": "spdk-reset:resources", "dimension": "resources", "critical": true, "applicability": "required", "evidence_refs": ["source://module/bdev/nvme/bdev_nvme.c#L2143-L2157", "source://module/bdev/nvme/bdev_nvme.c#L3097-L3118"]},
+    {"item_id": "spdk-reset:boundaries", "dimension": "boundaries", "critical": false, "applicability": "required", "evidence_refs": ["source://module/bdev/nvme/bdev_nvme.c#L3185-L3195"]},
+    {"item_id": "spdk-reset:concurrency", "dimension": "concurrency", "critical": true, "applicability": "required", "evidence_refs": ["source://test/unit/lib/bdev/nvme/bdev_nvme.c/bdev_nvme_ut.c#L2015-L2037"]},
+    {"item_id": "spdk-reset:errors", "dimension": "errors", "critical": true, "applicability": "required", "evidence_refs": ["source://module/bdev/nvme/bdev_nvme.c#L2148-L2157", "source://test/unit/lib/bdev/nvme/bdev_nvme.c/bdev_nvme_ut.c#L2047-L2085"]},
+    {"item_id": "spdk-reset:mutation-drain-pending-resets", "dimension": "mutation", "critical": true, "applicability": "required", "description": "Reset completion repeatedly removes the first pending reset from the controller queue and resumes it with the controller-reset result.", "evidence_refs": ["source://module/bdev/nvme/bdev_nvme.c#L2146-L2157"]}
+  ]
+}

@@ -1,0 +1,202 @@
+{
+  "case_id": "femu-bbssd-out-of-range-write-001",
+  "execution_plan": {"schema_version": "quality-depth-execution-v1", "case_id": "femu-bbssd-out-of-range-write-001", "execution_tier": "S", "policy": "disabled", "oracles": [], "limitations": []},
+  "tier_dispositions": [{"tier": "E", "status": "unavailable", "requirements": ["FEMU_BUILD", "ISOLATED_NVME_FIXTURE"], "limitation": "EXECUTION_ENVIRONMENT_NOT_PROVISIONED"}],
+  "execution_tier": "S",
+  "policy": "disabled",
+  "oracle": {
+    "oracle_id": "femu:bbssd-out-of-range-static",
+    "kind": "static_source_oracle",
+    "source_paths": [
+      "hw/femu/nvme-io.c",
+      "hw/femu/bbssd/bb.c",
+      "hw/femu/nvme-util.c",
+      "hw/femu/bbssd/ftl.c"
+    ],
+    "status": "not_run",
+    "expected_observations": [
+      "elba greater than nsze yields NVME_LBA_RANGE | NVME_DNR",
+      "a non-success request does not enter ssd_write",
+      "the carried error is posted in a CQE and the request object is returned"
+    ],
+    "test_execution": {
+      "policy": "disabled",
+      "commands": [],
+      "reason": "No bounded FEMU-specific test exists for this path; no emulator or guest code was executed."
+    }
+  },
+  "l3": {
+    "status": "not_run",
+    "limitations": [
+      "L3_NOT_RUN:TIER_S",
+      "Static source oracle only; no FEMU binary, VM, guest driver, or qtest was run."
+    ]
+  },
+  "evidence_catalog": {
+    "case_id": "femu-bbssd-out-of-range-write-001",
+    "bindings": [
+      {
+        "evidence_ref": "source://hw/femu/nvme-io.c#L443-L457:node-out-of-range-write",
+        "chain_id": "femu-bbssd-range-chain",
+        "category": "node",
+        "obligation_id": "trigger"
+      },
+      {
+        "evidence_ref": "source://hw/femu/nvme-util.c#L204-L214:node-elba-bound",
+        "chain_id": "femu-bbssd-range-chain",
+        "category": "node",
+        "obligation_id": "bounded-input"
+      },
+      {
+        "evidence_ref": "source://hw/femu/nvme-io.c#L1071-L1119:node-io-entry",
+        "chain_id": "femu-bbssd-range-chain",
+        "category": "node",
+        "obligation_id": "api-entry"
+      },
+      {
+        "evidence_ref": "source://hw/femu/bbssd/bb.c#L85-L99:node-bbssd-dispatch",
+        "chain_id": "femu-bbssd-range-chain",
+        "category": "node",
+        "obligation_id": "call-chain"
+      },
+      {
+        "evidence_ref": "source://hw/femu/nvme-io.c#L134-L153:node-request-acquisition",
+        "chain_id": "femu-bbssd-range-chain",
+        "category": "node",
+        "obligation_id": "acquire-resource"
+      },
+      {
+        "evidence_ref": "source://hw/femu/nvme-io.c#L159-L160:node-status-ownership",
+        "chain_id": "femu-bbssd-range-chain",
+        "category": "node",
+        "obligation_id": "own-resource"
+      },
+      {
+        "evidence_ref": "source://hw/femu/nvme-util.c#L210-L214:node-error-state",
+        "chain_id": "femu-bbssd-range-chain",
+        "category": "node",
+        "obligation_id": "mutate-state"
+      },
+      {
+        "evidence_ref": "source://hw/femu/bbssd/ftl.c#L2780-L2812:node-skip-opcode-handler",
+        "chain_id": "femu-bbssd-range-chain",
+        "category": "node",
+        "obligation_id": "downstream-effect"
+      },
+      {
+        "evidence_ref": "source://hw/femu/nvme-io.c#L190-L202:node-error-ring-propagation",
+        "chain_id": "femu-bbssd-range-chain",
+        "category": "node",
+        "obligation_id": "propagate-error"
+      },
+      {
+        "evidence_ref": "source://hw/femu/bbssd/ftl.c#L2814-L2819:node-return-to-poller",
+        "chain_id": "femu-bbssd-range-chain",
+        "category": "node",
+        "obligation_id": "recover-cleanup"
+      },
+      {
+        "evidence_ref": "source://hw/femu/nvme-io.c#L284-L293:node-request-release",
+        "chain_id": "femu-bbssd-range-chain",
+        "category": "node",
+        "obligation_id": "release-resource"
+      },
+      {
+        "evidence_ref": "source://hw/femu/nvme-io.c#L291-L305:node-cqe-observation",
+        "chain_id": "femu-bbssd-range-chain",
+        "category": "node",
+        "obligation_id": "external-observation"
+      },
+      {
+        "evidence_ref": "source://hw/femu/nvme-util.c#L204-L214:node-static-oracle",
+        "chain_id": "femu-bbssd-range-chain",
+        "category": "node",
+        "obligation_id": "oracle"
+      },
+      {
+        "evidence_ref": "source://hw/femu/nvme-io.c#L443-L466:edge-e01",
+        "chain_id": "femu-bbssd-range-chain",
+        "category": "edge",
+        "obligation_id": "e01"
+      },
+      {
+        "evidence_ref": "source://hw/femu/nvme-io.c#L1071-L1119:edge-e02",
+        "chain_id": "femu-bbssd-range-chain",
+        "category": "edge",
+        "obligation_id": "e02"
+      },
+      {
+        "evidence_ref": "source://hw/femu/bbssd/bb.c#L85-L99:edge-e03",
+        "chain_id": "femu-bbssd-range-chain",
+        "category": "edge",
+        "obligation_id": "e03"
+      },
+      {
+        "evidence_ref": "source://hw/femu/nvme-io.c#L134-L153:edge-e04",
+        "chain_id": "femu-bbssd-range-chain",
+        "category": "edge",
+        "obligation_id": "e04"
+      },
+      {
+        "evidence_ref": "source://hw/femu/nvme-io.c#L159-L160:edge-e05",
+        "chain_id": "femu-bbssd-range-chain",
+        "category": "edge",
+        "obligation_id": "e05"
+      },
+      {
+        "evidence_ref": "source://hw/femu/nvme-util.c#L210-L214:edge-e06",
+        "chain_id": "femu-bbssd-range-chain",
+        "category": "edge",
+        "obligation_id": "e06"
+      },
+      {
+        "evidence_ref": "source://hw/femu/bbssd/ftl.c#L2780-L2812:edge-e07",
+        "chain_id": "femu-bbssd-range-chain",
+        "category": "edge",
+        "obligation_id": "e07"
+      },
+      {
+        "evidence_ref": "source://hw/femu/nvme-io.c#L190-L202:edge-e08",
+        "chain_id": "femu-bbssd-range-chain",
+        "category": "edge",
+        "obligation_id": "e08"
+      },
+      {
+        "evidence_ref": "source://hw/femu/bbssd/ftl.c#L2814-L2819:edge-e09",
+        "chain_id": "femu-bbssd-range-chain",
+        "category": "edge",
+        "obligation_id": "e09"
+      },
+      {
+        "evidence_ref": "source://hw/femu/nvme-io.c#L284-L293:edge-e10",
+        "chain_id": "femu-bbssd-range-chain",
+        "category": "edge",
+        "obligation_id": "e10"
+      },
+      {
+        "evidence_ref": "source://hw/femu/nvme-io.c#L291-L305:edge-e11",
+        "chain_id": "femu-bbssd-range-chain",
+        "category": "edge",
+        "obligation_id": "e11"
+      },
+      {
+        "evidence_ref": "source://hw/femu/nvme-util.c#L204-L214:edge-e12",
+        "chain_id": "femu-bbssd-range-chain",
+        "category": "edge",
+        "obligation_id": "e12"
+      },
+      {
+        "evidence_ref": "test://hw/femu/bbssd/ftl.c#L2789-L2812:check-invalid-request-skips-handler",
+        "chain_id": "femu-bbssd-range-chain",
+        "category": "check",
+        "obligation_id": "invalid-request-skips-ftl-handler"
+      },
+      {
+        "evidence_ref": "oracle://static-source-review/femu-bbssd-range#tier-s-not-executed",
+        "chain_id": "femu-bbssd-range-chain",
+        "category": "l3",
+        "obligation_id": "execution"
+      }
+    ]
+  }
+}

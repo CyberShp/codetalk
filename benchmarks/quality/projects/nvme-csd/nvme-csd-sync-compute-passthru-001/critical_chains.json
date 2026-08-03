@@ -1,0 +1,183 @@
+{
+  "case_id": "nvme-csd-sync-compute-passthru-001",
+  "evidence_catalog_sha256": "73fb6398a13777a30e101f5635b620708833790d48139b59f768b06b991ddba6",
+  "execution_tier": "S",
+  "chains": [
+    {
+      "chain_id": "nvme-csd-sync-chain",
+      "nodes": [
+        {
+          "node_id": "trigger",
+          "kind": "trigger",
+          "statement": "A caller submits a non-null compute request through csQueueComputeRequest in synchronous mode.",
+          "critical": true
+        },
+        {
+          "node_id": "bounded-input",
+          "kind": "precondition_input",
+          "statement": "The Tier S flow assumes the request exists and its encoded size does not exceed the 4096-byte local buffer.",
+          "critical": true
+        },
+        {
+          "node_id": "api-entry",
+          "kind": "entry",
+          "statement": "csQueueComputeRequest validates the pointer and enters the synchronous compute dispatch path.",
+          "critical": true
+        },
+        {
+          "node_id": "call-chain",
+          "kind": "call_chain",
+          "statement": "csQueueComputeRequest calls xxDoComputeRequest, which delegates to tsp_compute_operation.",
+          "critical": true
+        },
+        {
+          "node_id": "acquire-resource",
+          "kind": "resource_acquisition",
+          "statement": "tsp_compute_operation allocates a 4096-byte stack buffer for the encoded request.",
+          "critical": true
+        },
+        {
+          "node_id": "own-resource",
+          "kind": "resource_ownership",
+          "statement": "The function owns the local buffer and computes req_size for its lifetime.",
+          "critical": true
+        },
+        {
+          "node_id": "mutate-state",
+          "kind": "state_resource_mutation",
+          "statement": "The encoded request bytes are copied into the owned 4096-byte buffer using req_size.",
+          "critical": true
+        },
+        {
+          "node_id": "downstream-effect",
+          "kind": "downstream_effect",
+          "statement": "The function issues synchronous NVMe admin passthrough opcode 0xc0 using the buffer and request size.",
+          "critical": true
+        },
+        {
+          "node_id": "propagate-error",
+          "kind": "error_propagation",
+          "statement": "The NVMe passthrough return value is returned unchanged through tsp_compute_operation.",
+          "critical": true
+        },
+        {
+          "node_id": "recover-cleanup",
+          "kind": "cleanup_recovery",
+          "statement": "Returning from tsp_compute_operation unwinds the local synchronous call and stack storage.",
+          "critical": true
+        },
+        {
+          "node_id": "release-resource",
+          "kind": "resource_release",
+          "statement": "Function return releases the local 4096-byte stack buffer.",
+          "critical": true
+        },
+        {
+          "node_id": "external-observation",
+          "kind": "external_observation",
+          "statement": "The csQueueComputeRequest caller observes the status returned by xxDoComputeRequest.",
+          "critical": true
+        },
+        {
+          "node_id": "oracle",
+          "kind": "executable_oracle",
+          "statement": "The source oracle verifies null rejection, synchronous opcode fields, bounded copying, and return propagation.",
+          "critical": true
+        }
+      ],
+      "edges": [
+        {
+          "edge_id": "e01",
+          "source_node_id": "trigger",
+          "target_node_id": "bounded-input",
+          "statement": "The submitted request is checked for null before the bounded synchronous flow proceeds.",
+          "critical": true
+        },
+        {
+          "edge_id": "e02",
+          "source_node_id": "bounded-input",
+          "target_node_id": "api-entry",
+          "statement": "A non-null request in the declared size bound enters csQueueComputeRequest.",
+          "critical": true
+        },
+        {
+          "edge_id": "e03",
+          "source_node_id": "api-entry",
+          "target_node_id": "call-chain",
+          "statement": "csQueueComputeRequest synchronously delegates to xxDoComputeRequest.",
+          "critical": true
+        },
+        {
+          "edge_id": "e04",
+          "source_node_id": "call-chain",
+          "target_node_id": "acquire-resource",
+          "statement": "xxDoComputeRequest reaches tsp_compute_operation, which creates the local request buffer.",
+          "critical": true
+        },
+        {
+          "edge_id": "e05",
+          "source_node_id": "acquire-resource",
+          "target_node_id": "own-resource",
+          "statement": "tsp_compute_operation owns the stack buffer while computing the encoded request size.",
+          "critical": true
+        },
+        {
+          "edge_id": "e06",
+          "source_node_id": "own-resource",
+          "target_node_id": "mutate-state",
+          "statement": "The computed req_size controls the copy into the function-owned buffer.",
+          "critical": true
+        },
+        {
+          "edge_id": "e07",
+          "source_node_id": "mutate-state",
+          "target_node_id": "downstream-effect",
+          "statement": "After the request is copied, the buffer is supplied to the synchronous admin passthrough command.",
+          "critical": true
+        },
+        {
+          "edge_id": "e08",
+          "source_node_id": "downstream-effect",
+          "target_node_id": "propagate-error",
+          "statement": "The opcode 0xc0 passthrough result becomes the function's returned status.",
+          "critical": true
+        },
+        {
+          "edge_id": "e09",
+          "source_node_id": "propagate-error",
+          "target_node_id": "recover-cleanup",
+          "statement": "Returning the passthrough status unwinds the synchronous request call chain.",
+          "critical": true
+        },
+        {
+          "edge_id": "e10",
+          "source_node_id": "recover-cleanup",
+          "target_node_id": "release-resource",
+          "statement": "Stack unwinding releases the local request buffer.",
+          "critical": true
+        },
+        {
+          "edge_id": "e11",
+          "source_node_id": "release-resource",
+          "target_node_id": "external-observation",
+          "statement": "After local storage is released, the delegated status remains observable to the caller.",
+          "critical": true
+        },
+        {
+          "edge_id": "e12",
+          "source_node_id": "external-observation",
+          "target_node_id": "oracle",
+          "statement": "The source oracle binds the caller-visible status to the synchronous passthrough implementation.",
+          "critical": true
+        }
+      ],
+      "disconfirming_checks": [
+        {
+          "check_id": "request-size-bound-is-not-enforced",
+          "statement": "The implementation computes req_size and copies into a 4096-byte buffer without enforcing req_size less than or equal to 4096.",
+          "critical": true
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "schema_version": "quality-benchmark-project-v1",
+  "project_id": "nvme-csd",
+  "project_kind": "computational-storage-host-api",
+  "canonical_origin": "https://github.com/rick-heig/nvme_csd.git",
+  "revision": "d906b6a29e559a3d613a1eccf3712611587311ba",
+  "tree_sha": "c90d9ef4c47b2c1c7551ef481d0a8978e3503940",
+  "license": {
+    "expression": "NOASSERTION",
+    "evidence": "No repository-level license file; host/snia_cs_api/cs_api_nvme_tsp.c carries an MIT-style file header."
+  },
+  "build_conditions": {
+    "summary": "The bounded host object target is cs_api_nvme_tsp.o with GNU-source CPP flags and optimized debug CFLAGS.",
+    "evidence_refs": [
+      "source://host/snia_cs_api/Makefile#L1-L4"
+    ],
+    "not_executed": true
+  },
+  "case_ids": [
+    "nvme-csd-sync-compute-passthru-001"
+  ]
+}

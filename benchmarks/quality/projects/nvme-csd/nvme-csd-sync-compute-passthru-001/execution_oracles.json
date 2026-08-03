@@ -1,0 +1,203 @@
+{
+  "case_id": "nvme-csd-sync-compute-passthru-001",
+  "execution_plan": {"schema_version": "quality-depth-execution-v1", "case_id": "nvme-csd-sync-compute-passthru-001", "execution_tier": "S", "policy": "disabled", "oracles": [], "limitations": []},
+  "tier_dispositions": [{"tier": "E", "status": "unavailable", "requirements": ["NVME_CSD_TEST_BUILD", "ISOLATED_NVME_FIXTURE"], "limitation": "EXECUTION_ENVIRONMENT_NOT_PROVISIONED"}],
+  "execution_tier": "S",
+  "policy": "disabled",
+  "oracle": {
+    "oracle_id": "nvme-csd:sync-compute-static",
+    "kind": "static_source_oracle",
+    "source_path": "host/snia_cs_api/cs_api_nvme_tsp.c",
+    "status": "not_run",
+    "bounded_input_contract": [
+      "Req is non-null",
+      "get_request_size(Req) <= 4096"
+    ],
+    "expected_observations": [
+      "null Req returns CS_INVALID_ARG",
+      "bounded request bytes are copied into a 4096-byte stack buffer",
+      "opcode 0xc0 is issued synchronously and its return value propagates"
+    ],
+    "disconfirming_observation": "Lines 242-244 contain a TODO and memcpy but no req_size <= buffer_len guard.",
+    "test_execution": {
+      "policy": "disabled",
+      "commands": [],
+      "reason": "The repository supplies no test for this host passthrough path and no NVMe device access is permitted."
+    }
+  },
+  "l3": {
+    "status": "not_run",
+    "limitations": [
+      "L3_NOT_RUN:TIER_S",
+      "No tests exist for this path.",
+      "The implementation does not enforce the case's req_size <= 4096 bound; requests outside the bound are excluded from this case and remain a safety finding."
+    ]
+  },
+  "evidence_catalog": {
+    "case_id": "nvme-csd-sync-compute-passthru-001",
+    "bindings": [
+      {
+        "evidence_ref": "source://host/snia_cs_api/cs_api_nvme_tsp.c#L562-L577:node-sync-request",
+        "chain_id": "nvme-csd-sync-chain",
+        "category": "node",
+        "obligation_id": "trigger"
+      },
+      {
+        "evidence_ref": "source://host/snia_cs_api/cs_api_nvme_tsp.c#L210-L244:node-nonnull-and-4096-bound",
+        "chain_id": "nvme-csd-sync-chain",
+        "category": "node",
+        "obligation_id": "bounded-input"
+      },
+      {
+        "evidence_ref": "source://host/snia_cs_api/cs_api_nvme_tsp.c#L562-L577:node-api-entry",
+        "chain_id": "nvme-csd-sync-chain",
+        "category": "node",
+        "obligation_id": "api-entry"
+      },
+      {
+        "evidence_ref": "source://host/snia_cs_api/cs_api_nvme_tsp.c#L522-L524:node-delegate-call",
+        "chain_id": "nvme-csd-sync-chain",
+        "category": "node",
+        "obligation_id": "call-chain"
+      },
+      {
+        "evidence_ref": "source://host/snia_cs_api/cs_api_nvme_tsp.c#L234-L239:node-stack-buffer",
+        "chain_id": "nvme-csd-sync-chain",
+        "category": "node",
+        "obligation_id": "acquire-resource"
+      },
+      {
+        "evidence_ref": "source://host/snia_cs_api/cs_api_nvme_tsp.c#L241-L243:node-request-size",
+        "chain_id": "nvme-csd-sync-chain",
+        "category": "node",
+        "obligation_id": "own-resource"
+      },
+      {
+        "evidence_ref": "source://host/snia_cs_api/cs_api_nvme_tsp.c#L243-L244:node-buffer-copy",
+        "chain_id": "nvme-csd-sync-chain",
+        "category": "node",
+        "obligation_id": "mutate-state"
+      },
+      {
+        "evidence_ref": "source://host/snia_cs_api/cs_api_nvme_tsp.c#L246-L251:node-admin-passthru",
+        "chain_id": "nvme-csd-sync-chain",
+        "category": "node",
+        "obligation_id": "downstream-effect"
+      },
+      {
+        "evidence_ref": "source://host/snia_cs_api/cs_api_nvme_tsp.c#L251-L253:node-return-ret",
+        "chain_id": "nvme-csd-sync-chain",
+        "category": "node",
+        "obligation_id": "propagate-error"
+      },
+      {
+        "evidence_ref": "source://host/snia_cs_api/cs_api_nvme_tsp.c#L234-L253:node-stack-unwind",
+        "chain_id": "nvme-csd-sync-chain",
+        "category": "node",
+        "obligation_id": "recover-cleanup"
+      },
+      {
+        "evidence_ref": "source://host/snia_cs_api/cs_api_nvme_tsp.c#L251-L253:node-buffer-release",
+        "chain_id": "nvme-csd-sync-chain",
+        "category": "node",
+        "obligation_id": "release-resource"
+      },
+      {
+        "evidence_ref": "source://host/snia_cs_api/cs_api_nvme_tsp.c#L574-L577:node-status-observation",
+        "chain_id": "nvme-csd-sync-chain",
+        "category": "node",
+        "obligation_id": "external-observation"
+      },
+      {
+        "evidence_ref": "source://host/snia_cs_api/cs_api_nvme_tsp.c#L210-L253:node-static-oracle",
+        "chain_id": "nvme-csd-sync-chain",
+        "category": "node",
+        "obligation_id": "oracle"
+      },
+      {
+        "evidence_ref": "source://host/snia_cs_api/cs_api_nvme_tsp.c#L562-L577:edge-e01",
+        "chain_id": "nvme-csd-sync-chain",
+        "category": "edge",
+        "obligation_id": "e01"
+      },
+      {
+        "evidence_ref": "source://host/snia_cs_api/cs_api_nvme_tsp.c#L562-L577:edge-e02",
+        "chain_id": "nvme-csd-sync-chain",
+        "category": "edge",
+        "obligation_id": "e02"
+      },
+      {
+        "evidence_ref": "source://host/snia_cs_api/cs_api_nvme_tsp.c#L522-L524:edge-e03",
+        "chain_id": "nvme-csd-sync-chain",
+        "category": "edge",
+        "obligation_id": "e03"
+      },
+      {
+        "evidence_ref": "source://host/snia_cs_api/cs_api_nvme_tsp.c#L234-L239:edge-e04",
+        "chain_id": "nvme-csd-sync-chain",
+        "category": "edge",
+        "obligation_id": "e04"
+      },
+      {
+        "evidence_ref": "source://host/snia_cs_api/cs_api_nvme_tsp.c#L241-L243:edge-e05",
+        "chain_id": "nvme-csd-sync-chain",
+        "category": "edge",
+        "obligation_id": "e05"
+      },
+      {
+        "evidence_ref": "source://host/snia_cs_api/cs_api_nvme_tsp.c#L243-L244:edge-e06",
+        "chain_id": "nvme-csd-sync-chain",
+        "category": "edge",
+        "obligation_id": "e06"
+      },
+      {
+        "evidence_ref": "source://host/snia_cs_api/cs_api_nvme_tsp.c#L246-L251:edge-e07",
+        "chain_id": "nvme-csd-sync-chain",
+        "category": "edge",
+        "obligation_id": "e07"
+      },
+      {
+        "evidence_ref": "source://host/snia_cs_api/cs_api_nvme_tsp.c#L251-L253:edge-e08",
+        "chain_id": "nvme-csd-sync-chain",
+        "category": "edge",
+        "obligation_id": "e08"
+      },
+      {
+        "evidence_ref": "source://host/snia_cs_api/cs_api_nvme_tsp.c#L234-L253:edge-e09",
+        "chain_id": "nvme-csd-sync-chain",
+        "category": "edge",
+        "obligation_id": "e09"
+      },
+      {
+        "evidence_ref": "source://host/snia_cs_api/cs_api_nvme_tsp.c#L251-L253:edge-e10",
+        "chain_id": "nvme-csd-sync-chain",
+        "category": "edge",
+        "obligation_id": "e10"
+      },
+      {
+        "evidence_ref": "source://host/snia_cs_api/cs_api_nvme_tsp.c#L574-L577:edge-e11",
+        "chain_id": "nvme-csd-sync-chain",
+        "category": "edge",
+        "obligation_id": "e11"
+      },
+      {
+        "evidence_ref": "source://host/snia_cs_api/cs_api_nvme_tsp.c#L210-L253:edge-e12",
+        "chain_id": "nvme-csd-sync-chain",
+        "category": "edge",
+        "obligation_id": "e12"
+      },
+      {
+        "evidence_ref": "test://host/snia_cs_api/cs_api_nvme_tsp.c#L238-L244:check-missing-request-size-guard",
+        "chain_id": "nvme-csd-sync-chain",
+        "category": "check",
+        "obligation_id": "request-size-bound-is-not-enforced"
+      },
+      {
+        "evidence_ref": "oracle://static-source-review/nvme-csd-sync-compute#tier-s-not-executed",
+        "chain_id": "nvme-csd-sync-chain",
+        "category": "l3",
+        "obligation_id": "execution"
+      }
+    ]
+  }
+}

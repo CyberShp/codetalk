@@ -1,0 +1,74 @@
+{
+  "case_id": "phosphor-nvme-present-power-not-good-001",
+  "claims": [
+    {
+      "gold_id": "nvme-gold-001",
+      "semantic_key": "nvme.poll.reads.present.and.power.gpios.before.present.branch",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "For each configured NVMe drive, Nvme::read derives the present and power-good GPIO paths, reads each configured pin (or uses the built-in present and power-good defaults), computes isPwrGood, and only then branches on whether the drive is present.",
+      "evidence_refs": ["source://nvme_manager.cpp#L662-L679"],
+      "applicability_evidence_refs": ["source://nvme_manager.cpp#L656-L695"]
+    },
+    {
+      "gold_id": "nvme-gold-002",
+      "semantic_key": "nvme.present.power_not_good.requests.fault_on.locate_off.and.inventory_present",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "When the present signal reports a drive but power-good is false, Nvme::read requests the fault LED on, requests the locate LED off, and calls setNvmeInventoryProperties with Present set to true and default NVMe data. That helper writes the inventory Present property and asset fields only when the cached serial number differs from the sampled serial number; Nvme::read logs and latches the power error only if it was not already latched.",
+      "evidence_refs": [
+        "source://nvme_manager.cpp#L66-L92",
+        "source://nvme_manager.cpp#L697-L722"
+      ],
+      "applicability_evidence_refs": ["source://nvme_manager.cpp#L697-L722"]
+    },
+    {
+      "gold_id": "nvme-gold-003",
+      "semantic_key": "nvme.power_not_good.skips.smbus.and.forces.failure.sample",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "When power-good is false, readNvmeData skips getNVMeInfobyBusID, marks the sampled drive absent, assigns the temperature-sensor failure value, records failure, and advances the SMBus error count to the retry limit so the retry path is skipped.",
+      "evidence_refs": ["source://nvme_manager.cpp#L568-L589"],
+      "applicability_evidence_refs": ["source://nvme_manager.cpp#L568-L589"]
+    },
+    {
+      "gold_id": "nvme-gold-004",
+      "semantic_key": "nvme.sensor.availability.equals.power_good",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "After attempting to read the drive, Nvme::read sets the sensor availability to the current isPwrGood value whenever the drive remains in the NVMe object map.",
+      "evidence_refs": ["source://nvme_manager.cpp#L729-L735"],
+      "applicability_evidence_refs": ["source://nvme_manager.cpp#L729-L735"]
+    },
+    {
+      "gold_id": "nvme-gold-005",
+      "semantic_key": "nvme.power_recovery.clears.error_latch.and.reenters.read_path",
+      "critical": false,
+      "applicability": "applicable",
+      "claim": "When power-good is true again, Nvme::read clears the drive's power-error latch and calls readNvmeData with isPwrGood true, which re-enables the getNVMeInfobyBusID SMBus read path.",
+      "evidence_refs": [
+        "source://nvme_manager.cpp#L576-L580",
+        "source://nvme_manager.cpp#L724-L732"
+      ],
+      "applicability_evidence_refs": ["source://nvme_manager.cpp#L724-L735"]
+    },
+    {
+      "gold_id": "nvme-gold-006",
+      "semantic_key": "nvme.fault_led.write.is.guarded.by.locate_led_state",
+      "critical": false,
+      "applicability": "applicable",
+      "claim": "setFaultLED returns when either LED group path is empty and otherwise writes the fault LED Asserted property only while the locate LED is not asserted and the current fault LED state differs from the requested state.",
+      "evidence_refs": ["source://nvme_manager.cpp#L134-L151"],
+      "applicability_evidence_refs": ["source://nvme_manager.cpp#L134-L152"]
+    },
+    {
+      "gold_id": "nvme-gold-007",
+      "semantic_key": "nvme.inventory.present.write.is.serial_change_gated",
+      "critical": true,
+      "applicability": "applicable",
+      "claim": "setNvmeInventoryProperties writes the inventory Present property and asset fields only when the cached serial number differs from the sampled serial number, then updates the cached serial number.",
+      "evidence_refs": ["source://nvme_manager.cpp#L66-L92"],
+      "applicability_evidence_refs": ["source://nvme_manager.cpp#L66-L132"]
+    }
+  ]
+}

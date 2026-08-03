@@ -1,0 +1,43 @@
+{
+  "case_id": "phosphor-state-hypervisor-boot-progress-001",
+  "evidence_catalog_sha256": "2143e2842985e3ad4b04b9dba3994ff16e5c6904b79e0bb15bcb60cac02b538d",
+  "execution_tier": "S",
+  "chains": [
+    {
+      "chain_id": "hypervisor-boot-progress-chain",
+      "nodes": [
+        {"node_id": "properties-changed-trigger", "kind": "trigger", "statement": "A Boot Progress PropertiesChanged signal for host0 triggers the registered Hypervisor callback.", "critical": true},
+        {"node_id": "boot-progress-match-precondition", "kind": "precondition_input", "statement": "The signal match is restricted to the host0 object and Boot Progress interface.", "critical": true},
+        {"node_id": "callback-entry", "kind": "entry", "statement": "The callback enters bootProgressChangeEvent with the received D-Bus message.", "critical": true},
+        {"node_id": "signal-dispatch-call", "kind": "call_chain", "statement": "The registered match forwards each matching message to bootProgressChangeEvent.", "critical": true},
+        {"node_id": "message-data-acquire", "kind": "resource_acquisition", "statement": "bootProgressChangeEvent creates storage for the changed BootProgress property data.", "critical": false},
+        {"node_id": "message-data-own", "kind": "resource_ownership", "statement": "The callback owns the parsed changed-property map during dispatch.", "critical": false},
+        {"node_id": "message-data-population", "kind": "state_resource_mutation", "statement": "Reading the signal populates the changed-property map used to find BootProgress.", "critical": true},
+        {"node_id": "boot-progress-dispatch-downstream", "kind": "downstream_effect", "statement": "A present BootProgress value is passed to updateCurrentHostState for state mapping.", "critical": true},
+        {"node_id": "unsupported-progress-fallback", "kind": "error_propagation", "statement": "A boot-progress value outside the recognized running and standby stages maps CurrentHostState to Off.", "critical": true},
+        {"node_id": "off-state-recovery", "kind": "cleanup_recovery", "statement": "The Unspecified path restores both current state and requested transition to Off.", "critical": true},
+        {"node_id": "message-data-release", "kind": "resource_release", "statement": "The callback releases its local parsed message data when dispatch returns.", "critical": false},
+        {"node_id": "current-state-observation", "kind": "external_observation", "statement": "Callers observe Standby, Running, or Off through the CurrentHostState property.", "critical": true},
+        {"node_id": "basic-paths-oracle", "kind": "executable_oracle", "statement": "The BasicPaths unit test checks invalid, SystemInitComplete, OSRunning, and Unspecified mappings.", "critical": true}
+      ],
+      "edges": [
+        {"edge_id": "trigger-to-precondition", "source_node_id": "properties-changed-trigger", "target_node_id": "boot-progress-match-precondition", "statement": "Only a PropertiesChanged signal matching the configured host0 Boot Progress rule enters this flow.", "critical": true},
+        {"edge_id": "precondition-to-entry", "source_node_id": "boot-progress-match-precondition", "target_node_id": "callback-entry", "statement": "A matching Boot Progress signal invokes bootProgressChangeEvent.", "critical": true},
+        {"edge_id": "entry-to-call", "source_node_id": "callback-entry", "target_node_id": "signal-dispatch-call", "statement": "The signal callback dispatches the received message into the boot-progress parser.", "critical": true},
+        {"edge_id": "call-to-acquire", "source_node_id": "signal-dispatch-call", "target_node_id": "message-data-acquire", "statement": "Message dispatch creates local storage for parsed changed properties.", "critical": false},
+        {"edge_id": "acquire-to-own", "source_node_id": "message-data-acquire", "target_node_id": "message-data-own", "statement": "The callback retains ownership of the local changed-property map while parsing.", "critical": false},
+        {"edge_id": "own-to-mutation", "source_node_id": "message-data-own", "target_node_id": "message-data-population", "statement": "Reading the D-Bus message populates the callback-owned property map.", "critical": true},
+        {"edge_id": "mutation-to-downstream", "source_node_id": "message-data-population", "target_node_id": "boot-progress-dispatch-downstream", "statement": "Finding BootProgress in the parsed map causes updateCurrentHostState to run.", "critical": true},
+        {"edge_id": "downstream-to-error", "source_node_id": "boot-progress-dispatch-downstream", "target_node_id": "unsupported-progress-fallback", "statement": "The state mapper routes unrecognized boot-progress values to its Off fallback.", "critical": true},
+        {"edge_id": "error-to-recovery", "source_node_id": "unsupported-progress-fallback", "target_node_id": "off-state-recovery", "statement": "The fallback resolves unsupported or unspecified progress to a safe Off state.", "critical": true},
+        {"edge_id": "recovery-to-release", "source_node_id": "off-state-recovery", "target_node_id": "message-data-release", "statement": "After the state update, callback return releases the parsed message data.", "critical": false},
+        {"edge_id": "release-to-observation", "source_node_id": "message-data-release", "target_node_id": "current-state-observation", "statement": "The completed callback leaves the mapped CurrentHostState externally observable.", "critical": true},
+        {"edge_id": "observation-to-oracle", "source_node_id": "current-state-observation", "target_node_id": "basic-paths-oracle", "statement": "The BasicPaths test asserts the externally observable state for each direct mapping input.", "critical": true}
+      ],
+      "disconfirming_checks": [
+        {"check_id": "check-mapping-table", "statement": "The mapping test must distinguish invalid, SystemInitComplete, OSRunning, and Unspecified results.", "critical": true},
+        {"check_id": "check-parse-error-no-update", "statement": "A D-Bus message parse exception is logged and returns before BootProgress lookup or state update.", "critical": true}
+      ]
+    }
+  ]
+}
