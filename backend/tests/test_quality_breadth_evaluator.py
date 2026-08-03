@@ -554,7 +554,7 @@ def test_multi_range_obligation_rejects_every_nonempty_proper_evidence_subset(
     assert [miss.item_id for miss in result.critical_misses] == ["PROTOCOL-001"]
 
 
-def test_one_scenario_cannot_realize_multiple_universe_obligations() -> None:
+def test_one_scenario_can_realize_multiple_independently_evidenced_obligations() -> None:
     universe = _universe()
     candidates, scenarios = _generated_for(universe)
     for item_id in ("FLOW-001", "BRANCH-001"):
@@ -577,8 +577,8 @@ def test_one_scenario_cannot_realize_multiple_universe_obligations() -> None:
     )
 
     realization = _metric(result, MetricName.SCENARIO_REALIZATION)
-    assert realization.miss_ids == ("FLOW-001", "BRANCH-001")
-    assert result.status is AxisStatus.FAIL
+    assert realization.miss_ids == ()
+    assert result.status is AxisStatus.PASS
 
 
 def test_invalid_dispositions_do_not_increase_discovery_recall() -> None:

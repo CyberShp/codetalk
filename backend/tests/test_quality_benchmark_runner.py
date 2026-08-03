@@ -1527,7 +1527,7 @@ def test_breadth_reversed_narrative_does_not_close_by_source_range_alone() -> No
     assert aligned["items"][0]["evidence_refs"] == []
 
 
-def test_one_public_breadth_observation_cannot_close_two_truth_obligations() -> None:
+def test_one_public_breadth_observation_can_close_independently_judged_obligations() -> None:
     module = _runner()
     universe = {
         "items": [
@@ -1544,7 +1544,7 @@ def test_one_public_breadth_observation_cannot_close_two_truth_obligations() -> 
     candidates = {
         "items": [{
             "candidate_id": "one-public-observation",
-            "narrative": "A single observation cannot establish two typed obligations.",
+            "narrative": "The same source-backed observation establishes both typed obligations.",
             "evidence_refs": ["source://lib/storage.c#L30-L35"],
         }],
     }
@@ -1555,10 +1555,13 @@ def test_one_public_breadth_observation_cannot_close_two_truth_obligations() -> 
         semantic_verdict_adapter=_IndependentAcceptingVerdictAdapter(),
     )
 
-    assert aligned["items"][0]["evidence_refs"] == []
+    assert aligned["items"][0]["evidence_refs"] == [
+        "source://lib/storage.c#trigger:L30-L35",
+        "source://lib/storage.c#api-entry:L30-L35",
+    ]
 
 
-def test_evaluator_aligns_public_depth_observations_after_independent_semantic_verdict() -> None:
+def test_evaluator_prefers_closed_depth_observation_for_the_same_truth_key() -> None:
     module = _runner()
     catalog = module.DepthEvidenceCatalog.model_validate({
         "case_id": "case",
@@ -1580,11 +1583,18 @@ def test_evaluator_aligns_public_depth_observations_after_independent_semantic_v
     candidate = {
         "chains": [{
             "chain_id": "public-chain",
-            "nodes": [{
-                "node_id": "public-node",
-                "status": "closed",
-                "evidence_refs": ["source://lib/storage.c#L40-L45"],
-            }],
+            "nodes": [
+                {
+                    "node_id": "public-open-node",
+                    "status": "open",
+                    "evidence_refs": ["source://lib/storage.c#L40-L45"],
+                },
+                {
+                    "node_id": "public-closed-node",
+                    "status": "closed",
+                    "evidence_refs": ["source://lib/storage.c#L40-L45"],
+                },
+            ],
             "edges": [],
             "disconfirming_checks": [],
         }],
@@ -1602,7 +1612,61 @@ def test_evaluator_aligns_public_depth_observations_after_independent_semantic_v
         "status": "closed",
         "evidence_refs": ["source://lib/storage.c#L40-L45:node-hidden"],
     }]
-    assert "public-node" not in json.dumps(aligned)
+    assert "public-open-node" not in json.dumps(aligned)
+    assert "public-closed-node" not in json.dumps(aligned)
+
+
+def test_evaluator_prefers_passing_check_observation_for_the_same_truth_key() -> None:
+    module = _runner()
+    catalog = module.DepthEvidenceCatalog.model_validate({
+        "case_id": "case",
+        "bindings": [{
+            "evidence_ref": "test://tests/storage_test.py#L10-L20:check-hidden",
+            "chain_id": "hidden-chain",
+            "category": "check",
+            "obligation_id": "hidden-check",
+        }],
+    })
+    truth = {
+        "chains": [{
+            "chain_id": "hidden-chain",
+            "nodes": [],
+            "edges": [],
+            "disconfirming_checks": [{"check_id": "hidden-check"}],
+        }],
+    }
+    candidate = {
+        "chains": [{
+            "chain_id": "public-chain",
+            "nodes": [],
+            "edges": [],
+            "disconfirming_checks": [
+                {
+                    "check_id": "public-failing-check",
+                    "status": "fail",
+                    "evidence_refs": ["test://tests/storage_test.py#L10-L20"],
+                },
+                {
+                    "check_id": "public-passing-check",
+                    "status": "pass",
+                    "evidence_refs": ["test://tests/storage_test.py#L10-L20"],
+                },
+            ],
+        }],
+    }
+
+    aligned = module._align_depth_candidate_from_evidence(
+        truth,
+        candidate,
+        catalog,
+        semantic_verdict_adapter=_IndependentAcceptingVerdictAdapter(),
+    )
+
+    assert aligned["chains"][0]["disconfirming_checks"] == [{
+        "check_id": "hidden-check",
+        "status": "pass",
+        "evidence_refs": ["test://tests/storage_test.py#L10-L20:check-hidden"],
+    }]
 
 
 def test_depth_prefilter_accepts_bounded_range_containment() -> None:
@@ -1772,7 +1836,7 @@ def test_depth_reversed_narrative_does_not_close_by_source_range_alone() -> None
     assert aligned["chains"][0]["nodes"] == []
 
 
-def test_one_public_depth_observation_cannot_close_two_truth_obligations() -> None:
+def test_one_public_depth_observation_can_close_independently_judged_obligations() -> None:
     module = _runner()
     catalog = module.DepthEvidenceCatalog.model_validate({
         "case_id": "case",
@@ -1822,7 +1886,18 @@ def test_one_public_depth_observation_cannot_close_two_truth_obligations() -> No
         semantic_verdict_adapter=_IndependentAcceptingVerdictAdapter(),
     )
 
-    assert aligned["chains"][0]["nodes"] == []
+    assert aligned["chains"][0]["nodes"] == [
+        {
+            "node_id": "hidden-first",
+            "status": "closed",
+            "evidence_refs": ["source://lib/storage.c#L40-L45:first"],
+        },
+        {
+            "node_id": "hidden-second",
+            "status": "closed",
+            "evidence_refs": ["source://lib/storage.c#L40-L45:second"],
+        },
+    ]
 
 
 def test_generator_authored_l3_is_discarded_in_favor_of_evaluator_result() -> None:

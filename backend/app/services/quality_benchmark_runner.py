@@ -1760,17 +1760,14 @@ def _align_breadth_evidence_refs(
                         )
                         == "supports"
                     ]
-                    # One public observation may attest to at most one hidden
-                    # obligation. Ambiguous or unjudged evidence is removed so
-                    # a plain path/range cannot be consumed by the evaluator.
-                    if len(supported) == 1:
-                        current["evidence_refs"] = [
+                    current["evidence_refs"] = list(
+                        dict.fromkeys(
                             str(raw_ref)
-                            for raw_ref in supported[0].get("evidence_refs") or []
+                            for item in supported
+                            for raw_ref in item.get("evidence_refs") or []
                             if _evidence_match_key(raw_ref) is not None
-                        ]
-                    else:
-                        current["evidence_refs"] = []
+                        )
+                    )
                 for nested in current.values():
                     visit(nested)
             elif isinstance(current, list):
@@ -1881,9 +1878,23 @@ def _align_depth_candidate_from_evidence(
                 )
                 if _validated_semantic_verdict(verdict) == "supports":
                     supported.append((key, bindings))
-            if len(supported) == 1:
-                key, bindings = supported[0]
-                matched.setdefault(key, (observed, bindings))
+            for key, bindings in supported:
+                existing = matched.get(key)
+                success_statuses = (
+                    frozenset({"closed", "pass"})
+                    if category == "check"
+                    else frozenset({"closed"})
+                )
+                observed_success = (
+                    str(observed.get("status") or "closed").strip().lower()
+                    in success_statuses
+                )
+                existing_success = existing is not None and (
+                    str(existing[0].get("status") or "closed").strip().lower()
+                    in success_statuses
+                )
+                if existing is None or (observed_success and not existing_success):
+                    matched[key] = (observed, bindings)
 
     aligned_chains: list[dict[str, Any]] = []
     for chain_id, truth_chain in truth_chains.items():

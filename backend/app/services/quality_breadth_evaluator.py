@@ -211,8 +211,6 @@ def evaluate_breadth_details(
             for item_id in potential_matches
             if frozenset(by_id[item_id].evidence_refs).issubset(row.evidence_refs)
         )
-        if len(verified_matches) != 1:
-            verified_matches = frozenset()
         is_realized = (
             row.artifact_kind in _SCENARIO_ARTIFACT_KINDS
             and row.status in _REALIZED_STATUSES
