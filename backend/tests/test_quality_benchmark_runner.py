@@ -33,6 +33,17 @@ class _IndependentAcceptingVerdictAdapter:
         return "supports"
 
 
+class _GoldVerdictAdapter:
+    def __init__(self, verdicts):
+        self.verdicts = verdicts
+
+    def claim_verdict(self, *, candidate, truth):
+        semantic_key = truth.get("semantic_key")
+        if semantic_key is None:
+            return self.verdicts.get("self", "supports")
+        return self.verdicts[semantic_key]
+
+
 class _DeterministicBatchSemanticJudge:
     """Batch-level test double for the production judge boundary."""
 
@@ -785,6 +796,136 @@ def test_accuracy_counts_source_supported_non_gold_claim_in_precision_only() -> 
     assert metrics["gold_recall"].denominator == 1
 
 
+def test_accuracy_gold_insufficient_does_not_override_source_supported_precision() -> None:
+    module = _runner()
+    gold = [{
+        "gold_id": "hidden-gold",
+        "semantic_key": "canonical.semantic.key",
+        "claim": "The callback publishes the response payload.",
+        "evidence_refs": ["source://lib/storage.c#L10-L20"],
+    }]
+    ledger = {
+        "claims": [{
+            "claim_id": "public-non-gold",
+            "claim": "The callback retains its response object until completion.",
+            "semantic_key": "generator-wording",
+            "evidence_refs": [{
+                "path": "lib/storage.c",
+                "start_line": 10,
+                "end_line": 20,
+            }],
+        }],
+    }
+
+    aligned = module._align_claim_semantics_from_evidence(
+        ledger,
+        gold,
+        semantic_verdict_adapter=_GoldVerdictAdapter(
+            {"canonical.semantic.key": "insufficient"}
+        ),
+    )
+
+    assert aligned["claims"][0]["l2_status"] == "supports"
+    assert aligned["claims"][0]["semantic_key"].startswith("candidate-unmatched-")
+
+
+def test_accuracy_multi_gold_contradiction_cannot_fall_through_as_supported() -> None:
+    module = _runner()
+    shared_ref = "source://lib/storage.c#L10-L20"
+    gold = [
+        {
+            "gold_id": "hidden-a",
+            "semantic_key": "canonical.a",
+            "claim": "The callback publishes the response payload.",
+            "evidence_refs": [shared_ref],
+        },
+        {
+            "gold_id": "hidden-b",
+            "semantic_key": "canonical.b",
+            "claim": "The callback retains the response object.",
+            "evidence_refs": [shared_ref],
+        },
+    ]
+    ledger = {
+        "claims": [{
+            "claim_id": "public-claim",
+            "claim": "The callback discards the response object.",
+            "semantic_key": "generator-wording",
+            "evidence_refs": [{
+                "path": "lib/storage.c",
+                "start_line": 10,
+                "end_line": 20,
+            }],
+        }],
+    }
+
+    aligned = module._align_claim_semantics_from_evidence(
+        ledger,
+        gold,
+        semantic_verdict_adapter=_GoldVerdictAdapter(
+            {"canonical.a": "contradicts", "canonical.b": "insufficient"}
+        ),
+    )
+
+    assert aligned["claims"][0]["l2_status"] == "contradicts"
+    assert aligned["claims"][0]["semantic_key"] == "canonical.a"
+
+
+def test_accuracy_multi_gold_support_requires_compound_claim_repair() -> None:
+    module = _runner()
+    shared_ref = "source://lib/storage.c#L10-L20"
+    gold = [
+        {
+            "gold_id": "hidden-a",
+            "semantic_key": "canonical.a",
+            "claim": "The callback publishes the response payload.",
+            "evidence_refs": [shared_ref],
+        },
+        {
+            "gold_id": "hidden-b",
+            "semantic_key": "canonical.b",
+            "claim": "The callback retains the response object.",
+            "evidence_refs": [shared_ref],
+        },
+    ]
+    ledger = {
+        "claims": [{
+            "claim_id": "public-compound",
+            "claim": "The callback publishes the payload and retains the response object.",
+            "semantic_key": "generator-wording",
+            "evidence_refs": [{
+                "path": "lib/storage.c",
+                "start_line": 10,
+                "end_line": 20,
+            }],
+        }],
+    }
+    diagnostics = []
+
+    aligned = module._align_claim_semantics_from_evidence(
+        ledger,
+        gold,
+        semantic_verdict_adapter=_GoldVerdictAdapter(
+            {"canonical.a": "supports", "canonical.b": "supports"}
+        ),
+        semantic_diagnostic_sink=diagnostics,
+    )
+
+    assert aligned["claims"][0]["l2_status"] == "insufficient"
+    assert aligned["claims"][0]["semantic_key"].startswith("candidate-unmatched-")
+    assert diagnostics == [{
+        "axis": "accuracy",
+        "code": "compound_claim_requires_split",
+        "candidate_id": "public-compound",
+        "matched_obligation_count": 2,
+        "repairable": True,
+        "repair": {
+            "artifact": "claim_ledger.json",
+            "operation": "split_candidate_statement",
+        },
+    }]
+
+
 @pytest.mark.parametrize(
     ("gold_range", "candidate_range"),
     [
@@ -1200,7 +1341,13 @@ def test_spdk_reversed_claims_fail_closed_despite_exact_gold_ranges(
         }],
     }
 
-    aligned = module._align_claim_semantics_from_evidence(ledger, gold)
+    aligned = module._align_claim_semantics_from_evidence(
+        ledger,
+        gold,
+        semantic_verdict_adapter=_GoldVerdictAdapter(
+            {"self": "insufficient", "canonical.semantic.key": "contradicts"}
+        ),
+    )
 
     assert aligned["claims"][0]["l2_status"] in {"contradicts", "insufficient"}
 
@@ -1223,7 +1370,13 @@ def test_evaluator_fails_closed_when_hidden_gold_has_no_semantic_statement() -> 
         }],
     }
 
-    aligned = module._align_claim_semantics_from_evidence(ledger, gold)
+    aligned = module._align_claim_semantics_from_evidence(
+        ledger,
+        gold,
+        semantic_verdict_adapter=_GoldVerdictAdapter(
+            {"self": "insufficient", "canonical.semantic.key": "insufficient"}
+        ),
+    )
 
     assert aligned["claims"][0]["l2_status"] == "insufficient"
 

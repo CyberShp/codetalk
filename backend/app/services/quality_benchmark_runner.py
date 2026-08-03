@@ -1303,20 +1303,11 @@ def _align_claim_semantics_from_evidence(
                 if semantic_key in matches:
                     exclusive_matches[semantic_key] = owner
         if len(exclusive_matches) > 1:
-            if semantic_diagnostic_sink is not None:
-                semantic_diagnostic_sink.append(
-                    {
-                        "axis": "accuracy",
-                        "code": "compound_claim_requires_split",
-                        "candidate_id": str(claim.get("claim_id") or ""),
-                        "matched_obligation_count": len(exclusive_matches),
-                        "repairable": True,
-                        "repair": {
-                            "artifact": "claim_ledger.json",
-                            "operation": "split_candidate_statement",
-                        },
-                    }
-                )
+            _append_compound_claim_diagnostic(
+                semantic_diagnostic_sink,
+                claim=claim,
+                matched_obligation_count=len(exclusive_matches),
+            )
             continue
         factual_truth = {
             "statement": _semantic_statement(claim),
@@ -1337,15 +1328,47 @@ def _align_claim_semantics_from_evidence(
             for semantic_key, gold in candidates.items()
         ]
         supported = [entry for entry in verdicts if entry[2] == "supports"]
-        if len(supported) == 1:
+        contradicted = [entry for entry in verdicts if entry[2] == "contradicts"]
+        if len(supported) > 1:
+            claim["l2_status"] = "insufficient"
+            _append_compound_claim_diagnostic(
+                semantic_diagnostic_sink,
+                claim=claim,
+                matched_obligation_count=len(supported),
+            )
+        elif len(supported) == 1 and not contradicted:
             semantic_key, _, _ = supported[0]
             claim["semantic_key"] = semantic_key
-        elif len(verdicts) == 1:
-            semantic_key, _, verdict = verdicts[0]
-            if verdict == "contradicts":
-                claim["semantic_key"] = semantic_key
-            claim["l2_status"] = verdict
+        elif len(contradicted) == 1 and not supported:
+            semantic_key, _, _ = contradicted[0]
+            claim["semantic_key"] = semantic_key
+            claim["l2_status"] = "contradicts"
+        elif contradicted:
+            claim["l2_status"] = "contradicts"
     return aligned
+
+
+def _append_compound_claim_diagnostic(
+    sink: list[dict[str, Any]] | None,
+    *,
+    claim: Mapping[str, Any],
+    matched_obligation_count: int,
+) -> None:
+    if sink is None:
+        return
+    sink.append(
+        {
+            "axis": "accuracy",
+            "code": "compound_claim_requires_split",
+            "candidate_id": str(claim.get("claim_id") or ""),
+            "matched_obligation_count": matched_obligation_count,
+            "repairable": True,
+            "repair": {
+                "artifact": "claim_ledger.json",
+                "operation": "split_candidate_statement",
+            },
+        }
+    )
 
 
 def _unmatched_claim_semantic_key(claim: Mapping[str, Any]) -> str:
