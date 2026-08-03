@@ -1,0 +1,74 @@
+name: Temporary settings build fix
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  fix:
+    if: github.event.issue.title == '[CodeTalk one-shot] fix settings TypeScript build'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: UI-promotion
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Apply fix
+        shell: bash
+        run: |
+          set -o pipefail
+          python scripts/_oneshot_fix_settings_llm_result.py 2>&1 | tee /tmp/settings-build-fix.log
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        shell: bash
+        run: npm run build -- --webpack 2>&1 | tee -a /tmp/settings-build-fix.log
+
+      - name: Commit result
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix settings LLM test result build'
+          git push origin HEAD:UI-promotion
+
+      - name: Report success
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh issue comment '${{ github.event.issue.number }}' --repo '${{ github.repository }}' --body 'Settings TypeScript fix applied; frontend build passed and UI-promotion was updated.'
+
+      - name: Report failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          {
+            echo 'Settings build fix failed.'
+            echo
+            echo '```text'
+            tail -n 160 /tmp/settings-build-fix.log 2>/dev/null || true
+            echo '```'
+          } > /tmp/settings-build-failure.md
+          gh issue comment '${{ github.event.issue.number }}' --repo '${{ github.repository }}' --body-file /tmp/settings-build-failure.md
