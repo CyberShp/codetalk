@@ -20,3 +20,4 @@ created: 2026-07-05
 | F009 | Coverage As Workflow Capability | portable-complete | Codex | docs/AGENT_WORKBENCH_ROADMAP.md |
 | F010 | Custom Output Artifact Profiles | portable-complete | Codex | [Design](docs/OUTPUT_ARTIFACT_CUSTOMIZATION.md) |
 | F011 | Test Knowledge Center and Experience Retrieval | portable-complete | Codex | [F011](docs/features/F011-test-knowledge-center.md) / [Design](docs/TEST_KNOWLEDGE_CENTER.md) |
+| F014 | Skill-first Product and Runtime | spec | Codex | [F014](docs/features/F014-skill-first-runtime.md) / [Plan](docs/plans/2026-08-04-f014-skill-first-runtime.md) |
