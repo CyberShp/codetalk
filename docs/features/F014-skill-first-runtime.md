@@ -109,8 +109,14 @@ and the old staged professional-analysis entry path.
 - [ ] AC-C1: Task binds exactly one Skill Version and stores its digest, inputs, Agent runtime, selected deliveries, and model/budget configuration without a parallel binding truth source.
 - [ ] AC-C2: Run Attempt freezes Skill ZIP/IR/digest, input snapshot, capability report, invocation, Agent session, Judge configuration, and selected deliveries before execution.
 - [ ] AC-C3: Selecting one delivery does not skip upstream Skill steps; unselected outputs remain internal artifacts and never enter the delivery package.
-- [ ] AC-C4: Cancellation is idempotent, process termination leaves no nonterminal Run, and CodeTalk restart resumes from durable checkpoint without rereading a mutable Draft.
-- [ ] AC-C5: The professional Skill path does not call legacy `ai_staged_execution` or infer methodology from target text.
+- [ ] AC-C4: Run Attempt, Agent Session, and Agent Process are separate persisted concepts; a disposable process cannot erase a resumable Session or completed checkpoint.
+- [ ] AC-C5: Lifecycle events persist in order from capability discovery and preflight through session creation, start, messages/tools/artifacts, waiting/resume, and one terminal state.
+- [ ] AC-C6: Killing the Agent process preserves committed checkpoints and artifacts, discards uncommitted temporary output, and resumes from the last valid checkpoint without repeating completed steps.
+- [ ] AC-C7: Restarting CodeTalk reconciles unfinished Runs and Sessions deterministically and resumes from the frozen Skill Version rather than a mutable Draft.
+- [ ] AC-C8: A missing, incompatible, or corrupt Agent Session is invalidated once with a recorded reason; recovery creates one clean Session or fails explicitly without an infinite retry loop.
+- [ ] AC-C9: Cancellation is idempotent, terminates child processes, prevents later artifact/Judge/completed transitions, and leaves no nonterminal Run; queue, Agent, script, validation, and overall timeouts remain distinguishable.
+- [ ] AC-C10: Company CodeAgent, Claude Code, and OpenCode expose the same lifecycle contract; unsupported resume, tool, or cancellation capabilities are explicit in the capability report and never silently ignored.
+- [ ] AC-C11: The professional Skill path does not call legacy `ai_staged_execution` or infer methodology from target text.
 
 ### Phase D (Official pack and Judge)
 
@@ -136,7 +142,7 @@ and the old staged professional-analysis entry path.
 | Archive | Integrity, safe-path, filename, and inventory tests | pinned SHA, 37/37 accounting, UTF-8 path manifest |
 | Contract | Schema positive/negative fixtures and IR golden tests | exact validation paths and stable golden digest |
 | Component | Store/build/review TDD suites | immutable release, rescan, patch non-application evidence |
-| Integration | Fake Agent event stream plus kill/restart/cancel tests | frozen invocation, checkpoint replay, terminal state |
+| Agent lifecycle | Fake Agent plus real-runtime create/start/event/kill/restart/session-loss/cancel/timeout matrix | frozen invocation, ordered events, checkpoint replay, process cleanup, one terminal state |
 | Vertical | Real CodeAgent run on a local source/design fixture | nine steps, 37 artifacts, eight outputs, delivery filter |
 | Judge | Separate-session adversarial acceptance | no transcript leakage, `PENDING_VALIDATION -> READY` evidence |
 | Product | Playwright workflows and screenshots | Task, Cockpit, Pack/Skill pages at required viewports |
@@ -182,6 +188,7 @@ and the old staged professional-analysis entry path.
 | KD-2 | Import the supplied ZIP as a five-Skill Pack | The archive contains five distinct scenarios while one Skill must represent one scenario | 2026-08-04 |
 | KD-3 | Keep source-declared required Judge semantics | Platform optionality must not weaken the official Skill's READY contract | 2026-08-04 |
 | KD-4 | Reuse Attempt/checkpoint/event/artifact mechanisms | These are durable final-system assets; rewriting them is a detour | 2026-08-04 |
+| KD-5 | Test inside every Task and at every Phase gate | Waiting until final integration would hide ownership and lifecycle defects | 2026-08-04 |
 
 ## Timeline
 
@@ -203,6 +210,7 @@ and the old staged professional-analysis entry path.
 | R2 | Preserve and migrate the supplied v2.4 package | AC-A2-A4, AC-D1-D2 | inventory, IR golden, vertical run | [ ] |
 | R3 | Define concrete acceptance methods and standards | all ACs | evidence matrix and final report | [ ] |
 | R4 | Plan bounded sub-Agent execution | AC-E6 | ownership log and independent reviews | [ ] |
+| R5 | Agent lifecycle must survive process death, service restart, session loss, cancellation, and timeout | AC-C4-C10 | fake/real lifecycle matrix and persisted evidence | [ ] |
 
 ### Coverage Check
 

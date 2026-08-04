@@ -76,10 +76,31 @@ explicit apply decision followed by a new deterministic build.
 
 ### 3.3 Runtime contract gate
 
-Use a deterministic fake Agent to emit messages, tool events, artifacts,
-waiting state, cancellation, failure, and completion. Assert ordered persisted
-events, frozen invocation, checkpoint-before-projection, idempotent cancellation,
-clean process termination, restart replay, and no access to mutable Draft files.
+Agent 生命周期不等同于一个子进程的生命周期。验收时必须分别观察：
+
+- **Run Attempt**：CodeTalk 的持久任务真相源；
+- **Agent Session**：可恢复的上下文、Session ID、能力和 checkpoint；
+- **Agent Process**：一次可被杀死和重建的具体执行进程。
+
+先使用确定性 Fake Agent 跑完整矩阵，再对每个真实 Runtime 跑其支持的
+同一份契约：
+
+| 场景 | 操作 | 必须观察到的结果 |
+|---|---|---|
+| 创建启动 | capability discovery -> preflight -> create -> start | 冻结 Invocation；事件严格有序；只出现一个活动 Session |
+| 正常事件 | 输出文本、工具调用、写工件、等待输入、恢复 | 事件持久化；Agent 自述不能直接改变 Run 状态；checkpoint 后才完成步骤 |
+| 杀进程 | 在步骤中强杀 Agent Process | Run 不误报成功；已提交工件保留；临时输出丢弃；新进程从 checkpoint 恢复 |
+| CodeTalk 重启 | 在运行中重启后端 | 启动扫描找回未完成 Run；不重跑已完成步骤；不读取可变 Draft |
+| Session 失效 | 删除/损坏 Session 或返回 session-not-found | 记录原因；只允许一次 clean-session recovery；禁止无限 resume 循环 |
+| 重复取消 | 连续发出两次取消 | 结果幂等；父子进程全部终止；取消后禁止写正式工件、启动 Judge 或 completed |
+| 分层超时 | 分别触发 queue、Agent、script、validation、overall timeout | 终态和原因可区分；超时清理完整；剩余预算不被伪装成 Agent 执行时间 |
+| Judge 隔离 | Producer 完成后启动 Judge | 两个独立 Session；Judge 无 Producer 对话；未审为 PENDING_VALIDATION，通过才 READY |
+| 能力降级 | Runtime 不支持 resume/tool/cancel | capability report 明确 unsupported；按契约降级或阻断，禁止静默忽略 |
+
+Fake Agent 必须能主动发出 message、tool、artifact、waiting、resume、failure、
+completion，并能被测试控制在任意 checkpoint 前后终止。所有场景都断言
+checkpoint-before-projection、一个且仅一个终态、进程树清理，以及运行时不能
+访问可变 Draft 文件。
 
 ### 3.4 Real vertical gate
 
@@ -226,11 +247,14 @@ do not retain dual Workflow/Skill write paths or a binding table.
 - Modify: `backend/app/services/workbench_workflow_runner.py`
 - Create: `backend/tests/test_skill_run_invocation.py`
 - Create: `backend/tests/test_skill_run_executor.py`
+- Create: `backend/tests/test_skill_agent_lifecycle.py`
 
 Freeze invocation before execution and translate it through the existing
-Harness. The main Agent owns modifications to runner hot files. First use a fake
-runtime, then company CodeAgent. Add Claude Code and OpenCode adapters only after
-the common contract passes.
+Harness. The main Agent owns modifications to runner hot files. First make every
+create/start/event/kill/restart/session-loss/cancel/timeout case red against the
+Fake Agent, then implement the smallest common lifecycle contract. Run the same
+contract against company CodeAgent; add Claude Code and OpenCode only after the
+common contract passes.
 
 ### Task 10: Judge and delivery
 
@@ -326,7 +350,42 @@ reviewer. The main Agent cannot approve its own integration changes.
 Every handoff includes What, Why, Tradeoff, Open Questions, and Next Action plus
 the exact red/green commands and changed paths.
 
-## 6. Required Commands and Evidence
+## 6. Development and Test Cadence
+
+不采用“全部开发完再测试”。执行节奏固定为三层：
+
+### 6.1 Task 内 Red-Green-Refactor
+
+每个 Task 都按以下顺序完成后才允许提交：
+
+1. 写一个能够证明缺失行为的失败测试；
+2. 运行并保存准确的失败原因，确认不是 fixture 或环境误报；
+3. 写最小实现使该测试通过；
+4. 运行当前模块的全部测试，防止局部通过、相邻回归；
+5. 重构后再次运行模块测试；
+6. 提交一个可独立验证、会保留在终态系统中的改动。
+
+### 6.2 Phase 集成门禁
+
+| Phase | 进入下一阶段前必须通过 |
+|---|---|
+| A Contracts/build | 六份 Schema 正反例、ZIP 安全、37/37 inventory、IR golden、重复构建 digest |
+| B Domain/review | Store、Build、Rescan、Release immutability、AI patch 不自动应用、API 4xx |
+| C Task/Runtime | Task binding、冻结 Invocation、Fake Agent 生命周期九场景、完整 backend 回归 |
+| D Official Skill/Judge | 真实 CodeAgent、九步骤/37 工件/八输出、进程和后端重启、独立 Judge |
+| E Product/removal | Playwright 用户链路、响应式截图、旧 Workflow source/route gate、完整前后端回归 |
+
+Phase 门禁失败就停在当前阶段修复，不能把红测留给下一阶段，也不能用“最终
+会统一修”作为通过理由。
+
+### 6.3 Final acceptance
+
+全部阶段完成后仍需执行一次最终全量验收，但它不是第一次测试。最终验收基于
+final SHA 重跑完整 backend、frontend build/lint、Playwright、真实 CodeAgent、
+restart/cancel/session-loss、Judge 隔离和旧路径删除门禁，并由未参与实现的
+reviewer 与 Vision Guardian 分别签字。
+
+## 7. Required Commands and Evidence
 
 Initial focused gates:
 
@@ -335,7 +394,7 @@ cd backend
 python -m pytest -q tests/test_skill_schemas.py tests/test_skill_package_importer.py
 python -m pytest -q tests/test_skill_package_validator.py tests/test_skill_ir_compiler.py
 python -m pytest -q tests/test_skill_store.py tests/test_skill_build_pipeline.py tests/test_skill_review.py
-python -m pytest -q tests/test_skill_run_invocation.py tests/test_skill_run_executor.py tests/test_skill_judge.py
+python -m pytest -q tests/test_skill_run_invocation.py tests/test_skill_run_executor.py tests/test_skill_agent_lifecycle.py tests/test_skill_judge.py
 ```
 
 Integration gates:
@@ -354,7 +413,7 @@ Evidence is incomplete unless it records command, final SHA, main sync state,
 exit code, test counts, relevant artifact paths, screenshots, and the independent
 review verdict.
 
-## 7. Stop Conditions
+## 8. Stop Conditions
 
 Stop before implementation when the company CodeAgent contract cannot be
 observed, the local fixture cannot represent the chosen acceptance scenario,
