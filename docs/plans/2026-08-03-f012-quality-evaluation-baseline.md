@@ -1014,3 +1014,31 @@ The final F012 feature document must link each acceptance criterion to evidence 
 - [ ] Full quality, review, and merge gates pass.
 
 The Goal-mode controller updates this checklist and the corresponding F012 acceptance criteria after each accepted phase. It must not batch-mark phases complete at the end or hide unresolved limitations in prose.
+
+## 22. Formal Execution Outcome
+
+The formal rapid corpus at evaluator revision `36a03edc` attempted all 12
+registered cases. Ten cases produced immutable evaluations; Mooncake and SPDK
+published terminal `quality_blocked` generator packages. Four representative
+domains also completed independent rapid/deep pairs with `gpt-5.6-sol`
+generation and `gpt-5.5` high-effort semantic adjudication.
+
+The blocked baseline was frozen by clean freezer revision `c193eb2c` at
+`/Volumes/Media/codetalk-quality-evidence/f012-baseline-blocked-c193eb2c`.
+The manifest SHA-256 is
+`0e1c49ac9631cfc1530afd81244a0263807445ac2c6950eb0200af24d1daea2d`.
+R4 recomputed all 330 artifact hashes and returned `ACCEPT`. R5 returned
+`ACCEPT WITH P2 COVERAGE LIMITATIONS` for implemented scope and `BLOCKED` for
+F012 release and the final goal.
+
+The freezer correctly omitted `threshold_policy.json`, retained partial
+per-domain distributions without converting generation failures to zero
+scores, and emitted these independent release reasons:
+
+- `generation_failures_present`
+- `thresholds_not_frozen`
+- `repair_attempt_audit_unavailable`
+
+P7 therefore remains unchecked. Reaching it requires a new complete 12/12
+evaluable baseline with auditable repair traces; AC9 additionally retains the
+planned alternative-model and historical regression sample.

@@ -37,3 +37,33 @@ The isolated parity proves those ten outcomes are full-suite order/shared-state 
 ## Disposition
 
 No deterministic F012 regression is confirmed by the full-suite comparison. The inherited full-suite debt remains explicit and must not be reported as a clean repository-wide pass. A final F012-tree full run is still required after the last implementation commit.
+
+## Final Full-Suite Run
+
+The final full backend run after freezer closure produced:
+
+```text
+4763 passed, 69 failed, 8 skipped, 1 warning in 1337.93s (0:22:17)
+```
+
+The exact 69 failing node IDs were compared with both retained JUnit reports.
+Every current failure is present in both the earlier F012 checkpoint and the
+detached pre-F012 base:
+
+```text
+current failures:       69
+shared with old F012:   69
+shared with base:       69
+new versus old F012:     0
+new versus base:         0
+old F012 failures gone: 10
+base failures gone:      4
+```
+
+The remaining failures are the same OpenCode `--auto` argument expectations,
+professional-governance import boundaries, Phase 6/7 frozen execution
+authority behavior, settings/network-policy tests, V3 governance/runner
+expectations, and one historical task-detail response shape. The current F012
+quality suite passed separately (`664 passed`), so no deterministic F012
+regression is present. The repository-wide backend gate remains red and is
+reported as such.

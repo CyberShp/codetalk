@@ -37,5 +37,17 @@ contract remain unchanged.
 ## Verification
 
 Tests cover successful 10+2 publication, tampered failure bytes, missing case
-coverage, missing Workbench audit, and CLI exit code 2. The complete freezer and
-generator test modules pass before formal evidence is frozen.
+coverage, missing Workbench audit, producer/freezer terminal-code parity,
+read-only inputs, canonical repair-trace recomputation, secret probes, both
+passed and blocked freezer identities, and CLI exit code 2. The final focused
+freezer/generator suite passed 93 tests and the complete quality suite passed
+664 tests before formal evidence was frozen.
+
+The formal bundle is
+`/Volumes/Media/codetalk-quality-evidence/f012-baseline-blocked-c193eb2c`;
+its manifest SHA-256 is
+`0e1c49ac9631cfc1530afd81244a0263807445ac2c6950eb0200af24d1daea2d`.
+Independent R4 audit recomputed all 330 artifacts and accepted the evidence
+integrity. The final release remains blocked because only 10/12 cases are
+evaluable, thresholds are not frozen, and the two legacy failure packages do
+not contain canonical repair-attempt traces.

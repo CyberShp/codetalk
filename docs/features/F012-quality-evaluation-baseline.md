@@ -9,7 +9,7 @@ created: 2026-08-03
 
 ## Status
 
-- **State**: in-progress (P7 baseline calibration)
+- **State**: blocked (P7 formal baseline: 10/12 evaluable)
 - **Priority**: P0
 - **Owner**: Codex
 - **Related**: F002, F008, F009, F011
@@ -165,16 +165,16 @@ Truth packages are loaded only by the evaluator after task completion. They must
 
 ### AC9: Baseline and release gate
 
-- [ ] A repeatable command runs one case, one domain, or the complete corpus and writes immutable machine-readable plus human-readable reports.
+- [x] A repeatable command runs one case, one domain, or the complete corpus and writes immutable machine-readable plus human-readable reports.
 - [ ] Baseline calibration records per-project and per-domain distributions before numeric release thresholds are frozen.
-- [ ] Release policy gates every axis independently and identifies critical failures separately.
+- [x] Release policy gates every axis independently and identifies critical failures separately.
 - [ ] Cross-model/version execution is used as regression sampling, not as ground truth or a substitute for hidden-truth evaluation.
 
 ### AC10: Independent audit
 
 - [x] The author of an evaluator does not approve that evaluator.
 - [x] Accuracy, Breadth, and Depth receive independent adversarial fixture review.
-- [ ] A Vision Guardian verifies the product contract, especially repair-before-block, no aggregate masking, truth isolation, all-domain coverage, and timing semantics.
+- [x] A Vision Guardian verifies the product contract, especially repair-before-block, no aggregate masking, truth isolation, all-domain coverage, and timing semantics.
 - [ ] Quality-gate, request-review, receive-review, and merge-gate evidence is retained.
 
 ## Non-Goals
@@ -210,10 +210,44 @@ Truth packages are loaded only by the evaluator after task completion. They must
 6. Benchmark reports are immutable artifacts; no new quality dashboard or database is required.
 7. Exact thresholds are calibrated from the first complete baseline and then versioned.
 
+## Formal Baseline Evidence
+
+The formal evidence is frozen at
+`/Volumes/Media/codetalk-quality-evidence/f012-baseline-blocked-c193eb2c`.
+`baseline_manifest.json` has SHA-256
+`0e1c49ac9631cfc1530afd81244a0263807445ac2c6950eb0200af24d1daea2d`
+and binds 330 read-only artifacts. The complete independent audit is retained
+in [the final blocked-baseline review](../review-notes/f012-final-blocked-baseline-audit.md).
+
+| Gate | Formal result |
+|---|---|
+| Corpus attempt coverage | 12/12 |
+| Evaluable coverage | 10/12 |
+| Generation failures | Mooncake and SPDK, both `quality_blocked` |
+| Core rapid p100 | `462.808707s`, pass against 15 minutes |
+| Four-domain paired rapid p100 | `397.898292s`, pass |
+| Four-domain paired deep p100 | `872.87439s`, pass against 90 minutes |
+| Under-five work sufficiency | pass after independent review of BMCWeb and NVMe-CSD |
+| Threshold policy | not frozen |
+| Release | blocked |
+
+The 10 evaluated reports all have `not_ready` delivery and fail Accuracy,
+Breadth, and Depth. Their critical-failure counts are 95, 138, and 246
+respectively. These are measurements of the retained generated reports, not a
+claim that the model produced no output. The two generation failures are not
+assigned invented zero scores.
+
+The release reasons are independently derived as
+`generation_failures_present`, `thresholds_not_frozen`, and
+`repair_attempt_audit_unavailable`. The last reason is specific to the legacy
+`36a03edc` failure packages; current code retains canonical repair traces for
+future blocked runs.
+
 ## Open Questions
 
-- Exact per-axis numeric thresholds remain intentionally open until the complete initial corpus has produced baseline distributions.
+- Exact per-axis numeric thresholds remain blocked until all 12 corpus cases produce evaluable baseline distributions.
 - Tier H scheduling and lab ownership remain environment-dependent; Tier S/E completion is not blocked by hardware availability.
+- Alternative-model and accepted historical-baseline regression samples remain unavailable for AC9.
 
 ## Requirements Checklist
 
