@@ -1269,7 +1269,36 @@ def test_quality_blocked_failure_retains_sanitized_workbench_audit(
     source = tmp_path / "source"
     source.mkdir()
     (source / "storage.c").write_text("one\ntwo\n", encoding="utf-8")
-    result = replace(_fake_workbench_result(tmp_path), status="quality_blocked")
+    result = replace(
+        _fake_workbench_result(tmp_path),
+        status="quality_blocked",
+        repair_audit={
+            "attempted_count": 1,
+            "accepted_count": 0,
+            "last_accepted_attempt": 0,
+            "stopped_reason": "no_quality_progress",
+            "remaining_seconds": 629.9,
+            "outcomes": [
+                {
+                    "attempt": 1,
+                    "accepted": False,
+                    "status_before": "needs_rework",
+                    "status_after": "needs_rework",
+                    "issues_before": 2,
+                    "issues_after": 2,
+                }
+            ],
+        },
+    )
+    (
+        result.task_artifact_dir
+        / "agent_runs"
+        / "analyze"
+        / "quality_repair_result.json"
+    ).write_text(
+        json.dumps({"attempt_count": 1, "attempts": [{"accepted": False}]}),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(
         "app.services.quality_benchmark_generator.execute_quality_benchmark_workbench",
         lambda **_kwargs: result,
@@ -1291,7 +1320,75 @@ def test_quality_blocked_failure_retains_sanitized_workbench_audit(
     audit = json.loads((output / "workbench_audit.json").read_text())
     assert audit["task_run_id"] == result.task_run_id
     assert audit["workbench_status"] == "quality_blocked"
+    assert audit["terminal_blocked"] is True
+    assert audit["repair_audit"] == result.repair_audit
+    assert audit["repair_attempt_count"] == 1
+    assert audit["accepted_response_attempt"] == 0
+    trace = json.loads((output / "repair_trace.json").read_text())
+    assert trace["projection"] == result.repair_audit
+    assert trace["source_sha256"] == audit["task_artifact_hashes"][
+        "quality_repair_result.json"
+    ]
+    source_bytes = (output / "repair_trace_source.json").read_bytes()
+    assert hashlib.sha256(source_bytes).hexdigest() == trace["source_sha256"]
     _verify_artifact_hash_manifest(output)
+
+
+def test_workbench_repair_audit_retains_failed_attempt_without_promoting_it(
+    tmp_path,
+) -> None:
+    import app.services.quality_benchmark_workbench as workbench_module
+
+    task_artifact = tmp_path / "task"
+    agent_artifact = task_artifact / "agent_runs" / "analyze"
+    agent_artifact.mkdir(parents=True)
+    (agent_artifact / "quality_repair_result.json").write_text(
+        json.dumps(
+            {
+                "enabled": True,
+                "attempt_count": 1,
+                "attempts": [
+                    {
+                        "attempt": 1,
+                        "duration_ms": 8123.4,
+                        "status_before": "needs_rework",
+                        "issues_before": 3,
+                        "status_after": "needs_rework",
+                        "issues_after": 3,
+                        "accepted": False,
+                        "affected_artifacts": ["benchmark_response.json"],
+                        "candidate_status": "needs_rework",
+                        "candidate_score": 40,
+                        "candidate_issues": 3,
+                        "salvaged_rows": {"benchmark_response.json": ["secret-row-id"]},
+                    }
+                ],
+                "remaining_seconds": 629.912,
+                "stopped_reason": "no_quality_progress",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    audit = workbench_module._load_repair_audit(task_artifact, agent_artifact)
+
+    assert audit == {
+        "attempted_count": 1,
+        "accepted_count": 0,
+        "last_accepted_attempt": 0,
+        "stopped_reason": "no_quality_progress",
+        "remaining_seconds": 629.912,
+        "outcomes": [
+            {
+                "attempt": 1,
+                "accepted": False,
+                "status_before": "needs_rework",
+                "status_after": "needs_rework",
+                "issues_before": 3,
+                "issues_after": 3,
+            }
+        ],
+    }
 
 
 def test_generator_exports_only_sanitized_workbench_audit_not_runtime_credentials(
@@ -1346,6 +1443,8 @@ def test_generator_exports_only_sanitized_workbench_audit_not_runtime_credential
         "task_run_id",
         "workbench_status",
         "repair_attempt_count",
+        "accepted_response_attempt",
+        "repair_audit",
         "terminal_blocked",
         "task_artifact_hashes",
             "first_provenance",
@@ -1541,8 +1640,24 @@ def test_workbench_first_and_final_use_validated_repair_provenance(
             final["claims"][0]["claim"] = "validated repair one"
             response.write_text(json.dumps(final), encoding="utf-8")
             response_sha = hashlib.sha256(response.read_bytes()).hexdigest()
-            (task_artifact / "quality_repair_summary.json").write_text(
-                json.dumps({"attempt_count": 1, "successful_attempt_count": 1}),
+            (agent_artifact / "quality_repair_result.json").write_text(
+                json.dumps(
+                    {
+                        "attempt_count": 1,
+                        "attempts": [
+                            {
+                                "attempt": 1,
+                                "accepted": True,
+                                "status_before": "needs_rework",
+                                "status_after": "deliverable",
+                                "issues_before": 1,
+                                "issues_after": 0,
+                            }
+                        ],
+                        "remaining_seconds": 100.0,
+                        "stopped_reason": "",
+                    }
+                ),
                 encoding="utf-8",
             )
             (task_artifact / "workflow_outputs.json").write_text(
@@ -1597,6 +1712,7 @@ def test_workbench_first_and_final_use_validated_repair_provenance(
     assert result.first_provenance["event"] == "quality_repair_started"
     assert result.final_provenance["attempt"] == 1
     assert result.final_provenance["event"] == "workflow_output_validated"
+    assert result.repair_audit["accepted_count"] == 1
 
 
 def _materialize_prepublication_controls(task_artifact: Path) -> None:

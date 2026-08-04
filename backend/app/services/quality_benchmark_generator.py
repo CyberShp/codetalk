@@ -177,11 +177,28 @@ def generate_quality_benchmark_artifacts(
         ):
             return output
         failure_audit: dict[str, Any] | None = None
+        failure_repair_source: bytes | None = None
         if workbench is not None:
             try:
                 failure_audit = _sanitized_workbench_audit(workbench)
+                repair_source_path = (
+                    Path(workbench.task_artifact_dir)
+                    / "agent_runs"
+                    / "analyze"
+                    / "quality_repair_result.json"
+                )
+                if repair_source_path.is_file():
+                    failure_repair_source = repair_source_path.read_bytes()
+                    repair_source_text = failure_repair_source.decode("utf-8")
+                    if not isinstance(json.loads(repair_source_text), dict):
+                        raise ValueError("workbench repair trace source is invalid")
+                    _reject_text_secret_material(
+                        repair_source_text,
+                        _credential_fingerprints_for_workbench(workbench),
+                    )
             except (OSError, TypeError, ValueError):
                 failure_audit = None
+                failure_repair_source = None
         _remove_tree(staging)
         failure_code, status = _failure_classification(exc)
         _publish_failure_evidence(
@@ -196,6 +213,7 @@ def generate_quality_benchmark_artifacts(
             status=status,
             failure_code=failure_code,
             workbench_audit=failure_audit,
+            repair_trace_source=failure_repair_source,
         )
         prefix = (
             "CodeTalk benchmark exceeded its absolute deadline"
@@ -888,6 +906,7 @@ def _publish_failure_evidence(
     status: str,
     failure_code: str,
     workbench_audit: Mapping[str, Any] | None = None,
+    repair_trace_source: bytes | None = None,
 ) -> None:
     failure_staging = Path(
         tempfile.mkdtemp(dir=output.parent, prefix=f".{output.name}.failure.")
@@ -914,6 +933,30 @@ def _publish_failure_evidence(
                 failure_staging / "workbench_audit.json",
                 dict(workbench_audit),
             )
+            repair_audit = workbench_audit.get("repair_audit")
+            repair_source_sha256 = (
+                workbench_audit.get("task_artifact_hashes") or {}
+            ).get("quality_repair_result.json")
+            if isinstance(repair_audit, Mapping) and isinstance(
+                repair_source_sha256, str
+            ):
+                if (
+                    repair_trace_source is None
+                    or hashlib.sha256(repair_trace_source).hexdigest()
+                    != repair_source_sha256
+                ):
+                    raise ValueError("workbench repair trace source hash mismatch")
+                (failure_staging / "repair_trace_source.json").write_bytes(
+                    repair_trace_source
+                )
+                _write_json(
+                    failure_staging / "repair_trace.json",
+                    {
+                        "schema_version": "quality-benchmark-repair-trace-v1",
+                        "source_sha256": repair_source_sha256,
+                        "projection": dict(repair_audit),
+                    },
+                )
         _write_json(
             failure_staging / "artifact_hash_manifest.json",
             _artifact_hash_manifest(failure_staging),
@@ -954,6 +997,12 @@ def _sanitized_workbench_audit(workbench: Any) -> dict[str, Any]:
         "sandbox_policy.json": (
             task_artifact / "agent_runs" / "analyze" / "sandbox_policy.json"
         ),
+        "quality_repair_result.json": (
+            task_artifact
+            / "agent_runs"
+            / "analyze"
+            / "quality_repair_result.json"
+        ),
     }
     hashes: dict[str, str] = {}
     for label, path in audit_paths.items():
@@ -961,6 +1010,7 @@ def _sanitized_workbench_audit(workbench: Any) -> dict[str, Any]:
             hashes[label] = hashlib.sha256(path.read_bytes()).hexdigest()
         except OSError:
             continue
+    repair_audit = dict(getattr(workbench, "repair_audit", {}) or {})
     return {
         "schema_version": "quality-benchmark-workbench-audit-v1",
         "task_run_id": str(workbench.task_run_id),
@@ -968,8 +1018,11 @@ def _sanitized_workbench_audit(workbench: Any) -> dict[str, Any]:
         "work_sufficiency": dict(
             getattr(workbench, "work_sufficiency", {}) or {}
         ),
-        "repair_attempt_count": int(workbench.repair_attempt_count),
-        "terminal_blocked": bool(workbench.terminal_block_reason),
+        "repair_attempt_count": int(repair_audit.get("attempted_count") or 0),
+        "accepted_response_attempt": int(workbench.repair_attempt_count),
+        "repair_audit": repair_audit,
+        "terminal_blocked": bool(workbench.terminal_block_reason)
+        or str(workbench.status).strip().lower() == "quality_blocked",
         "task_artifact_hashes": hashes,
         "first_provenance": dict(getattr(workbench, "first_provenance", {}) or {}),
         "final_provenance": dict(getattr(workbench, "final_provenance", {}) or {}),

@@ -64,6 +64,7 @@ class BenchmarkWorkbenchResult:
     first_provenance: dict[str, Any] = field(default_factory=dict)
     final_provenance: dict[str, Any] = field(default_factory=dict)
     work_sufficiency: dict[str, Any] = field(default_factory=dict)
+    repair_audit: dict[str, Any] = field(default_factory=dict)
     credential_fingerprints: tuple[tuple[int, str], ...] = field(
         default=(), repr=False, compare=False
     )
@@ -240,7 +241,16 @@ def execute_quality_benchmark_workbench(
         task_artifact / "benchmark_runtime.json", runtime_evidence
     )
     repair_summary = _load_repair_summary(task_artifact, agent_artifact)
+    repair_audit = _load_repair_audit(task_artifact, agent_artifact)
     repair_attempt_count = int(repair_summary.get("attempt_count") or 0)
+    if (
+        repair_attempt_count == 0
+        and int(repair_audit.get("last_accepted_attempt") or 0) > 0
+        and first_capture.is_file()
+        and hashlib.sha256(first_capture.read_bytes()).hexdigest()
+        != hashlib.sha256(response_path.read_bytes()).hexdigest()
+    ):
+        repair_attempt_count = int(repair_audit["last_accepted_attempt"])
     final_provenance = _validated_final_provenance(
         task_artifact=task_artifact,
         response_path=response_path,
@@ -283,6 +293,7 @@ def execute_quality_benchmark_workbench(
         work_sufficiency=_read_mapping(
             task_artifact / "benchmark_work_sufficiency.json"
         ),
+        repair_audit=repair_audit,
         credential_fingerprints=tuple(
             sorted(getattr(sandbox_security, "credential_fingerprints", ()))
         ),
@@ -877,6 +888,75 @@ def _load_repair_summary(task_artifact: Path, agent_artifact: Path) -> dict[str,
     if isinstance(external_repair, dict) and external_repair.get("accepted") is True:
         return {"attempt_count": 1, "terminal_block_reason": None}
     return {"attempt_count": 0, "terminal_block_reason": None}
+
+
+def _load_repair_audit(task_artifact: Path, agent_artifact: Path) -> dict[str, Any]:
+    """Project the staged repair trace without retaining model or row content."""
+
+    for path in (
+        agent_artifact / "quality_repair_result.json",
+        task_artifact / "quality_repair_result.json",
+    ):
+        if not path.is_file():
+            continue
+        value = _read_mapping(path)
+        attempts = value.get("attempts")
+        if not isinstance(attempts, list):
+            raise BenchmarkWorkbenchError("workbench repair audit is invalid")
+        try:
+            attempted_count = max(0, int(value.get("attempt_count") or 0))
+            remaining_seconds = max(
+                0.0, float(value.get("remaining_seconds") or 0.0)
+            )
+        except (TypeError, ValueError) as exc:
+            raise BenchmarkWorkbenchError("workbench repair audit is invalid") from exc
+        if attempted_count != len(attempts):
+            raise BenchmarkWorkbenchError("workbench repair audit is inconsistent")
+        outcomes: list[dict[str, Any]] = []
+        for index, raw_attempt in enumerate(attempts, start=1):
+            if not isinstance(raw_attempt, dict):
+                raise BenchmarkWorkbenchError("workbench repair audit is invalid")
+            try:
+                outcome = {
+                    "attempt": int(raw_attempt.get("attempt") or index),
+                    "accepted": raw_attempt.get("accepted") is True,
+                    "status_before": str(raw_attempt.get("status_before") or ""),
+                    "status_after": str(raw_attempt.get("status_after") or ""),
+                    "issues_before": max(
+                        0, int(raw_attempt.get("issues_before") or 0)
+                    ),
+                    "issues_after": max(
+                        0, int(raw_attempt.get("issues_after") or 0)
+                    ),
+                }
+            except (TypeError, ValueError) as exc:
+                raise BenchmarkWorkbenchError(
+                    "workbench repair audit is invalid"
+                ) from exc
+            outcomes.append(outcome)
+        return {
+            "attempted_count": attempted_count,
+            "accepted_count": sum(1 for item in outcomes if item["accepted"]),
+            "last_accepted_attempt": max(
+                (
+                    int(item["attempt"])
+                    for item in outcomes
+                    if item["accepted"]
+                ),
+                default=0,
+            ),
+            "stopped_reason": str(value.get("stopped_reason") or ""),
+            "remaining_seconds": remaining_seconds,
+            "outcomes": outcomes,
+        }
+    return {
+        "attempted_count": 0,
+        "accepted_count": 0,
+        "last_accepted_attempt": 0,
+        "stopped_reason": "",
+        "remaining_seconds": 0.0,
+        "outcomes": [],
+    }
 
 
 def _validated_final_provenance(

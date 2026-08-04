@@ -15,7 +15,11 @@ from app.services.quality_baseline import (
     compare_historical_replay,
     load_clean_evaluation_identity,
 )
-from app.services.quality_baseline_freezer import freeze_baseline_output, main
+from app.services.quality_baseline_freezer import (
+    freeze_baseline_output,
+    freeze_blocked_baseline_output,
+    main,
+)
 from app.services.quality_benchmark_corpus import QualityCorpusError
 from tests.test_quality_baseline_policy import (
     CORPUS,
@@ -305,6 +309,435 @@ def _freeze(
         deep_generator_directories=fixture["deep_generators"],
         output_directory=output,
     )
+
+
+def _blocked_fixture(tmp_path: Path) -> dict[str, object]:
+    fixture = _evidence_fixture(tmp_path)
+    blocked_case_ids = {
+        "mooncake-store-put-commit-readiness-recovery-001",
+        "spdk-concurrent-bdev-reset-001",
+    }
+    runs = [
+        Path(path)
+        for path in fixture["runs"]
+        if Path(path).name not in blocked_case_ids
+    ]
+    generators = [
+        Path(path)
+        for path in fixture["generators"]
+        if Path(path).name not in blocked_case_ids
+    ]
+    failures: list[Path] = []
+    for case_id in sorted(blocked_case_ids):
+        case = CORPUS.case_map[case_id]
+        failure = tmp_path / "evidence" / "generation-failures" / case_id
+        failure.mkdir(parents=True)
+        payload = {
+            "schema_version": "quality-benchmark-generator-v1",
+            "case_id": case_id,
+            "mode": "rapid",
+            "model": fixture["versions"]["model"],
+            "codetalk_revision": fixture["versions"]["codetalk"],
+            "source_tree": case.source_tree,
+            "elapsed_seconds": 266.0,
+            "timeout_seconds": 899,
+            "status": "quality_blocked",
+            "failure_code": "workbench_quality_blocked",
+            "truth_inputs": [],
+        }
+        (failure / "generation_failure.json").write_text(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        repair_projection = {
+            "attempted_count": 1,
+            "accepted_count": 0,
+            "last_accepted_attempt": 0,
+            "stopped_reason": "no_quality_progress",
+            "remaining_seconds": 600.0,
+            "outcomes": [
+                {
+                    "attempt": 1,
+                    "accepted": False,
+                    "status_before": "needs_rework",
+                    "status_after": "needs_rework",
+                    "issues_before": 1,
+                    "issues_after": 1,
+                }
+            ],
+        }
+        raw_repair = {
+            "enabled": True,
+            "attempt_count": 1,
+            "attempts": [
+                {
+                    "attempt": 1,
+                    "accepted": False,
+                    "status_before": "needs_rework",
+                    "status_after": "needs_rework",
+                    "issues_before": 1,
+                    "issues_after": 1,
+                }
+            ],
+            "total_budget_seconds": 900.0,
+            "remaining_seconds": 600.0,
+            "stopped_reason": "no_quality_progress",
+        }
+        raw_repair_bytes = (
+            json.dumps(raw_repair, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode()
+        raw_repair_sha256 = hashlib.sha256(raw_repair_bytes).hexdigest()
+        (failure / "workbench_audit.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "quality-benchmark-workbench-audit-v1",
+                    "workbench_status": "quality_blocked",
+                    "repair_attempt_count": 1,
+                    "accepted_response_attempt": 0,
+                    "repair_audit": repair_projection,
+                    "task_artifact_hashes": {
+                        "quality_repair_result.json": raw_repair_sha256,
+                    },
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        (failure / "repair_trace.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "quality-benchmark-repair-trace-v1",
+                    "source_sha256": raw_repair_sha256,
+                    "projection": repair_projection,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        (failure / "repair_trace_source.json").write_bytes(raw_repair_bytes)
+        _rewrite_generator_hash_manifest(failure)
+        failures.append(failure)
+    fixture["runs"] = runs
+    fixture["generators"] = generators
+    fixture["failures"] = failures
+    return fixture
+
+
+def _freeze_blocked(fixture: dict[str, object], output: Path) -> Path:
+    return freeze_blocked_baseline_output(
+        run_directories=fixture["runs"],
+        generator_directories=fixture["generators"],
+        failure_directories=fixture["failures"],
+        registry_path=fixture["registry"],
+        repository_root=fixture["repository"],
+        review_evidence_files=fixture["review_evidence"],
+        work_sufficiency_audit=fixture["work_audit"],
+        rapid_run_directories=fixture["rapid_runs"],
+        rapid_generator_directories=fixture["rapid_generators"],
+        deep_run_directories=fixture["deep_runs"],
+        deep_generator_directories=fixture["deep_generators"],
+        output_directory=output,
+    )
+
+
+def test_blocked_freezer_retains_complete_observation_without_freezing_thresholds(
+    tmp_path: Path,
+) -> None:
+    fixture = _blocked_fixture(tmp_path)
+
+    output = _freeze_blocked(fixture, tmp_path / "blocked-baseline")
+
+    observation = json.loads((output / "baseline_observation.json").read_text())
+    assert observation["coverage"] == {
+        "expected": 12,
+        "attempted": 12,
+        "evaluated": 10,
+        "generation_failed": 2,
+        "missing_attempt_case_ids": [],
+        "missing_evaluation_case_ids": [
+            "mooncake-store-put-commit-readiness-recovery-001",
+            "spdk-concurrent-bdev-reset-001",
+        ],
+    }
+    assert set(observation["generation_failures"]) == {
+        "mooncake-store-put-commit-readiness-recovery-001",
+        "spdk-concurrent-bdev-reset-001",
+    }
+    assert not (output / "threshold_policy.json").exists()
+    policy = json.loads((output / "threshold_freeze_status.json").read_text())
+    assert policy == {
+        "schema_version": "quality-threshold-policy-not-frozen-v1",
+        "status": "not_frozen",
+        "reason": "complete_evaluable_corpus_unavailable",
+        "evaluated_case_count": 10,
+        "expected_case_count": 12,
+        "missing_evaluation_case_ids": [
+            "mooncake-store-put-commit-readiness-recovery-001",
+            "spdk-concurrent-bdev-reset-001",
+        ],
+    }
+    release = json.loads((output / "release_gate.json").read_text())
+    assert release["release_gate"] == "fail"
+    assert release["release_status"] == "blocked"
+    assert release["block_reasons"] == [
+        "generation_failures_present",
+        "thresholds_not_frozen",
+    ]
+    assert len(list((output / "runs").glob("*/evaluation/quality_evaluation_report.json"))) == 10
+    assert len(
+        list(
+            (output / "generation_failures").glob(
+                "*/generator/generation_failure.json"
+            )
+        )
+    ) == 2
+    manifest = json.loads((output / "baseline_manifest.json").read_text())
+    assert manifest["bundle_status"] == "blocked"
+    assert set(manifest["source_generation_failure_sha256"]) == set(
+        observation["generation_failures"]
+    )
+    freezer_identity = manifest["freezer_identity"]
+    assert len(freezer_identity["implementation_sha256"]) == 64
+    for relative, digest in freezer_identity["source_sha256"].items():
+        retained = output / "freezer_implementation" / relative
+        assert hashlib.sha256(retained.read_bytes()).hexdigest() == digest
+    assert observation["freezer_identity"] == freezer_identity
+    regression = json.loads((output / "regression_matrix.json").read_text())
+    assert regression["core_baseline_blocked"] is True
+
+
+def test_blocked_freezer_rejects_tampered_generation_failure(tmp_path: Path) -> None:
+    fixture = _blocked_fixture(tmp_path)
+    failure = Path(fixture["failures"][0])
+    payload = json.loads((failure / "generation_failure.json").read_text())
+    payload["source_tree"] = "0" * 40
+    (failure / "generation_failure.json").write_text(json.dumps(payload))
+
+    with pytest.raises(BaselineError, match="generation failure artifact hash mismatch"):
+        _freeze_blocked(fixture, tmp_path / "tampered-blocked-baseline")
+
+
+def test_blocked_freezer_rejects_missing_case_observation(tmp_path: Path) -> None:
+    fixture = _blocked_fixture(tmp_path)
+    fixture["failures"] = fixture["failures"][:-1]
+
+    with pytest.raises(BaselineError, match="complete 12-case observation coverage"):
+        _freeze_blocked(fixture, tmp_path / "incomplete-blocked-baseline")
+
+
+def test_blocked_freezer_requires_audit_for_quality_blocked_failure(
+    tmp_path: Path,
+) -> None:
+    fixture = _blocked_fixture(tmp_path)
+    failure = Path(fixture["failures"][0])
+    (failure / "workbench_audit.json").unlink()
+    _rewrite_generator_hash_manifest(failure)
+
+    with pytest.raises(BaselineError, match="quality-blocked failure requires"):
+        _freeze_blocked(fixture, tmp_path / "missing-workbench-audit")
+
+
+def test_blocked_freezer_discloses_legacy_missing_repair_attempt_audit(
+    tmp_path: Path,
+) -> None:
+    fixture = _blocked_fixture(tmp_path)
+    failure = Path(fixture["failures"][0])
+    workbench_path = failure / "workbench_audit.json"
+    workbench = json.loads(workbench_path.read_text())
+    del workbench["repair_audit"]
+    workbench_path.write_text(json.dumps(workbench))
+    (failure / "repair_trace.json").unlink()
+    (failure / "repair_trace_source.json").unlink()
+    _rewrite_generator_hash_manifest(failure)
+
+    output = _freeze_blocked(fixture, tmp_path / "legacy-repair-audit")
+
+    release = json.loads((output / "release_gate.json").read_text())
+    assert "repair_attempt_audit_unavailable" in release["block_reasons"]
+    observation = json.loads((output / "baseline_observation.json").read_text())
+    assert observation["generation_failures"][failure.name][
+        "repair_attempt_audit_status"
+    ] == "unavailable"
+
+
+def test_blocked_freezer_reprojects_workbench_audit_without_unknown_secrets(
+    tmp_path: Path,
+) -> None:
+    fixture = _blocked_fixture(tmp_path)
+    failure = Path(fixture["failures"][0])
+    workbench_path = failure / "workbench_audit.json"
+    workbench = json.loads(workbench_path.read_text())
+    workbench["runtime_credentials"] = {"token": "R4_SECRET_PROBE"}
+    workbench_path.write_text(json.dumps(workbench))
+    _rewrite_generator_hash_manifest(failure)
+
+    output = _freeze_blocked(fixture, tmp_path / "sanitized-workbench-audit")
+
+    published = b"\n".join(
+        path.read_bytes() for path in output.rglob("*") if path.is_file()
+    )
+    assert b"R4_SECRET_PROBE" not in published
+    retained = json.loads(
+        (
+            output
+            / "generation_failures"
+            / failure.name
+            / "generator"
+            / "workbench_audit.json"
+        ).read_text()
+    )
+    assert "runtime_credentials" not in retained
+
+
+def test_blocked_freezer_rejects_inconsistent_repair_attempt_audit(
+    tmp_path: Path,
+) -> None:
+    fixture = _blocked_fixture(tmp_path)
+    failure = Path(fixture["failures"][0])
+    workbench_path = failure / "workbench_audit.json"
+    workbench = json.loads(workbench_path.read_text())
+    workbench["repair_audit"]["accepted_count"] = 99
+    workbench_path.write_text(json.dumps(workbench))
+    _rewrite_generator_hash_manifest(failure)
+
+    with pytest.raises(BaselineError, match="repair attempt audit is inconsistent"):
+        _freeze_blocked(fixture, tmp_path / "inconsistent-repair-audit")
+
+
+def test_blocked_freezer_rejects_forged_repair_trace_source_hash(
+    tmp_path: Path,
+) -> None:
+    fixture = _blocked_fixture(tmp_path)
+    failure = Path(fixture["failures"][0])
+    forged_sha256 = "0" * 64
+
+    trace_path = failure / "repair_trace.json"
+    trace = json.loads(trace_path.read_text())
+    trace["source_sha256"] = forged_sha256
+    trace_path.write_text(json.dumps(trace))
+
+    workbench_path = failure / "workbench_audit.json"
+    workbench = json.loads(workbench_path.read_text())
+    workbench["task_artifact_hashes"]["quality_repair_result.json"] = forged_sha256
+    workbench_path.write_text(json.dumps(workbench))
+    _rewrite_generator_hash_manifest(failure)
+
+    with pytest.raises(BaselineError, match="repair trace source hash mismatch"):
+        _freeze_blocked(fixture, tmp_path / "forged-repair-source-hash")
+
+
+def test_blocked_freezer_rejects_secret_value_in_repair_trace_source(
+    tmp_path: Path,
+) -> None:
+    fixture = _blocked_fixture(tmp_path)
+    failure = Path(fixture["failures"][0])
+    source_path = failure / "repair_trace_source.json"
+    source = json.loads(source_path.read_text())
+    source["attempts"][0]["candidate_status"] = (
+        "Bearer AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    )
+    source_bytes = (json.dumps(source) + "\n").encode()
+    source_path.write_bytes(source_bytes)
+    source_sha256 = hashlib.sha256(source_bytes).hexdigest()
+
+    trace_path = failure / "repair_trace.json"
+    trace = json.loads(trace_path.read_text())
+    trace["source_sha256"] = source_sha256
+    trace_path.write_text(json.dumps(trace))
+
+    workbench_path = failure / "workbench_audit.json"
+    workbench = json.loads(workbench_path.read_text())
+    workbench["task_artifact_hashes"]["quality_repair_result.json"] = source_sha256
+    workbench_path.write_text(json.dumps(workbench))
+    _rewrite_generator_hash_manifest(failure)
+
+    with pytest.raises(BaselineError, match="repair trace source contains sensitive"):
+        _freeze_blocked(fixture, tmp_path / "secret-repair-source-value")
+
+
+@pytest.mark.parametrize("status", ["cancelled", "invalid", "failed"])
+def test_blocked_freezer_accepts_generator_terminal_status_contract(
+    tmp_path: Path, status: str
+) -> None:
+    fixture = _blocked_fixture(tmp_path)
+    failure = Path(fixture["failures"][0])
+    failure_path = failure / "generation_failure.json"
+    payload = json.loads(failure_path.read_text())
+    payload["status"] = status
+    payload["failure_code"] = f"workbench_{status}"
+    failure_path.write_text(json.dumps(payload))
+    _rewrite_generator_hash_manifest(failure)
+
+    output = _freeze_blocked(fixture, tmp_path / f"terminal-{status}")
+
+    assert output.is_dir()
+    retained = output / "generation_failures" / failure.name / "generator"
+    assert not (retained / "workbench_audit.json").exists()
+    assert not (retained / "repair_trace.json").exists()
+    assert not (retained / "repair_trace_source.json").exists()
+
+
+def test_blocked_freezer_rejects_orphan_repair_trace_source(tmp_path: Path) -> None:
+    fixture = _blocked_fixture(tmp_path)
+    failure = Path(fixture["failures"][0])
+    (failure / "repair_trace.json").unlink()
+    _rewrite_generator_hash_manifest(failure)
+
+    with pytest.raises(BaselineError, match="repair trace source is orphaned"):
+        _freeze_blocked(fixture, tmp_path / "orphan-repair-source")
+
+
+def test_blocked_freezer_projects_read_only_failure_source_via_writable_staging(
+    tmp_path: Path,
+) -> None:
+    fixture = _blocked_fixture(tmp_path)
+    for failure in fixture["failures"]:
+        for path in failure.rglob("*"):
+            path.chmod(0o555 if path.is_dir() else 0o444)
+        failure.chmod(0o555)
+
+    output = _freeze_blocked(fixture, tmp_path / "read-only-failures")
+
+    assert output.is_dir()
+    assert all(path.stat().st_mode & 0o222 == 0 for path in output.rglob("*"))
+
+
+def test_blocked_freezer_rejects_unknown_generation_failure_fields(
+    tmp_path: Path,
+) -> None:
+    fixture = _blocked_fixture(tmp_path)
+    failure = Path(fixture["failures"][0])
+    failure_path = failure / "generation_failure.json"
+    payload = json.loads(failure_path.read_text())
+    payload["runtime_credentials"] = {"token": "R4_FAILURE_SECRET"}
+    payload["truth_shadow"] = ["hidden-truth-probe"]
+    failure_path.write_text(json.dumps(payload))
+    _rewrite_generator_hash_manifest(failure)
+
+    with pytest.raises(BaselineError, match="unknown fields"):
+        _freeze_blocked(fixture, tmp_path / "unknown-failure-fields")
+
+
+def test_blocked_freezer_rejects_status_failure_code_mismatch(
+    tmp_path: Path,
+) -> None:
+    fixture = _blocked_fixture(tmp_path)
+    failure = Path(fixture["failures"][0])
+    failure_path = failure / "generation_failure.json"
+    payload = json.loads(failure_path.read_text())
+    payload["status"] = "error"
+    payload["failure_code"] = "workbench_quality_blocked"
+    failure_path.write_text(json.dumps(payload))
+    (failure / "workbench_audit.json").unlink()
+    (failure / "repair_trace.json").unlink()
+    _rewrite_generator_hash_manifest(failure)
+
+    with pytest.raises(BaselineError, match="status/failure_code mismatch"):
+        _freeze_blocked(fixture, tmp_path / "mismatched-failure-status")
 
 
 def test_freezer_publishes_complete_read_only_self_contained_bundle(
@@ -796,6 +1229,42 @@ def test_blocked_release_is_atomically_published_but_cli_returns_nonzero(
     assert json.loads((output / "regression_matrix.json").read_text())["core_baseline_blocked"] is True
     assert json.loads((output / "baseline_manifest.json").read_text())["bundle_status"] == "blocked"
     assert output.is_dir()
+
+
+def test_cli_publishes_generation_blocked_observation_and_returns_two(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fixture = _blocked_fixture(tmp_path)
+    inputs = _write_cli_inputs(tmp_path, fixture)
+    runs_root = tmp_path / "blocked-cli-runs"
+    generators_root = tmp_path / "blocked-cli-generators"
+    for run in fixture["runs"]:
+        shutil.copytree(run, runs_root / Path(run).name)
+    for generator in fixture["generators"]:
+        shutil.copytree(generator, generators_root / Path(generator).name)
+    for failure in fixture["failures"]:
+        shutil.copytree(failure, generators_root / Path(failure).name)
+    output = tmp_path / "blocked-cli-output"
+    args = [
+        "--publish-blocked-on-generation-failure",
+        "--runs-root", str(runs_root),
+        "--run-artifacts-root", str(generators_root),
+        "--registry", str(fixture["registry"]),
+        "--repository-root", str(fixture["repository"]),
+        "--review-evidence", str(Path(fixture["review_evidence"][0])),
+        "--work-sufficiency-audit", str(inputs["work.json"]),
+        "--output", str(output),
+    ]
+
+    assert main(args) == 2
+    assert capsys.readouterr().out.strip() == str(output.resolve())
+    assert json.loads((output / "release_gate.json").read_text())[
+        "release_status"
+    ] == "blocked"
+    assert not (output / "threshold_policy.json").exists()
+    assert json.loads((output / "regression_matrix.json").read_text())[
+        "rapid_vs_deep"
+    ]["status"] == "not_run"
 
 
 def test_cli_has_no_caller_corpus_versions_or_rapid_status_inputs() -> None:

@@ -42,3 +42,18 @@ The same investigation found three related boundary mismatches that fixture-only
 - freezer fixtures hashed only candidate directories and used a legacy root field, while production hashes all retained generator files and references `artifact_hash_manifest.json`.
 
 The fix keeps generated evidence immutable, publishes a task-run projection only for an explicitly supplied task-run artifact directory, and restores fresh repair summaries to the strict three-field contract. Current generator evidence hashes every retained file except the exact root control manifest, while the separately published evaluation manifest independently anchors that canonical root. The freezer also recognizes the explicit non-circular legacy first/final-only contract. Recomputed manifests, nested same-name files, wrong anchors, and ambiguous anchor declarations all fail closed. Tests were changed to emulate the production generator shape before implementation; the complete F012 quality suite passed after the corrections (`522 passed`, before the final two anchor-ambiguity cases were added).
+
+## Follow-up: Failed Attempt Audit Projection
+
+The `36a03edc` formal run exposed another projection mismatch. Workbench writes
+`quality_repair_result.json` with every staged repair attempt, stop reason, and
+remaining budget, but the benchmark adapter read only successful repair counts.
+Consequently a failed or rolled-back attempt appeared as zero attempts in the
+sanitized failure package.
+
+The adapter now retains a content-free projection containing attempted and
+accepted counts, stop reason, remaining seconds, and per-attempt status/issue
+counts. Successful-response provenance remains separate, so an unsuccessful
+attempt is not promoted into `repair_attempt_count` or represented as an
+accepted final response. The raw model content, affected row identifiers, and
+credentials remain excluded.

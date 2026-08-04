@@ -54,3 +54,11 @@ tests prove batch continuation, blocked exit status, immutable failure
 retention, sanitized Workbench identity/status, and hash-manifest verification.
 The complete F012 quality suite is rerun before the replacement formal baseline
 checkpoint is created.
+
+## Replacement Run Result
+
+The replacement rapid run at revision `36a03edc` completed the batch boundary:
+10 cases produced immutable evaluations, while Mooncake and SPDK published
+terminal `quality_blocked` generator evidence. The command continued through
+UCX and returned exit code 2. This confirms the batch fix; it does not convert
+the two blocked generators into evaluated samples.
