@@ -55,15 +55,16 @@ dependencies. F014 starts from `main` and reuses only capabilities already on
 ### Phase A: Contracts and deterministic build
 
 Define the six V1 schemas, safe ZIP import, Skill Pack splitting, deterministic
-validation, Skill IR compilation, immutable release ZIP, and reproducible
-digest. Preserve UTF-8 filenames and account for every source archive entry.
+validation, Skill IR compilation, deterministic candidate ZIP, and reproducible
+content digest. Preserve UTF-8 filenames and account for every source archive
+entry.
 
 ### Phase B: Skill domain and review
 
 Add Skill Project, Draft, Version, Build, Review, and Pack metadata; local draft
 and release storage; filesystem rescan; full and incremental AI review; explicit
-human patch decisions; and read APIs. Do not add a placeholder object-storage
-implementation before a second backend exists.
+human patch decisions; review-gated immutable publication; and read APIs. Do not
+add a placeholder object-storage implementation before a second backend exists.
 
 ### Phase C: Task and Run integration
 
@@ -95,13 +96,13 @@ and the old staged professional-analysis entry path.
 - [ ] AC-A2: Import of the pinned archive accounts for all 37 files, preserves the three UTF-8 template names, rejects traversal/symlink escapes, and records the source SHA-256.
 - [ ] AC-A3: The five source scenarios become five independent Skills in one Pack; a single multi-scenario Skill is rejected.
 - [ ] AC-A4: The module-analysis Skill IR retains nine ordered steps, three core-rule acknowledgements, 37 required artifacts, eight final outputs, script declarations, completion gates, and Judge requirements.
-- [ ] AC-A5: Identical source bytes produce identical IR and release digest; missing files, duplicate IDs, broken references, cycles, undeclared producers, and invalid paths fail with exact locations.
+- [ ] AC-A5: Identical source bytes produce identical IR and content digest; missing files, duplicate IDs, broken references, cycles, undeclared producers, and invalid paths fail with exact locations.
 
 ### Phase B (Skill domain and review)
 
 - [ ] AC-B1: Draft files can be created, edited externally, rescanned, validated, and built without UI or database state becoming a second content authority.
-- [ ] AC-B2: Published Skill Versions are immutable and contain source package, unpacked files, IR, validation, review records, and digest manifest.
-- [ ] AC-B3: AI review detects seeded semantic contradictions and produces findings plus an optional patch without applying or publishing it.
+- [ ] AC-B2: After the required full Review decision, explicit publication creates an immutable Skill Version containing source package, unpacked files, IR, validation, review records, deterministic content digest, separate review evidence digest, and a manifest linking both.
+- [ ] AC-B3: AI review detects seeded semantic contradictions and produces findings plus an optional patch without applying or publishing it; actual product LLM provider/model/output/session provenance is retained without credentials.
 - [ ] AC-B4: Deterministic errors block release; acknowledged AI high-risk findings remain visible but do not become hidden structural blockers.
 
 ### Phase C (Task and Run integration)
@@ -125,13 +126,14 @@ and the old staged professional-analysis entry path.
 - [ ] AC-D3: Producer completion without Judge yields `PENDING_VALIDATION`; only an isolated Judge session with recorded checked artifacts can yield `READY`.
 - [ ] AC-D4: Judge receives frozen inputs, source snapshot, artifacts, and Skill contract but no Producer conversation transcript.
 - [ ] AC-D5: A local CI fixture proves the vertical path without depending on intranet source repositories or credentials.
+- [ ] AC-D6: Final real-provider acceptance runs the complete CodeTalk vertical and a bounded Clowder AI runtime comparison through OpenCode with the official DeepSeek-compatible route and `deepseek/deepseek-v4-flash`; actual AI Review/product LLM calls use `deepseek-v4-flash`; every F014 acceptance Agent invocation records a declared 200,000-token context capacity and requests at most 4,096 output tokens without persisting credentials.
 
 ### Phase E (Product replacement and legacy removal)
 
 - [ ] AC-E1: Task creation selects Skill Version and Agent Runtime, renders inputs and deliveries from Skill IR, and contains no Workflow selection.
 - [ ] AC-E2: Run Cockpit exposes current Skill step, next action, capability degradation, Judge status, execution/quality/delivery state, and artifacts on existing surfaces.
 - [ ] AC-E3: Workflow product routes, canvas, versions, presets, Task binding, hard-coded Workbench skills, and old professional staged entry are absent after the vertical gate passes.
-- [ ] AC-E4: Backend, frontend, restart/cancel integration, Playwright, and real CodeAgent acceptance suites pass on the final SHA.
+- [ ] AC-E4: Backend, frontend, restart/cancel integration, Playwright, and the fixed CodeTalk/Clowder AI OpenCode + DeepSeek V4 Flash acceptance suites pass on the final SHA.
 - [ ] AC-E5: Desktop screenshots at 1440x900 and 1280x800 and mobile at 390x844 show no overlap, truncation, dead Workflow navigation, or misleading state.
 - [ ] AC-E6: Quality gate, independent review, receive-review remediation, Vision Guardian, and merge gate complete with no self-review.
 
@@ -143,7 +145,8 @@ and the old staged professional-analysis entry path.
 | Contract | Schema positive/negative fixtures and IR golden tests | exact validation paths and stable golden digest |
 | Component | Store/build/review TDD suites | immutable release, rescan, patch non-application evidence |
 | Agent lifecycle | Fake Agent plus real-runtime create/start/event/kill/restart/session-loss/cancel/timeout matrix | frozen invocation, ordered events, checkpoint replay, process cleanup, one terminal state |
-| Vertical | Real CodeAgent run on a local source/design fixture | nine steps, 37 artifacts, eight outputs, delivery filter |
+| CodeTalk vertical | Real OpenCode + DeepSeek V4 Flash full Skill run plus actual product LLM review | runtime/model receipts, nine steps, 37 artifacts, eight outputs, delivery filter |
+| Clowder comparison | Real OpenCode + DeepSeek V4 Flash bounded runtime run on the same local fixture | session, source/tool event, final response, runtime/model/limit receipt |
 | Judge | Separate-session adversarial acceptance | no transcript leakage, `PENDING_VALIDATION -> READY` evidence |
 | Product | Playwright workflows and screenshots | Task, Cockpit, Pack/Skill pages at required viewports |
 | Removal | Source/API/route search gates and regression suite | zero live Workflow product references, final full-suite log |
@@ -164,6 +167,7 @@ and the old staged professional-analysis entry path.
 | Judge becomes universal policy | Capability is optional platform-wide and required only when declared by a Skill |
 | UTF-8 ZIP names are corrupted | Use UTF-8-aware archive parser and compare normalized paths plus content hashes |
 | Old and new product paths diverge | No compatibility migration; delete Workflow only after one complete vertical run |
+| Real-provider profile silently drifts | Freeze runtime, provider, model, declared 200K context capacity, requested 4096 max output, CLI version, and credential readiness in every acceptance record |
 
 ## Non-Goals
 
@@ -189,6 +193,8 @@ and the old staged professional-analysis entry path.
 | KD-3 | Keep source-declared required Judge semantics | Platform optionality must not weaken the official Skill's READY contract | 2026-08-04 |
 | KD-4 | Reuse Attempt/checkpoint/event/artifact mechanisms | These are durable final-system assets; rewriting them is a detour | 2026-08-04 |
 | KD-5 | Test inside every Task and at every Phase gate | Waiting until final integration would hide ownership and lifecycle defects | 2026-08-04 |
+| KD-6 | Development/test Agents use GPT-5.6 Terra medium; main and independent audit use GPT-5.6 Sol high | Keep implementation throughput separate from integration and audit judgment while using models available to the current control plane | 2026-08-04 |
+| KD-7 | Final real-provider profile is OpenCode + DeepSeek V4 Flash for the full CodeTalk run and bounded Clowder runtime comparison, with actual DeepSeek V4 Flash product LLM work | Match the intended intranet deployment model without requiring Clowder AI to implement CodeTalk's Skill product layer | 2026-08-04 |
 
 ## Timeline
 
@@ -198,6 +204,7 @@ and the old staged professional-analysis entry path.
 
 ## Review Gate
 
+- Task 2 schemas and ADRs require independent `gpt-5.6-sol` high approval before Task 3 importer implementation begins.
 - Contract and architecture changes require an independent reviewer before runtime integration.
 - Authors may test their slices but may not approve them.
 - A separate Vision Guardian verifies the original product decisions and ZIP semantic preservation.
@@ -211,6 +218,7 @@ and the old staged professional-analysis entry path.
 | R3 | Define concrete acceptance methods and standards | all ACs | evidence matrix and final report | [ ] |
 | R4 | Plan bounded sub-Agent execution | AC-E6 | ownership log and independent reviews | [ ] |
 | R5 | Agent lifecycle must survive process death, service restart, session loss, cancellation, and timeout | AC-C4-C10 | fake/real lifecycle matrix and persisted evidence | [ ] |
+| R6 | Acceptance uses the fixed OpenCode/DeepSeek profile and intranet-sized limits | AC-D6, AC-E4 | preflight probe, frozen invocation, CodeTalk/Clowder/LLM evidence | [ ] |
 
 ### Coverage Check
 

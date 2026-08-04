@@ -16,14 +16,61 @@ created: 2026-08-04
 
 ---
 
+## 0. Mandatory Execution Profile
+
+This profile is part of the acceptance contract. Agents may not silently choose
+a different model, provider, context window, or output limit.
+
+### 0.1 Development and audit Agents
+
+| Role | Required model | Reasoning |
+|---|---|---|
+| Main Agent and shared-file integrator | `gpt-5.6-sol` | `high` |
+| Development and test sub-Agent | `gpt-5.6-terra` | `medium` |
+| Independent runtime auditor and Vision Guardian | `gpt-5.6-sol` | `high` |
+
+Every handoff records the requested model/reasoning configuration and the spawn
+receipt exposed by the control plane. An unavailable required model blocks that
+assignment instead of triggering an unrecorded fallback.
+
+### 0.2 Real-provider acceptance
+
+| Surface | Runtime | Provider/model | Context | Max output |
+|---|---|---|---:|---:|
+| CodeTalk real Agent | OpenCode | `deepseek/deepseek-v4-flash` | 200,000 | 4,096 |
+| Clowder AI comparison Agent | OpenCode | `deepseek/deepseek-v4-flash` | 200,000 | 4,096 |
+| CodeTalk product LLM | OpenAI-compatible DeepSeek | `deepseek-v4-flash` | 200,000 | 4,096 |
+
+Use the official DeepSeek-compatible endpoint supplied by the operator. Secrets
+remain in an external env file and are resolved only at process launch; they
+must never enter Git, frozen Invocation data, logs, screenshots, artifacts, or
+Agent handoffs. Do not use OpenCode's separately billed `opencode/` model route
+as a substitute.
+
+Before a real run, independently probe all three surfaces. Record only CLI
+version, public endpoint host or approved-host hash, provider/model ID,
+configured limits, credential-ready boolean, exit status, commit SHA, artifact
+hashes, and session independence.
+Missing credentials, billing, endpoint access, or an incorrect limit blocks the
+real-provider gate; mocks cannot convert it to a pass.
+
+The 200,000 value is the declared model context capacity, not a request to send
+200,000 tokens on every call. Each F014 acceptance Agent Invocation records that
+capacity and requests no more than 4,096 output tokens. Control-plane Agent
+assignments record the requested model/reasoning configuration and the spawn
+receipt; they do not claim provider metadata that the control plane cannot
+observe.
+
 ## 1. Finish Line
 
 The feature is complete only when the supplied archive imports as five Skills,
-the module-analysis Skill publishes immutably, a Task directly binds it, a real
-CodeAgent executes all nine steps, an independent Judge controls READY, selected
-delivery filters presentation rather than execution, restart/cancel are durable,
+the module-analysis Skill publishes immutably, a Task directly binds it, real
+OpenCode + DeepSeek V4 Flash executes all nine steps, an independent Judge
+controls READY, selected delivery filters presentation rather than execution,
+restart/cancel are durable,
 and no live Workflow product path or professional `ai_staged_execution` entry
-remains.
+remains. The final real-provider evidence uses the mandatory profile in Section
+0 rather than whichever local Agent or model happens to be available.
 
 We are not building dynamic pruning, multi-Skill orchestration, F012/F013
 capabilities, a marketplace, multi-user control, object storage, or a new
@@ -46,14 +93,33 @@ the only frozen bridge from Skill domain to runtime. It owns the Skill digest,
 input snapshot reference, selected deliveries, runtime/capability report,
 session reference, artifact root, and Judge declaration.
 
+`skill-run-invocation-v1` must carry first-class, non-secret execution fields:
+
+- requested runtime/provider/model and observed runtime/CLI version;
+- effective model returned by preflight or the provider;
+- `declared_context_window_tokens=200000` and
+  `requested_max_output_tokens=4096` for the mandatory profile;
+- capability report ID/digest and a preflight receipt with status, timestamp,
+  endpoint class or approved-host hash, and credential-ready boolean;
+- distinct Producer and Judge Session declarations and model provenance.
+
+`agent-capability-report-v1` records whether the Runtime can honor the declared
+context capacity, output limit, resume, tools, cancellation, and session
+isolation. Review records separately freeze actual AI Review/product LLM
+provider, requested/effective model, requested output limit, response model,
+purpose, and session ID. A connectivity probe is only a precondition; it cannot
+stand in for an actual F014 AI Review or Judge receipt.
+
 ## 3. Acceptance Strategy
 
 ### 3.1 Deterministic archive and contract gate
 
 Pin the source SHA-256 and create a checked-in minimal fixture with the same
-semantic topology. Test archive traversal, absolute paths, symlinks, duplicate
-normalized Unicode paths, invalid encodings, missing references, duplicate IDs,
-cycles, missing artifact producers, unconsumed outputs, undeclared scripts, and
+semantic topology. Test archive traversal, absolute paths, symlinks, special
+files, encrypted entries, entry-count limits, total and per-entry uncompressed
+byte limits, compression-ratio limits, case-insensitive and normalized Unicode
+path collisions, invalid encodings, missing references, duplicate IDs, cycles,
+missing artifact producers, unconsumed outputs, undeclared scripts, and
 multi-scenario Skill rejection.
 
 Golden assertions for the supplied source:
@@ -70,9 +136,11 @@ Golden assertions for the supplied source:
 ### 3.2 Build and immutability gate
 
 Build twice from identical bytes and compare IR, package ZIP, file digest map,
-and release digest. Mutation of a released path must fail. External Draft edits
+and deterministic content digest. Review records and their timestamps are not
+inputs to that digest; the publish manifest carries separate content and review
+evidence digests. Mutation of a released path must fail. External Draft edits
 must appear only after rescan. AI patches are stored as proposals and require an
-explicit apply decision followed by a new deterministic build.
+explicit apply decision followed by a new deterministic build and review.
 
 ### 3.3 Runtime contract gate
 
@@ -104,11 +172,22 @@ checkpoint-before-projection、一个且仅一个终态、进程树清理，以�
 
 ### 3.4 Real vertical gate
 
-Run `codetalks-module-full-analysis` with the company CodeAgent against a local
-source/design fixture. Record source SHA, Skill Version/digest, invocation,
-capability report, event log, checkpoint, artifact manifest, Producer session,
-Judge session, and delivery package. No secrets or environment-specific paths
-may enter committed evidence.
+Run `codetalks-module-full-analysis` with OpenCode + DeepSeek V4 Flash against a
+local source/design fixture in CodeTalk. This is the full vertical: record source
+SHA, Skill Version/content digest, invocation, capability report, event log,
+checkpoint, artifact manifest, Producer session, Judge session, delivery
+package, provider/model receipts, and 200K/4096 limits.
+
+Clowder AI is a bounded runtime comparison, not a second Skill host. It uses the
+same local source fixture and mandatory OpenCode/DeepSeek profile, performs at
+least one real source/tool operation, and records the Session plus final response
+and runtime/model/limit receipt. It is not expected to produce CodeTalk's nine
+steps, 37 artifacts, or eight deliveries.
+
+The product LLM gate executes an actual F014 AI Review path with DeepSeek V4
+Flash and records requested/effective/response model provenance; a standalone
+health probe is preflight evidence only. No secrets or environment-specific
+paths may enter committed evidence.
 
 ### 3.5 Product and removal gate
 
@@ -161,7 +240,10 @@ semantic fixture and never depends on Downloads.
 
 Write positive and negative fixtures first, verify schema failures, then add the
 minimal schemas. Unknown terminal fields fail closed. Schema IDs and references
-must resolve without network access.
+must resolve without network access. Before Task 3 starts, an independent
+`gpt-5.6-sol` high auditor must approve the three ADRs, Runtime Contract, six
+schemas, model-provenance fields, and digest boundary. A red or unreviewed
+contract cannot flow into importer/compiler/store implementation.
 
 ### Task 3: Safe importer and Pack split
 
@@ -173,8 +255,11 @@ must resolve without network access.
 
 Reject unsafe archives before extraction, normalize and retain UTF-8 paths,
 produce an inventory with content hashes, and split the five source workflow
-variants into independent draft Skills. Do not infer scenarios from prose when
-the source manifest already declares them.
+variants into independent draft Skills. Enforce entry-count, total unpacked
+bytes, per-entry bytes, compression ratio, encryption, special-file,
+case-insensitive collision, and normalized Unicode collision limits before any
+write. Do not infer scenarios from prose when the source manifest already
+declares them.
 
 ### Task 4: Deterministic validator and IR compiler
 
@@ -189,7 +274,7 @@ Validate references, IDs, dependencies, producers/consumers, outputs, scripts,
 Judge contract, and file paths. Compile only validated input. Golden tests bind
 every IR field to a source file or explicit deterministic default.
 
-### Task 5: Skill store and immutable build
+### Task 5: Skill store and deterministic build candidate
 
 **Files:**
 
@@ -199,19 +284,27 @@ every IR field to a source file or explicit deterministic default.
 - Create: `backend/tests/test_skill_build_pipeline.py`
 
 Store mutable Draft content in filesystem directories and metadata in the
-existing Workbench SQLite database. Publish ZIP, unpacked copy, IR, validation,
-reviews, and digest manifest atomically. Do not add an object-store class.
+existing Workbench SQLite database. Produce a staged ZIP, unpacked copy, IR,
+validation report, file digest map, and deterministic content digest atomically,
+but do not publish a Skill Version before the required Review decision. Do not
+add an object-store class.
 
-### Task 6: Review records and patch decisions
+### Task 6: Review records, patch decisions, and publish
 
 **Files:**
 
 - Create: `backend/app/services/skill_review.py`
 - Create: `backend/tests/test_skill_review.py`
+- Modify: `backend/app/services/skill_store.py`
+- Modify: `backend/app/services/skill_build_pipeline.py`
+- Modify: `backend/tests/test_skill_build_pipeline.py`
 
 Test seeded semantic contradictions, incremental/full scope, patch proposal,
 explicit apply/reject, and release audit retention. No review operation mutates
-a Draft or publishes a Version implicitly.
+a Draft. Publication is a separate explicit command allowed only after the
+required full Review decision; it atomically creates the immutable Version with
+source, IR, validation, review records, deterministic content digest, separate
+review evidence digest, and manifest linking both.
 
 ### Task 7: Skill APIs
 
@@ -253,8 +346,9 @@ Freeze invocation before execution and translate it through the existing
 Harness. The main Agent owns modifications to runner hot files. First make every
 create/start/event/kill/restart/session-loss/cancel/timeout case red against the
 Fake Agent, then implement the smallest common lifecycle contract. Run the same
-contract against company CodeAgent; add Claude Code and OpenCode only after the
-common contract passes.
+contract against the mandatory OpenCode + DeepSeek V4 Flash profile. Company
+CodeAgent and Claude Code remain common-contract compatibility targets, but they
+do not replace the selected final acceptance runtime.
 
 ### Task 10: Judge and delivery
 
@@ -369,10 +463,10 @@ the exact red/green commands and changed paths.
 
 | Phase | 进入下一阶段前必须通过 |
 |---|---|
-| A Contracts/build | 六份 Schema 正反例、ZIP 安全、37/37 inventory、IR golden、重复构建 digest |
+| A Contracts/build | 三份 ADR/Runtime Contract/六份 Schema 的独立审计、正反例、ZIP 安全、37/37 inventory、IR golden、重复构建 content digest |
 | B Domain/review | Store、Build、Rescan、Release immutability、AI patch 不自动应用、API 4xx |
 | C Task/Runtime | Task binding、冻结 Invocation、Fake Agent 生命周期九场景、完整 backend 回归 |
-| D Official Skill/Judge | 真实 CodeAgent、九步骤/37 工件/八输出、进程和后端重启、独立 Judge |
+| D Official Skill/Judge | CodeTalk 完整 OpenCode + DeepSeek V4 Flash 纵向运行、Clowder AI bounded runtime comparison、实际产品 LLM Review、200K/4096、九步骤/37 工件/八输出、进程和后端重启、独立 Judge |
 | E Product/removal | Playwright 用户链路、响应式截图、旧 Workflow source/route gate、完整前后端回归 |
 
 Phase 门禁失败就停在当前阶段修复，不能把红测留给下一阶段，也不能用“最终
@@ -381,9 +475,9 @@ Phase 门禁失败就停在当前阶段修复，不能把红测留给下一阶�
 ### 6.3 Final acceptance
 
 全部阶段完成后仍需执行一次最终全量验收，但它不是第一次测试。最终验收基于
-final SHA 重跑完整 backend、frontend build/lint、Playwright、真实 CodeAgent、
-restart/cancel/session-loss、Judge 隔离和旧路径删除门禁，并由未参与实现的
-reviewer 与 Vision Guardian 分别签字。
+final SHA 重跑完整 backend、frontend build/lint、Playwright、真实 OpenCode +
+DeepSeek V4 Flash、产品 LLM、restart/cancel/session-loss、Judge 隔离和旧路径
+删除门禁，并由未参与实现的 reviewer 与 Vision Guardian 分别签字。
 
 ## 7. Required Commands and Evidence
 
@@ -410,12 +504,16 @@ npx playwright test e2e/skill-first-task-run.spec.ts --project=chromium
 ```
 
 Evidence is incomplete unless it records command, final SHA, main sync state,
-exit code, test counts, relevant artifact paths, screenshots, and the independent
+exit code, test counts, relevant artifact paths, screenshots, requested Agent
+model/reasoning plus spawn receipt, OpenCode version, DeepSeek public endpoint
+host or approved-host hash/model, 200K/4096 limits, credential readiness without
+the credential value, actual F014 model provenance receipts, and the independent
 review verdict.
 
 ## 8. Stop Conditions
 
-Stop before implementation when the company CodeAgent contract cannot be
-observed, the local fixture cannot represent the chosen acceptance scenario,
-or the UI Design Gate is not approved. Ordinary red tests, implementation
-failures, and expected archive mutations are not blockers.
+Stop before implementation when the main runtime contract cannot be observed,
+the local fixture cannot represent the chosen acceptance scenario, or the UI
+Design Gate is not approved. Stop before the real-provider gate when any of the
+three mandatory surfaces cannot pass its non-sensitive preflight. Ordinary red
+tests, implementation failures, and expected archive mutations are not blockers.
