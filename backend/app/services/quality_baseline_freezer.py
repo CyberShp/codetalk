@@ -390,6 +390,7 @@ def freeze_baseline_output(
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(dir=output.parent, prefix=f".{output.name}."))
     try:
+        freezer_identity = _stage_freezer_implementation(staging)
         review_evidence_refs = _stage_review_evidence(
             staging, review_evidence_files
         )
@@ -497,6 +498,7 @@ def freeze_baseline_output(
                 case.case_id: case.as_dict() for case in corpus.cases
             },
             "evaluation_identity": evaluation_identity.as_dict(),
+            "freezer_identity": freezer_identity,
             "model": summary["identity"]["model"],
         }
         (staging / "baseline_manifest.json").write_text(
@@ -813,7 +815,10 @@ def _validate_generation_failure_evidence(
         "workbench_invalid": "invalid",
         "workbench_error": "error",
         "workbench_execution_failed": "error",
+        "postprocess_worker_failed": "error",
+        "postprocess_worker_termination_failed": "error",
         "candidate_materialization_failed": "error",
+        "candidate_secret_material_detected": "invalid",
         "workbench_failed": "failed",
     }
     if expected_status_by_code.get(failure_code) != payload.get("status"):

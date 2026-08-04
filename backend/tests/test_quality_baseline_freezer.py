@@ -681,6 +681,31 @@ def test_blocked_freezer_accepts_generator_terminal_status_contract(
     assert not (retained / "repair_trace_source.json").exists()
 
 
+@pytest.mark.parametrize(
+    ("failure_code", "status"),
+    [
+        ("postprocess_worker_failed", "error"),
+        ("postprocess_worker_termination_failed", "error"),
+        ("candidate_secret_material_detected", "invalid"),
+    ],
+)
+def test_blocked_freezer_accepts_postprocess_terminal_code_contract(
+    tmp_path: Path, failure_code: str, status: str
+) -> None:
+    fixture = _blocked_fixture(tmp_path)
+    failure = Path(fixture["failures"][0])
+    failure_path = failure / "generation_failure.json"
+    payload = json.loads(failure_path.read_text())
+    payload["status"] = status
+    payload["failure_code"] = failure_code
+    failure_path.write_text(json.dumps(payload))
+    _rewrite_generator_hash_manifest(failure)
+
+    output = _freeze_blocked(fixture, tmp_path / failure_code)
+
+    assert output.is_dir()
+
+
 def test_blocked_freezer_rejects_orphan_repair_trace_source(tmp_path: Path) -> None:
     fixture = _blocked_fixture(tmp_path)
     failure = Path(fixture["failures"][0])
@@ -754,6 +779,11 @@ def test_freezer_publishes_complete_read_only_self_contained_bundle(
 
     manifest = json.loads((output / "baseline_manifest.json").read_text())
     assert manifest["bundle_status"] == "passed"
+    freezer_identity = manifest["freezer_identity"]
+    assert len(freezer_identity["implementation_sha256"]) == 64
+    for relative, digest in freezer_identity["source_sha256"].items():
+        retained = output / "freezer_implementation" / relative
+        assert hashlib.sha256(retained.read_bytes()).hexdigest() == digest
     assert manifest["registry_sha256"] == CORPUS.registry_sha256
     assert manifest["corpus_sha256"] == CORPUS.corpus_sha256
     assert set(manifest["case_identities"]) == {case.case_id for case in CORPUS.cases}
