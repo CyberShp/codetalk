@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codetalk.local/schemas/skills/codetalk-skill-pack-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "pack_id",
+    "name",
+    "source_archive_digest",
+    "source_file_count",
+    "skills"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "codetalk-skill-pack-v1"
+    },
+    "pack_id": {
+      "type": "string",
+      "pattern": "^pack\\.[a-z][a-z0-9_-]*$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_archive_digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "source_file_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "skills": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "skill_id",
+          "source_path"
+        ],
+        "properties": {
+          "skill_id": {
+            "type": "string",
+            "pattern": "^skill\\.[a-z][a-z0-9_-]*$"
+          },
+          "source_path": {
+            "$ref": "https://codetalk.local/schemas/skills/codetalk-skill-v1.schema.json#/$defs/safePath"
+          }
+        }
+      }
+    }
+  }
+}

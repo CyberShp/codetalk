@@ -1,0 +1,13 @@
+{
+  "schema": "skill-ir-v1",
+  "source": "skill-ir-v1.json",
+  "mutation": {
+    "operation": "delete",
+    "path": [
+      "source_file_digests"
+    ]
+  },
+  "expected_error_path": [
+
+  ]
+}

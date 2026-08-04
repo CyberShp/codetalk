@@ -1,0 +1,17 @@
+{
+  "schema": "skill-ir-v1",
+  "source": "skill-ir-v1.json",
+  "mutation": {
+    "operation": "set",
+    "path": [
+      "required_agent_capabilities"
+    ],
+    "value": [
+      "misspelled_capability"
+    ]
+  },
+  "expected_error_path": [
+    "required_agent_capabilities",
+    0
+  ]
+}

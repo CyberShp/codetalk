@@ -1,0 +1,109 @@
+{
+  "schema_version": "codetalk-skill-v1",
+  "skill_id": "skill.flow_analysis",
+  "name": "Flow analysis",
+  "required_agent_capabilities": [
+    "tools",
+    "artifact_collection"
+  ],
+  "inputs": [
+    {
+      "input_id": "input.source",
+      "label": "Source",
+      "kind": "workspace",
+      "required": true
+    }
+  ],
+  "steps": [
+    {
+      "step_id": "step.collect",
+      "title": "Collect",
+      "instruction_path": "指引/收集.md",
+      "depends_on": [
+
+      ],
+      "produces": [
+        "artifact.raw"
+      ],
+      "completion_gate": {
+        "required_artifact_ids": [
+          "artifact.raw"
+        ]
+      }
+    },
+    {
+      "step_id": "step.analyze",
+      "title": "Analyze",
+      "instruction_path": "指引/分析.md",
+      "script_id": "script.analyze",
+      "depends_on": [
+        "step.collect"
+      ],
+      "produces": [
+        "artifact.report"
+      ],
+      "completion_gate": {
+        "required_artifact_ids": [
+          "artifact.report"
+        ],
+        "min_output_characters": 40
+      }
+    }
+  ],
+  "artifacts": [
+    {
+      "artifact_id": "artifact.raw",
+      "path": "artifacts/raw.json",
+      "producer_step_id": "step.collect",
+      "required": true,
+      "visibility": "internal"
+    },
+    {
+      "artifact_id": "artifact.report",
+      "path": "artifacts/report.md",
+      "producer_step_id": "step.analyze",
+      "required": true,
+      "visibility": "delivery"
+    }
+  ],
+  "deliveries": [
+    {
+      "delivery_id": "delivery.report",
+      "label": "Report",
+      "artifact_ids": [
+        "artifact.report"
+      ]
+    }
+  ],
+  "scripts": [
+    {
+      "script_id": "script.analyze",
+      "path": "scripts/analyze.py",
+      "timeout_seconds": 60,
+      "working_directory": "scripts",
+      "allowed_exit_codes": [
+        0
+      ],
+      "log_artifact_ids": [
+        "artifact.raw"
+      ],
+      "write_scope": [
+        "artifacts"
+      ]
+    }
+  ],
+  "core_rules": [
+    {
+      "rule_id": "rule.no_secret",
+      "instruction_path": "规则/安全.md",
+      "acknowledgement_required": true
+    }
+  ],
+  "judge": {
+    "required": true,
+    "isolated_session": true,
+    "artifact_ids": [
+      "artifact.report"
+    ]
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "schema": "skill-run-invocation-v1",
+  "source": "skill-run-invocation-v1.json",
+  "mutation": {
+    "operation": "delete",
+    "path": ["runtime", "judge"]
+  },
+  "expected_error_path": ["runtime"]
+}

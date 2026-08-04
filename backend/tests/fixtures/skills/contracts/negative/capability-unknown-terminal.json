@@ -1,0 +1,14 @@
+{
+  "schema": "agent-capability-report-v1",
+  "source": "agent-capability-report-v1.json",
+  "mutation": {
+    "operation": "set",
+    "path": [
+      "unexpected"
+    ],
+    "value": true
+  },
+  "expected_error_path": [
+
+  ]
+}

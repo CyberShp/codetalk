@@ -38,8 +38,9 @@ The canonical durable product chain is:
 - A **Skill Version** is an explicitly published immutable release of one
   Project build.  It is the only Skill reference that a Task may bind.
 - A **Task** binds exactly one Skill Version and records user-selected inputs,
-  Agent runtime, model and budget choices, and selected deliveries.  It has no
-  parallel Workflow or Workflow Version binding.
+  Agent runtime and model, the requested output-token ceiling, queue/Agent/
+  script/validation/overall timeout choices, and selected deliveries.  It has
+  no parallel Workflow or Workflow Version binding.
 - A **Run Attempt** is one durable execution of the Task.  It freezes the
   selected Skill Version and its content digest, invocation inputs, runtime
   capability/preflight evidence, and delivery selection before work begins.

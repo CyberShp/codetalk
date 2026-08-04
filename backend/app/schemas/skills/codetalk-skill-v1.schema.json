@@ -1,0 +1,366 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codetalk.local/schemas/skills/codetalk-skill-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "skill_id",
+    "name",
+    "required_agent_capabilities",
+    "inputs",
+    "steps",
+    "artifacts",
+    "deliveries",
+    "scripts",
+    "core_rules",
+    "judge"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "codetalk-skill-v1"
+    },
+    "skill_id": {
+      "$ref": "#/$defs/semanticId"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "required_agent_capabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/agentCapabilityName"
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/input"
+      }
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/step"
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/artifact"
+      }
+    },
+    "deliveries": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/delivery"
+      }
+    },
+    "scripts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/script"
+      }
+    },
+    "core_rules": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/rule"
+      }
+    },
+    "judge": {
+      "$ref": "#/$defs/judge"
+    }
+  },
+  "$defs": {
+    "agentCapabilityName": {
+      "enum": [
+        "context_window",
+        "output_limit",
+        "resume",
+        "tools",
+        "cancellation",
+        "session_isolation",
+        "artifact_collection",
+        "interactive_input",
+        "process_termination"
+      ]
+    },
+    "semanticId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*(?:\\.[a-z][a-z0-9_-]*)+$"
+    },
+    "safePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!//)(?!.*\\\\)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\u0000).+$"
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "input_id",
+        "label",
+        "kind",
+        "required"
+      ],
+      "properties": {
+        "input_id": {
+          "$ref": "#/$defs/semanticId"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "required": {
+          "type": "boolean"
+        }
+      }
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "step_id",
+        "title",
+        "instruction_path",
+        "depends_on",
+        "produces",
+        "completion_gate"
+      ],
+      "properties": {
+        "step_id": {
+          "$ref": "#/$defs/semanticId"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "instruction_path": {
+          "$ref": "#/$defs/safePath"
+        },
+        "script_id": {
+          "$ref": "#/$defs/semanticId"
+        },
+        "depends_on": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/semanticId"
+          }
+        },
+        "produces": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/semanticId"
+          }
+        },
+        "completion_gate": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "required_artifact_ids"
+          ],
+          "properties": {
+            "required_artifact_ids": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/semanticId"
+              }
+            },
+            "min_output_characters": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_id",
+        "path",
+        "producer_step_id",
+        "required",
+        "visibility"
+      ],
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/semanticId"
+        },
+        "path": {
+          "$ref": "#/$defs/safePath"
+        },
+        "producer_step_id": {
+          "$ref": "#/$defs/semanticId"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "visibility": {
+          "enum": [
+            "internal",
+            "delivery"
+          ]
+        }
+      }
+    },
+    "delivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "delivery_id",
+        "label",
+        "artifact_ids"
+      ],
+      "properties": {
+        "delivery_id": {
+          "$ref": "#/$defs/semanticId"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+            "artifact_ids": {
+              "type": "array",
+              "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/semanticId"
+          }
+        }
+      }
+    },
+    "script": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "script_id",
+        "path",
+        "timeout_seconds",
+        "working_directory",
+        "allowed_exit_codes",
+        "log_artifact_ids",
+        "write_scope"
+      ],
+      "properties": {
+        "script_id": {
+          "$ref": "#/$defs/semanticId"
+        },
+        "path": {
+          "$ref": "#/$defs/safePath"
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "working_directory": {
+          "$ref": "#/$defs/safePath"
+        },
+        "allowed_exit_codes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "integer"
+          }
+        },
+        "log_artifact_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/semanticId"
+          }
+        },
+        "write_scope": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/safePath"
+          }
+        }
+      }
+    },
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rule_id",
+        "instruction_path",
+        "acknowledgement_required"
+      ],
+      "properties": {
+        "rule_id": {
+          "$ref": "#/$defs/semanticId"
+        },
+        "instruction_path": {
+          "$ref": "#/$defs/safePath"
+        },
+        "acknowledgement_required": {
+          "type": "boolean"
+        }
+      }
+    },
+    "judge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "isolated_session",
+        "artifact_ids"
+      ],
+      "properties": {
+        "required": {
+          "type": "boolean"
+        },
+        "isolated_session": {
+          "type": "boolean"
+        },
+        "artifact_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/semanticId"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "required": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "isolated_session": {
+                "const": true
+              },
+              "artifact_ids": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

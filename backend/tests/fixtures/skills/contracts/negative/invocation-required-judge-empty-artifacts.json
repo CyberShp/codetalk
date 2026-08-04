@@ -1,0 +1,10 @@
+{
+  "schema": "skill-run-invocation-v1",
+  "source": "skill-run-invocation-v1.json",
+  "mutation": {
+    "operation": "set",
+    "path": ["judge", "artifact_ids"],
+    "value": []
+  },
+  "expected_error_path": ["judge", "artifact_ids"]
+}

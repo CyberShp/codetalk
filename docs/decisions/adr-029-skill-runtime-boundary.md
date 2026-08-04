@@ -24,8 +24,9 @@ to the existing main runtime stack through its Harness seam.
 
 - Before execution, a Run Attempt freezes the Skill Version ZIP, IR, content
   digest, input snapshot, selected deliveries, artifact root, Agent runtime,
-  capability report, preflight receipt, model/budget declaration, and Judge
-  declaration in its Invocation.
+  capability report, preflight receipt, requested/effective model, requested
+  output-token ceiling, queue/Agent/script/validation/overall timeout
+  declarations, and Judge declaration in its Invocation.
 - The main **Task Run orchestration and store stack** is the sole durable owner
   of task identity, queueing, events, checkpoints, artifact authority,
   cancellation, recovery, terminal status, and cockpit projection.  The

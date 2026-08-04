@@ -1,0 +1,9 @@
+{
+  "schema": "skill-review-v1",
+  "source": "skill-review-v1.json",
+  "mutation": {
+    "operation": "delete",
+    "path": ["review_evidence", "findings", 0, "recommendation"]
+  },
+  "expected_error_path": ["review_evidence", "findings", 0]
+}

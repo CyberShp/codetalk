@@ -1,0 +1,115 @@
+{
+  "schema_version": "skill-run-invocation-v1",
+  "invocation_id": "invocation f014",
+  "invocation_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "task_run_id": "run/f014",
+  "task_id": "task f014",
+  "skill_version_id": "version/f014",
+  "skill_content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "skill_ir_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "input_snapshot": {
+    "ref": "输入/源码.json",
+    "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  },
+  "declared_context_refs": [
+    {
+      "ref": "输入/源码.json",
+      "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "access_scope": "read"
+    }
+  ],
+  "runtime": {
+    "producer": {
+      "runtime_id": "runtime/producer/f014",
+      "requested_provider": "opencode",
+      "effective_provider": "opencode",
+      "requested_model": "deepseek/deepseek-v4-flash",
+      "effective_model": "deepseek/deepseek-v4-flash",
+      "observed_runtime_version": "1.2.3",
+      "requested_capabilities": [
+        "tools",
+        "artifact_collection",
+        "cancellation"
+      ],
+      "declared_context_window_tokens": 200000,
+      "requested_max_output_tokens": 4096,
+      "timeout_budget": {
+        "queue_timeout_seconds": 60,
+        "agent_timeout_seconds": 1800,
+        "script_timeout_seconds": 300,
+        "validation_timeout_seconds": 600,
+        "overall_timeout_seconds": 3600
+      },
+      "capability_report_id": "capability producer/f014",
+      "capability_report_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "preflight_receipt": {
+        "status": "passed",
+        "timestamp": "2026-08-04T00:00:00Z",
+        "endpoint_class": "approved",
+        "credential_ready": true
+      }
+    },
+    "judge": {
+      "runtime_id": "runtime/judge/f014",
+      "requested_provider": "opencode",
+      "effective_provider": "opencode",
+      "requested_model": "deepseek/deepseek-v4-flash",
+      "effective_model": "deepseek/deepseek-v4-flash",
+      "observed_runtime_version": "1.2.3",
+      "requested_capabilities": [
+        "session_isolation",
+        "artifact_collection",
+        "cancellation"
+      ],
+      "declared_context_window_tokens": 200000,
+      "requested_max_output_tokens": 4096,
+      "timeout_budget": {
+        "queue_timeout_seconds": 60,
+        "agent_timeout_seconds": 900,
+        "script_timeout_seconds": 300,
+        "validation_timeout_seconds": 600,
+        "overall_timeout_seconds": 1800
+      },
+      "capability_report_id": "capability judge/f014",
+      "capability_report_digest": "sha256:abababababababababababababababababababababababababababababababab",
+      "preflight_receipt": {
+        "status": "passed",
+        "timestamp": "2026-08-04T00:00:01Z",
+        "endpoint_class": "approved",
+        "credential_ready": true
+      }
+    }
+  },
+  "sessions": {
+    "producer": {
+      "agent_session_id": "producer session/1",
+      "role": "producer",
+      "runtime_id": "runtime/producer/f014",
+      "conversation_scope": "own_session"
+    },
+    "judge": {
+      "agent_session_id": "judge session/1",
+      "role": "judge",
+      "runtime_id": "runtime/judge/f014",
+      "conversation_scope": "frozen_inputs_and_artifacts_only"
+    }
+  },
+  "recovery_policy": {
+    "max_clean_session_replacements": 1
+  },
+  "selected_delivery_ids": [
+    "delivery.report"
+  ],
+  "required_artifact_ids": [
+    "artifact.raw",
+    "artifact.report"
+  ],
+  "artifact_root": "attempts/run.f014/artifacts",
+  "judge": {
+    "required": true,
+    "isolated_session": true,
+    "artifact_ids": [
+      "artifact.report"
+    ]
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "schema_version": "codetalk-skill-pack-v1",
+  "pack_id": "pack.codetalks-v24",
+  "name": "Codetalks v2.4",
+  "source_archive_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "source_file_count": 37,
+  "skills": [
+    {
+      "skill_id": "skill.flow-analysis",
+      "source_path": "场景/流程.json"
+    }
+  ]
+}

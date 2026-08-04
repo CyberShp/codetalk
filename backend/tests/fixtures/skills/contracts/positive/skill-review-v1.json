@@ -1,0 +1,49 @@
+{
+  "schema_version": "skill-review-v1",
+  "review_id": "review f014",
+  "skill_id": "skill.flow_analysis",
+  "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "review_evidence_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "review_evidence": {
+    "purpose": "full release review",
+    "session_id": "review-session/1",
+    "review_kind": "full",
+    "reviewed_at": "2026-08-04T00:00:00Z",
+    "provider": "deepseek",
+    "requested_model": "deepseek-v4-flash",
+    "effective_model": "deepseek-v4-flash",
+    "response_model": "deepseek-v4-flash",
+    "declared_context_window_tokens": 200000,
+    "requested_max_output_tokens": 4096,
+    "decision": "changes_requested",
+    "findings": [
+      {
+        "finding_id": "finding.missing_guard",
+        "severity": "p1",
+        "summary": "Guard behavior is incomplete",
+        "locations": [
+          {
+            "path": "scripts/run_guard.py",
+            "field": "write_scope"
+          }
+        ],
+        "reason": "The candidate does not enforce the declared write scope.",
+        "impact": "A script could write outside its declared artifact boundary.",
+        "recommendation": "Reject writes outside the declared scope before commit.",
+        "disposition": "open"
+      }
+    ],
+    "proposed_patches": [
+      {
+        "patch_id": "patch.missing_guard",
+        "finding_ids": [
+          "finding.missing_guard"
+        ],
+        "summary": "Enforce the declared write scope",
+        "target_path": "scripts/run_guard.py",
+        "base_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "unified_diff": "--- a/scripts/run_guard.py\n+++ b/scripts/run_guard.py\n@@ -1 +1 @@\n-pass\n+enforce_write_scope()\n"
+      }
+    ]
+  }
+}

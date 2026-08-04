@@ -1,0 +1,23 @@
+{
+  "schema_version": "agent-capability-report-v1",
+  "report_id": "capability f014",
+  "runtime_id": "runtime/f014",
+  "provider": "opencode",
+  "requested_model": "deepseek/deepseek-v4-flash",
+  "effective_model": "deepseek/deepseek-v4-flash",
+  "declared_context_window_tokens": 200000,
+  "requested_max_output_tokens": 4096,
+  "capabilities": {
+    "context_window": "supported",
+    "output_limit": "supported",
+    "resume": "supported",
+    "tools": "supported",
+    "cancellation": "supported",
+    "session_isolation": "supported",
+    "artifact_collection": "supported",
+    "interactive_input": "supported",
+    "process_termination": "supported"
+  },
+  "observed_runtime_version": "1.2.3",
+  "credential_ready": true
+}

@@ -1,0 +1,18 @@
+{
+  "schema": "codetalk-skill-v1",
+  "source": "codetalk-skill-v1.json",
+  "mutation": {
+    "operation": "set",
+    "path": [
+      "steps",
+      0,
+      "instruction_path"
+    ],
+    "value": "../escape.md"
+  },
+  "expected_error_path": [
+    "steps",
+    0,
+    "instruction_path"
+  ]
+}

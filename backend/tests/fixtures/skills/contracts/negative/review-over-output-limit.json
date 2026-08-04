@@ -1,0 +1,16 @@
+{
+  "schema": "skill-review-v1",
+  "source": "skill-review-v1.json",
+  "mutation": {
+    "operation": "set",
+    "path": [
+      "review_evidence",
+      "requested_max_output_tokens"
+    ],
+    "value": 4097
+  },
+  "expected_error_path": [
+    "review_evidence",
+    "requested_max_output_tokens"
+  ]
+}

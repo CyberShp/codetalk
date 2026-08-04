@@ -57,9 +57,9 @@ never persisted.
 |---|---|---|
 | Identity | attempt, Task, Skill Version IDs; Skill content digest; invocation digest | IDs and digests are immutable for the Attempt. |
 | Inputs | input snapshot reference/digest; `declared_context_refs` | Draft files and live UI values are not execution inputs. |
-| Runtime request | runtime ID, provider, `requested_model`, budget, requested capabilities | Requested is user/Task intent, not a claim that the runtime accepted it. |
+| Runtime request | runtime ID, requested/effective provider and model, `requested_max_output_tokens`, queue/Agent/script/validation/overall timeout values, requested capabilities | Requested is user/Task intent, not a claim that the runtime accepted it. |
 | Runtime effective | `effective_model`, effective provider, capability report, CLI/runtime version | Persist after preflight; any mismatch is visible and policy-checked. |
-| Limits | `declared_context_window_tokens`, `requested_max_output_tokens`, timeout budget | For fixed F014 acceptance: 200000 declared context capacity and at most 4096 requested output tokens. |
+| Limits | `declared_context_window_tokens`, `requested_max_output_tokens`, and queue/Agent/script/validation/overall timeout values | For fixed F014 acceptance: 200000 declared context capacity and at most 4096 requested output tokens. |
 | Output | selected delivery IDs, complete required-artifact contract, artifact root | Delivery filtering cannot omit upstream Skill steps or internal artifact production. |
 | Judge | required/optional policy, isolated runtime/session request, checked artifact scope | Judge has frozen inputs, Skill contract, and artifacts only. |
 | Provenance | source/release/IR digests, preflight receipt, endpoint host or approved-host hash, credential-ready boolean | No credential, secret, raw prompt transcript, or unredacted environment value. |

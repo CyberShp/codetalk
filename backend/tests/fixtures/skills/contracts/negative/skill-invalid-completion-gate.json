@@ -1,0 +1,20 @@
+{
+  "schema": "codetalk-skill-v1",
+  "source": "codetalk-skill-v1.json",
+  "mutation": {
+    "operation": "set",
+    "path": [
+      "steps",
+      1,
+      "completion_gate",
+      "min_output_characters"
+    ],
+    "value": -1
+  },
+  "expected_error_path": [
+    "steps",
+    1,
+    "completion_gate",
+    "min_output_characters"
+  ]
+}

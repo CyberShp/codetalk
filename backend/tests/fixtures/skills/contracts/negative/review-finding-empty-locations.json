@@ -1,0 +1,10 @@
+{
+  "schema": "skill-review-v1",
+  "source": "skill-review-v1.json",
+  "mutation": {
+    "operation": "set",
+    "path": ["review_evidence", "findings", 0, "locations"],
+    "value": []
+  },
+  "expected_error_path": ["review_evidence", "findings", 0, "locations"]
+}

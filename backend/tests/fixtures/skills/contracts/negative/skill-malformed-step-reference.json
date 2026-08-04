@@ -1,0 +1,21 @@
+{
+  "schema": "codetalk-skill-v1",
+  "source": "codetalk-skill-v1.json",
+  "mutation": {
+    "operation": "set",
+    "path": [
+      "steps",
+      0,
+      "depends_on"
+    ],
+    "value": [
+      "not-an-id"
+    ]
+  },
+  "expected_error_path": [
+    "steps",
+    0,
+    "depends_on",
+    0
+  ]
+}

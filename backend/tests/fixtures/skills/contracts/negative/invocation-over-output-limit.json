@@ -1,0 +1,18 @@
+{
+  "schema": "skill-run-invocation-v1",
+  "source": "skill-run-invocation-v1.json",
+  "mutation": {
+    "operation": "set",
+    "path": [
+      "runtime",
+      "producer",
+      "requested_max_output_tokens"
+    ],
+    "value": 4097
+  },
+  "expected_error_path": [
+    "runtime",
+    "producer",
+    "requested_max_output_tokens"
+  ]
+}

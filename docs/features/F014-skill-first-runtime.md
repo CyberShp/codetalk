@@ -92,7 +92,7 @@ and the old staged professional-analysis entry path.
 
 ### Phase A (Contracts and deterministic build)
 
-- [ ] AC-A1: Six versioned JSON Schemas have positive and adversarial fixtures and reject unknown or ambiguous terminal fields.
+- [x] AC-A1: Six versioned JSON Schemas have positive and adversarial fixtures and reject unknown or ambiguous terminal fields.
 - [ ] AC-A2: Import of the pinned archive accounts for all 37 files, preserves the three UTF-8 template names, rejects traversal/symlink escapes, and records the source SHA-256.
 - [ ] AC-A3: The five source scenarios become five independent Skills in one Pack; a single multi-scenario Skill is rejected.
 - [ ] AC-A4: The module-analysis Skill IR retains nine ordered steps, three core-rule acknowledgements, 37 required artifacts, eight final outputs, script declarations, completion gates, and Judge requirements.
@@ -107,7 +107,7 @@ and the old staged professional-analysis entry path.
 
 ### Phase C (Task and Run integration)
 
-- [ ] AC-C1: Task binds exactly one Skill Version and stores its digest, inputs, Agent runtime, selected deliveries, and model/budget configuration without a parallel binding truth source.
+- [ ] AC-C1: Task binds exactly one Skill Version and stores its digest, inputs, Agent runtime, selected deliveries, requested/effective model, requested output-token ceiling, and queue/Agent/script/validation/overall timeout fields without a parallel binding truth source.
 - [ ] AC-C2: Run Attempt freezes Skill ZIP/IR/digest, input snapshot, capability report, invocation, Agent session, Judge configuration, and selected deliveries before execution.
 - [ ] AC-C3: Selecting one delivery does not skip upstream Skill steps; unselected outputs remain internal artifacts and never enter the delivery package.
 - [ ] AC-C4: Run Attempt, Agent Session, and Agent Process are separate persisted concepts; a disposable process cannot erase a resumable Session or completed checkpoint.

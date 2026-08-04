@@ -1,0 +1,9 @@
+{
+  "schema": "skill-run-invocation-v1",
+  "source": "skill-run-invocation-v1.json",
+  "mutation": {
+    "operation": "delete",
+    "path": ["runtime", "producer", "effective_provider"]
+  },
+  "expected_error_path": ["runtime", "producer"]
+}

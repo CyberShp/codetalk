@@ -1,0 +1,10 @@
+{
+  "schema": "skill-run-invocation-v1",
+  "source": "skill-run-invocation-v1.json",
+  "mutation": {
+    "operation": "set",
+    "path": ["runtime", "judge", "preflight_receipt", "status"],
+    "value": "failed"
+  },
+  "expected_error_path": ["sessions", "judge"]
+}

@@ -1,0 +1,6 @@
+{
+  "schema": "codetalk-skill-v1",
+  "source": "codetalk-skill-v1.json",
+  "mutation": {"operation": "set", "path": ["artifacts"], "value": []},
+  "expected_error_path": ["artifacts"]
+}

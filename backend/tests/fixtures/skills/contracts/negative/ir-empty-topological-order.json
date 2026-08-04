@@ -1,0 +1,6 @@
+{
+  "schema": "skill-ir-v1",
+  "source": "skill-ir-v1.json",
+  "mutation": {"operation": "set", "path": ["topological_order"], "value": []},
+  "expected_error_path": ["topological_order"]
+}

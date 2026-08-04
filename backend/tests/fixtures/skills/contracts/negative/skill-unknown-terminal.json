@@ -1,0 +1,14 @@
+{
+  "schema": "codetalk-skill-v1",
+  "source": "codetalk-skill-v1.json",
+  "mutation": {
+    "operation": "set",
+    "path": [
+      "unexpected"
+    ],
+    "value": true
+  },
+  "expected_error_path": [
+
+  ]
+}

@@ -1,0 +1,504 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codetalk.local/schemas/skills/skill-run-invocation-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "invocation_id",
+    "invocation_digest",
+    "task_run_id",
+    "task_id",
+    "skill_version_id",
+    "skill_content_digest",
+    "skill_ir_digest",
+    "input_snapshot",
+    "declared_context_refs",
+    "runtime",
+    "sessions",
+    "recovery_policy",
+    "selected_delivery_ids",
+    "required_artifact_ids",
+    "artifact_root",
+    "judge"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "skill-run-invocation-v1"
+    },
+    "invocation_id": {
+      "$ref": "#/$defs/opaqueId"
+    },
+    "invocation_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "task_run_id": {
+      "$ref": "#/$defs/opaqueId"
+    },
+    "task_id": {
+      "$ref": "#/$defs/opaqueId"
+    },
+    "skill_version_id": {
+      "$ref": "#/$defs/opaqueId"
+    },
+    "skill_content_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "skill_ir_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "input_snapshot": {
+      "$ref": "#/$defs/reference"
+    },
+    "declared_context_refs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/contextRef"
+      }
+    },
+    "runtime": {
+      "$ref": "#/$defs/runtime"
+    },
+    "sessions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "producer",
+        "judge"
+      ],
+      "properties": {
+        "producer": {
+          "$ref": "#/$defs/producerSession"
+        },
+        "judge": {
+          "$ref": "#/$defs/judgeSession"
+        }
+      }
+    },
+    "recovery_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_clean_session_replacements"
+      ],
+      "properties": {
+        "max_clean_session_replacements": {
+          "const": 1
+        }
+      }
+    },
+    "selected_delivery_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/semanticId"
+      }
+    },
+    "required_artifact_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/semanticId"
+      }
+    },
+    "artifact_root": {
+      "$ref": "https://codetalk.local/schemas/skills/codetalk-skill-v1.schema.json#/$defs/safePath"
+    },
+    "judge": {
+      "$ref": "https://codetalk.local/schemas/skills/codetalk-skill-v1.schema.json#/$defs/judge"
+    }
+  },
+  "$defs": {
+    "opaqueId": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^\\u0000\\r\\n]+$"
+    },
+    "semanticId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*(?:\\.[a-z][a-z0-9_-]*)+$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "digest"
+      ],
+      "properties": {
+        "ref": {
+          "$ref": "https://codetalk.local/schemas/skills/codetalk-skill-v1.schema.json#/$defs/safePath"
+        },
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "access_scope": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        }
+      }
+    },
+    "contextRef": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/reference"
+        },
+        {
+          "type": "object",
+          "required": [
+            "access_scope"
+          ],
+          "properties": {
+            "access_scope": {
+              "enum": [
+                "read",
+                "write"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "producer",
+        "judge"
+      ],
+      "properties": {
+        "producer": {
+          "$ref": "#/$defs/runtimeEnvelope"
+        },
+        "judge": {
+          "type": ["object", "null"],
+          "allOf": [
+            {
+              "if": {
+                "type": "object"
+              },
+              "then": {
+                "$ref": "#/$defs/runtimeEnvelope"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "runtimeEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runtime_id",
+        "requested_provider",
+        "effective_provider",
+        "requested_model",
+        "effective_model",
+        "observed_runtime_version",
+        "requested_capabilities",
+        "declared_context_window_tokens",
+        "requested_max_output_tokens",
+        "timeout_budget",
+        "capability_report_id",
+        "capability_report_digest",
+        "preflight_receipt"
+      ],
+      "properties": {
+        "runtime_id": { "$ref": "#/$defs/opaqueId" },
+        "requested_provider": { "type": "string", "minLength": 1 },
+        "effective_provider": { "type": "string", "minLength": 1 },
+        "requested_model": { "type": "string", "minLength": 1 },
+        "effective_model": { "type": "string", "minLength": 1 },
+        "observed_runtime_version": { "type": "string", "minLength": 1 },
+        "requested_capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "https://codetalk.local/schemas/skills/codetalk-skill-v1.schema.json#/$defs/agentCapabilityName"
+          }
+        },
+        "declared_context_window_tokens": { "type": "integer", "minimum": 1 },
+        "requested_max_output_tokens": { "type": "integer", "minimum": 1 },
+        "timeout_budget": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "queue_timeout_seconds",
+            "agent_timeout_seconds",
+            "script_timeout_seconds",
+            "validation_timeout_seconds",
+            "overall_timeout_seconds"
+          ],
+          "properties": {
+            "queue_timeout_seconds": { "type": "integer", "minimum": 1 },
+            "agent_timeout_seconds": { "type": "integer", "minimum": 1 },
+            "script_timeout_seconds": { "type": "integer", "minimum": 1 },
+            "validation_timeout_seconds": { "type": "integer", "minimum": 1 },
+            "overall_timeout_seconds": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "capability_report_id": { "$ref": "#/$defs/opaqueId" },
+        "capability_report_digest": { "$ref": "#/$defs/digest" },
+        "preflight_receipt": { "$ref": "#/$defs/preflight" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "requested_model": { "pattern": "(^|/)deepseek-v4-flash$" }
+            }
+          },
+          "then": {
+            "properties": {
+              "declared_context_window_tokens": { "const": 200000 },
+              "requested_max_output_tokens": { "maximum": 4096 }
+            }
+          }
+        }
+      ]
+    },
+    "preflight": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "timestamp",
+        "credential_ready"
+      ],
+      "anyOf": [
+        {
+          "required": [
+            "endpoint_class"
+          ]
+        },
+        {
+          "required": [
+            "approved_host_hash"
+          ]
+        }
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "passed",
+            "failed"
+          ]
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "endpoint_class": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approved_host_hash": {
+          "$ref": "#/$defs/digest"
+        },
+        "credential_ready": {
+          "type": "boolean"
+        }
+      }
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agent_session_id",
+        "role",
+        "runtime_id",
+        "conversation_scope"
+      ],
+      "properties": {
+        "agent_session_id": {
+          "$ref": "#/$defs/opaqueId"
+        },
+        "role": {
+          "enum": [
+            "producer",
+            "judge"
+          ]
+        },
+        "runtime_id": {
+          "$ref": "#/$defs/opaqueId"
+        },
+        "conversation_scope": {
+          "enum": [
+            "own_session",
+            "frozen_inputs_and_artifacts_only"
+          ]
+        }
+      }
+    },
+    "producerSession": {
+      "type": ["object", "null"],
+      "allOf": [
+        {
+          "if": { "type": "object" },
+          "then": {
+            "allOf": [
+              { "$ref": "#/$defs/session" },
+              { "properties": { "role": { "const": "producer" }, "conversation_scope": { "const": "own_session" } } }
+            ]
+          }
+        }
+      ]
+    },
+    "judgeSession": {
+      "type": ["object", "null"],
+      "allOf": [
+        {
+          "if": { "type": "object" },
+          "then": {
+            "allOf": [
+              { "$ref": "#/$defs/session" },
+              { "properties": { "role": { "const": "judge" }, "conversation_scope": { "const": "frozen_inputs_and_artifacts_only" } } }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "runtime": {
+            "properties": {
+              "producer": {
+                "properties": { "preflight_receipt": { "properties": { "status": { "const": "failed" } } } }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "sessions": { "const": { "producer": null, "judge": null } }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "runtime": {
+            "properties": {
+              "producer": {
+                "properties": { "preflight_receipt": { "properties": { "status": { "const": "passed" } } } }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "sessions": {
+            "properties": {
+              "producer": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "runtime": {
+            "required": ["judge"],
+            "properties": { "judge": { "type": "null" } }
+          }
+        }
+      },
+      "then": {
+        "properties": { "sessions": { "properties": { "judge": { "const": null } } } }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "runtime": {
+            "required": ["judge"],
+            "properties": {
+              "judge": {
+                "type": "object",
+                "properties": { "preflight_receipt": { "properties": { "status": { "const": "failed" } } } }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": { "sessions": { "properties": { "judge": { "const": null } } } }
+      }
+    },
+    {
+      "if": {
+        "required": ["sessions"],
+        "properties": {
+          "sessions": {
+            "required": ["judge"],
+            "properties": { "judge": { "type": "object" } }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "judge": {
+            "properties": {
+              "isolated_session": { "const": true },
+              "artifact_ids": { "minItems": 1 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["judge"],
+        "properties": {
+          "judge": { "properties": { "required": { "const": true } } }
+        }
+      },
+      "then": {
+        "properties": {
+          "runtime": { "properties": { "judge": { "type": "object" } } }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "judge": { "properties": { "required": { "const": true } } },
+          "runtime": {
+            "required": ["producer", "judge"],
+            "properties": {
+              "producer": {
+                "properties": { "preflight_receipt": { "properties": { "status": { "const": "passed" } } } }
+              },
+              "judge": {
+                "type": "object",
+                "properties": { "preflight_receipt": { "properties": { "status": { "const": "passed" } } } }
+              }
+            }
+          }
+        },
+        "required": ["judge", "runtime"]
+      },
+      "then": {
+        "properties": {
+          "runtime": { "properties": { "judge": { "type": "object" } } },
+          "sessions": { "properties": { "judge": { "type": "object" } } }
+        }
+      }
+    }
+  ]
+}

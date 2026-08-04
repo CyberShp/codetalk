@@ -1,0 +1,18 @@
+{
+  "schema": "skill-run-invocation-v1",
+  "source": "skill-run-invocation-v1.json",
+  "mutation": {
+    "operation": "set",
+    "path": [
+      "sessions",
+      "producer",
+      "conversation_scope"
+    ],
+    "value": "frozen_inputs_and_artifacts_only"
+  },
+  "expected_error_path": [
+    "sessions",
+    "producer",
+    "conversation_scope"
+  ]
+}

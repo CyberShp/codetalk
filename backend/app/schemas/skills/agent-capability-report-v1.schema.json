@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codetalk.local/schemas/skills/agent-capability-report-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "report_id",
+    "runtime_id",
+    "provider",
+    "requested_model",
+    "effective_model",
+    "declared_context_window_tokens",
+    "requested_max_output_tokens",
+    "capabilities",
+    "observed_runtime_version",
+    "credential_ready"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "agent-capability-report-v1"
+    },
+    "report_id": {
+      "$ref": "#/$defs/opaqueId"
+    },
+    "runtime_id": {
+      "$ref": "#/$defs/opaqueId"
+    },
+    "provider": {
+      "type": "string",
+      "minLength": 1
+    },
+    "requested_model": {
+      "type": "string",
+      "minLength": 1
+    },
+    "effective_model": {
+      "type": "string",
+      "minLength": 1
+    },
+    "declared_context_window_tokens": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "requested_max_output_tokens": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "context_window",
+        "output_limit",
+        "resume",
+        "tools",
+        "cancellation",
+        "session_isolation",
+        "artifact_collection",
+        "interactive_input",
+        "process_termination"
+      ],
+      "properties": {
+        "context_window": {
+          "$ref": "#/$defs/capability"
+        },
+        "output_limit": {
+          "$ref": "#/$defs/capability"
+        },
+        "resume": {
+          "$ref": "#/$defs/capability"
+        },
+        "tools": {
+          "$ref": "#/$defs/capability"
+        },
+        "cancellation": {
+          "$ref": "#/$defs/capability"
+        },
+        "session_isolation": {
+          "$ref": "#/$defs/capability"
+        },
+        "artifact_collection": {
+          "$ref": "#/$defs/capability"
+        },
+        "interactive_input": {
+          "$ref": "#/$defs/capability"
+        },
+        "process_termination": {
+          "$ref": "#/$defs/capability"
+        }
+      }
+    },
+    "observed_runtime_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "credential_ready": {
+      "type": "boolean"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "requested_model": {
+            "pattern": "(^|/)deepseek-v4-flash$"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "declared_context_window_tokens": {
+            "const": 200000
+          },
+          "requested_max_output_tokens": {
+            "maximum": 4096
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "opaqueId": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^\\u0000\\r\\n]+$"
+    },
+    "capability": {
+      "enum": [
+        "supported",
+        "unsupported",
+        "unknown"
+      ]
+    }
+  }
+}

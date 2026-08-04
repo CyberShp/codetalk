@@ -1,0 +1,6 @@
+{
+  "schema": "skill-ir-v1",
+  "source": "skill-ir-v1.json",
+  "mutation": {"operation": "set", "path": ["source_file_digests"], "value": []},
+  "expected_error_path": ["source_file_digests"]
+}

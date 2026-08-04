@@ -1,0 +1,13 @@
+{
+  "schema": "codetalk-skill-pack-v1",
+  "source": "codetalk-skill-pack-v1.json",
+  "mutation": {
+    "operation": "delete",
+    "path": [
+      "source_archive_digest"
+    ]
+  },
+  "expected_error_path": [
+
+  ]
+}
