@@ -53,6 +53,12 @@
 - Keep findings in explicit states: `investigation lead`, `candidate finding`, `confirmed finding`, and `ruled out`. Only confirmed findings enter authoritative deliverables.
 - When evidence cannot close the chain, name the exact missing design or runtime fact. Do not imply that more source searching can recover absent information.
 
+### Review Verdict Handling
+
+- `CHANGES_REQUESTED` is not a blocking condition. Treat each actionable finding as work: reproduce it, add or update a failing test when applicable, fix the root cause, rerun evidence, and request re-review until an independent reviewer returns `APPROVE`.
+- Empty, null, timed-out, or transport-failed reviewer results are not verdicts. Retry with a narrower review prompt or a new independent reviewer before declaring the work blocked.
+- Declare review blocked only when the review channel repeatedly fails without returning actionable findings or an explicit verdict, and no narrower review scope can make progress.
+
 ### Discovery Conversations
 
 - Ask one decision-bearing question at a time and let each answer update the model. Do not design a system after the first example.
