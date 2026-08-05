@@ -59,6 +59,14 @@
 - Empty, null, timed-out, or transport-failed reviewer results are not verdicts. Retry with a narrower review prompt or a new independent reviewer before declaring the work blocked.
 - Declare review blocked only when the review channel repeatedly fails without returning actionable findings or an explicit verdict, and no narrower review scope can make progress.
 
+### Sub-Agent Planning
+
+- For multi-task or multi-surface implementation goals, plan for as many useful sub-agents as the current concurrency limit and task shape allow.
+- Assign each sub-agent a concrete, non-overlapping ownership boundary. Boundaries may be read-only investigation scopes, disjoint production file sets, disjoint test suites, or independent verification gates.
+- Do not assign the same file, database migration, API registration, shared type, or runtime hot path to more than one sub-agent. The main integrator owns shared files and cross-slice integration unless a later explicit handoff changes ownership.
+- Prefer parallel sub-agents when they can materially speed coding or verification without blocking the main thread's immediate next action.
+- When a sub-agent returns `CHANGES_REQUESTED`, empty, null, or timed-out output, handle it using the review verdict rules above; lack of approval is work input, not permission to stop.
+
 ### Discovery Conversations
 
 - Ask one decision-bearing question at a time and let each answer update the model. Do not design a system after the first example.
