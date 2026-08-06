@@ -62,9 +62,12 @@
 ### Sub-Agent Planning
 
 - For multi-task or multi-surface implementation goals, plan for as many useful sub-agents as the current concurrency limit and task shape allow.
+- During goal-mode execution, default to a broad parallel plan: explicitly look for independent coding, test, documentation, evidence, and read-only review slices before settling on a mostly-serial plan.
+- Maximize useful sub-agent fanout when it accelerates coding or validation, but only after defining non-overlapping ownership for every sub-agent.
 - Assign each sub-agent a concrete, non-overlapping ownership boundary. Boundaries may be read-only investigation scopes, disjoint production file sets, disjoint test suites, or independent verification gates.
 - Do not assign the same file, database migration, API registration, shared type, or runtime hot path to more than one sub-agent. The main integrator owns shared files and cross-slice integration unless a later explicit handoff changes ownership.
 - Prefer parallel sub-agents when they can materially speed coding or verification without blocking the main thread's immediate next action.
+- Keep coding agents, verification agents, and review agents independent: a sub-agent that implemented or edited a slice cannot approve that same slice.
 - When a sub-agent returns `CHANGES_REQUESTED`, empty, null, or timed-out output, handle it using the review verdict rules above; lack of approval is work input, not permission to stop.
 
 ### Discovery Conversations

@@ -27,24 +27,6 @@ const routeGate = readFileSync(
   new URL("../src/features/release/workbench-v2-route-gate.tsx", import.meta.url),
   "utf8",
 );
-const workbenchShared = readFileSync(
-  new URL("../src/app/workbench/workbench-shared.tsx", import.meta.url),
-  "utf8",
-);
-
-test("release UI keeps both basic validation workflows as localized core presets", () => {
-  const corePresetDeclaration = workbenchShared.match(
-    /export const CORE_WORKFLOW_PRESET_IDS = new Set\(\[([\s\S]*?)\]\);/,
-  );
-  assert.ok(corePresetDeclaration);
-  for (const [workflowId, label] of [
-    ["basic_source_report_codex", "基础源码报告（Codex CLI）"],
-    ["basic_source_design_report_builtin", "基础源码+设计文档报告（内置模型）"],
-  ]) {
-    assert.ok(corePresetDeclaration[1].includes(`"${workflowId}"`));
-    assert.ok(workbenchShared.includes(`${workflowId}: "${label}"`));
-  }
-});
 
 test("run cockpit keeps a 2,000 event window and pages older events", () => {
   assert.match(cockpit, /MAX_LOADED_EVENTS\s*=\s*2000/);
@@ -73,12 +55,12 @@ test("isolated backend 3124 is only a fallback for frontend 3123", () => {
   assert.match(api, /if \(init\?\.body && !headers\.has\("Content-Type"\)\)/);
 });
 
-test("all direct V2 route families honor the backend rollback switch", () => {
-  assert.match(routeGate, /workbenchReleaseApi\.get\(\)/);
-  assert.match(routeGate, /router\.replace\(legacyDestination\)/);
+test("remaining direct V2 library route gate is pass-through after Workflow removal", () => {
+  assert.match(routeGate, /return children;/);
+  assert.doesNotMatch(routeGate, /workbenchReleaseApi\.get\(\)/);
+  assert.doesNotMatch(routeGate, /router\.replace\(legacyDestination\)/);
   for (const relative of [
     "../src/app/tasks/layout.tsx",
-    "../src/app/workflows/layout.tsx",
     "../src/app/semantic-library/layout.tsx",
     "../src/app/evidence-library/layout.tsx",
   ]) {
@@ -98,18 +80,20 @@ test("cockpit reconnects after transient SSE errors and pause freezes visible hi
 });
 
 test("task wizard only offers Agent resource overrides for Agent nodes", () => {
-  assert.match(taskWizard, /steps\.filter\(\(item\) => item\.type === "agent_task"\)/);
+  assert.match(taskWizard, /steps\.filter\(\(item\) => item\.type === "agent_task" \|\| item\.step_id \|\| item\.instruction_path\)/);
 });
 
-test("task wizard offers every published workflow, including migrated built-ins", () => {
-  assert.match(taskWizard, /Boolean\(item\.v2\?\.published_version_id\)/);
-  assert.doesNotMatch(taskWizard, /item\.authoring_graph\?\.schema_version === 2/);
+test("task wizard offers published Skill Versions instead of Workflow choices", () => {
+  assert.match(taskWizard, /skillsApi\.listVersions\(\)/);
+  assert.match(taskWizard, /skill_version_id/);
+  assert.doesNotMatch(taskWizard, /workflowsApi/);
+  assert.doesNotMatch(taskWizard, /workflow_id/);
 });
 
 test("task wizard treats the reserved repo_path directory as workspace-managed", () => {
   assert.match(taskWizard, /function isWorkspaceInputDefinition/);
-  assert.match(taskWizard, /String\(item\.id\) === "repo_path"/);
-  assert.match(taskWizard, /String\(item\.type\) === "directory"/);
+  assert.match(taskWizard, /inputDefinitionId\(item\) === "repo_path"/);
+  assert.match(taskWizard, /String\(item\.type \|\| item\.kind\) === "directory"/);
 });
 
 test("run cockpit displays flow evidence metrics from fresh and cached stage events", () => {

@@ -28,9 +28,6 @@ import type {
   ScopePreview,
   ExternalAgentStartupProbeResult,
   WorkbenchDeploymentProbeResult,
-  WorkflowDefinition,
-  WorkflowPreset,
-  WorkflowRestoreBuiltinsResult,
   SemanticCase,
   SemanticCaseFacets,
   SemanticCaseListResult,
@@ -56,10 +53,7 @@ import type {
   WorkbenchAcceptanceAudit,
   WorkbenchProviderCapabilitiesMatrix,
   WorkbenchSystemAudit,
-  WorkbenchWorkflowCapabilities,
-  WorkbenchCoreWorkflowReadiness,
   WorkbenchInputUploadResult,
-  WorkflowGenerationDraftResult,
   WorkbenchProviderTaskProbeResult,
   WorkbenchSmokeE2EResult,
   WorkbenchTaskArtifactContent,
@@ -897,25 +891,6 @@ export const api = {
         { cache: "no-store" },
       ),
 
-    createTaskDraft: (
-      id: string,
-      data: {
-        source_message_id?: string;
-        source_ai_run_id?: string;
-        workflow_id?: string;
-        workflow_version_id?: string;
-        mode?: "draft";
-      },
-    ) =>
-      request<{
-        task: { task_id: string } & Record<string, unknown>;
-        next_required_step: number;
-        missing_inputs: Array<{ id: string; label: string; type: string }>;
-      }>(`/api/ai/conversations/${encodeURIComponent(id)}/task-drafts`, {
-        method: "POST",
-        body: JSON.stringify(data),
-      }),
-
     events: (
       id: string,
       params?: {
@@ -979,14 +954,6 @@ export const api = {
 
     systemAudit: () =>
       request<WorkbenchSystemAudit>("/api/workbench/system-audit"),
-
-    workflowCapabilities: () =>
-      request<WorkbenchWorkflowCapabilities>("/api/workbench/workflow-capabilities"),
-
-    coreWorkflowReadiness: () =>
-      request<WorkbenchCoreWorkflowReadiness>(
-        "/api/workbench/core-workflow-readiness",
-      ),
 
     deploymentProbe: (
       repoPath?: string,
@@ -1057,61 +1024,6 @@ export const api = {
           body: JSON.stringify({ cleanup_token: cleanupToken }),
         },
       ),
-
-    workflows: {
-      presets: () =>
-        request<{ items: WorkflowPreset[] }>("/api/workbench/workflow-presets"),
-
-      installPreset: (id: string) =>
-        request<WorkflowDefinition>(
-          `/api/workbench/workflow-presets/${encodeURIComponent(id)}/install`,
-          { method: "POST" },
-        ),
-
-      list: () => request<WorkflowDefinition[]>("/api/workbench/workflows"),
-
-      restoreBuiltins: () =>
-        request<WorkflowRestoreBuiltinsResult>(
-          "/api/workbench/workflows/restore-builtins",
-          { method: "POST" },
-        ),
-
-      auditDraft: (data: WorkflowDefinition | Record<string, unknown>) =>
-        request<import("./types").WorkflowDraftServerAudit>(
-          "/api/workbench/workflows/audit-draft",
-          {
-            method: "POST",
-            body: JSON.stringify(data),
-          },
-        ),
-
-      generateDraft: (data: {
-        prompt: string;
-        preferred_id?: string;
-        preferred_name?: string;
-      }) =>
-        request<WorkflowGenerationDraftResult>(
-          "/api/workbench/workflows/generate-draft",
-          {
-            method: "POST",
-            body: JSON.stringify(data),
-          },
-        ),
-
-      create: (data: WorkflowDefinition | Record<string, unknown>) =>
-        request<WorkflowDefinition>("/api/workbench/workflows", {
-          method: "POST",
-          body: JSON.stringify(data),
-        }),
-
-      get: (id: string) =>
-        request<WorkflowDefinition>(`/api/workbench/workflows/${encodeURIComponent(id)}`),
-
-      snapshot: (id: string) =>
-        request<Record<string, unknown>>(
-          `/api/workbench/workflows/${encodeURIComponent(id)}/snapshot`,
-        ),
-    },
 
     semanticCases: {
       list: (params?: {
@@ -1387,38 +1299,6 @@ export const api = {
           `/api/workbench/task-runs/${encodeURIComponent(taskRunId)}/artifacts/content/${encodedPath}${query}`,
         );
       },
-
-      prepare: (data: {
-        workflow_id: string;
-        workspace_id: string;
-        repo_path: string;
-        inputs?: Record<string, unknown>;
-        provider_override?: string | null;
-      }) =>
-        request<PreparedWorkbenchTaskRun>("/api/workbench/task-runs/prepare", {
-          method: "POST",
-          body: JSON.stringify(data),
-        }),
-
-      run: (
-        data: {
-          workflow_id: string;
-          workspace_id: string;
-          repo_path: string;
-          inputs?: Record<string, unknown>;
-          provider_override?: string | null;
-        },
-        timeoutSec = 0,
-        stopOnError = true,
-      ) =>
-        request<WorkbenchTaskRunRunResult>("/api/workbench/task-runs/run", {
-          method: "POST",
-          body: JSON.stringify({
-            ...data,
-            timeout_sec: timeoutSec,
-            stop_on_error: stopOnError,
-          }),
-        }),
 
       execute: (taskRunId: string, timeoutSec = 0, stopOnError = true) =>
         request<WorkbenchTaskRunRunResult>(

@@ -11,7 +11,8 @@ import {
   MessageSquareText,
   PanelLeftClose,
   PanelLeftOpen,
-  Workflow,
+  Bot,
+  FileArchive,
 } from "lucide-react";
 import type { ReactNode } from "react";
 
@@ -34,9 +35,9 @@ const navItems: NavItem[] = [
 ];
 
 const orchestrationChildren: OrchestrationChild[] = [
+  { label: "Skill 中心", href: "/skills" },
   { label: "任务中心", href: "/tasks" },
   { label: "运行驾驶舱", href: "/workbench" },
-  { label: "工作流", href: "/workflows" },
   { label: "语义库", href: "/semantic-library" },
   { label: "证据库", href: "/evidence-library" },
   { label: "经验知识库", href: "/knowledge-center" },
@@ -44,7 +45,7 @@ const orchestrationChildren: OrchestrationChild[] = [
 ];
 
 function isOrchestrationPath(pathname: string): boolean {
-  return pathname.startsWith("/workbench") || pathname.startsWith("/workflows") || pathname.startsWith("/tasks") || pathname.startsWith("/semantic-library") || pathname.startsWith("/evidence-library") || pathname.startsWith("/knowledge-center") || pathname.startsWith("/artifact-profiles");
+  return pathname.startsWith("/skills") || pathname.startsWith("/workbench") || pathname.startsWith("/tasks") || pathname.startsWith("/semantic-library") || pathname.startsWith("/evidence-library") || pathname.startsWith("/knowledge-center") || pathname.startsWith("/artifact-profiles");
 }
 
 function isActive(pathname: string, href: string): boolean {
@@ -121,7 +122,7 @@ export default function Sidebar() {
           </>
         )}
         <span className="ct-app-sidebar__icon" aria-hidden="true">
-          <Workflow size={18} />
+          {pathname.startsWith("/skills") ? <FileArchive size={18} /> : <Bot size={18} />}
         </span>
         <span className="ct-app-sidebar__label">智能体编排</span>
         <ChevronDown

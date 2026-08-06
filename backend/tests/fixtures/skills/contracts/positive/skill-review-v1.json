@@ -8,6 +8,20 @@
     "purpose": "full release review",
     "session_id": "review-session/1",
     "review_kind": "full",
+    "reviewed_paths": [
+      "scripts/run_guard.py",
+      "workflow-manifest.json"
+    ],
+    "reviewed_file_digests": [
+      {
+        "path": "scripts/run_guard.py",
+        "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      {
+        "path": "workflow-manifest.json",
+        "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      }
+    ],
     "reviewed_at": "2026-08-04T00:00:00Z",
     "provider": "deepseek",
     "requested_model": "deepseek-v4-flash",

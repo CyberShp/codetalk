@@ -4,16 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import FileResponse, Response, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.llm.factory import (
@@ -64,7 +63,6 @@ class _OperationLockState:
     users: int = 0
 
 
-_TASK_DRAFT_LOCKS: dict[str, _OperationLockState] = {}
 _TASK_RUN_THREAD_LOCKS: dict[str, _OperationLockState] = {}
 
 
@@ -105,18 +103,6 @@ class CreateMessageRequest(BaseModel):
 class UpdateConversationRequest(BaseModel):
     runtime_type: str = Field(pattern="^(builtin_llm|agent_runtime)$")
     agent_runtime_id: str | None = Field(default=None, max_length=200)
-
-
-class CreateTaskDraftRequest(BaseModel):
-    """User intent only; executable workflow truth is loaded server-side."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    source_message_id: str | None = Field(default=None, max_length=200)
-    source_ai_run_id: str | None = Field(default=None, max_length=200)
-    workflow_id: str | None = Field(default=None, max_length=200)
-    workflow_version_id: str | None = Field(default=None, max_length=200)
-    mode: str = Field(default="draft", pattern="^draft$")
 
 
 def _store() -> AIConversationStore:
@@ -215,45 +201,6 @@ def _redact_payload(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(key): _redact_payload(item) for key, item in value.items()}
     return value
-
-
-def _require_task_workspace(workspace_id: str) -> dict[str, str]:
-    if not workspace_id or workspace_id == "global":
-        raise HTTPException(status_code=422, detail="请先为 AI 线程选择工作空间")
-    try:
-        with sqlite3.connect(settings.sqlite_db) as db:
-            db.row_factory = sqlite3.Row
-            row = db.execute(
-                "SELECT id, name, repo_path FROM workspaces WHERE id = ?",
-                (workspace_id,),
-            ).fetchone()
-    except sqlite3.Error as exc:
-        raise HTTPException(status_code=503, detail="工作空间存储暂不可用") from exc
-    if row is None:
-        raise HTTPException(status_code=404, detail=f"工作空间不存在：{workspace_id}")
-    return {key: str(row[key] or "") for key in ("id", "name", "repo_path")}
-
-
-def _is_workspace_task_input(item: dict[str, Any]) -> bool:
-    return str(item.get("resolver") or "") == "workspace" or (
-        str(item.get("id") or "") == "repo_path"
-        and str(item.get("type") or "") == "directory"
-    )
-
-
-def _task_draft_missing_inputs(definition: dict[str, Any]) -> list[dict[str, str]]:
-    result: list[dict[str, str]] = []
-    for item in definition.get("inputs") or []:
-        if not isinstance(item, dict) or not item.get("required") or _is_workspace_task_input(item):
-            continue
-        result.append(
-            {
-                "id": str(item.get("id") or ""),
-                "label": str(item.get("label") or item.get("id") or "未命名输入"),
-                "type": str(item.get("type") or "free_text"),
-            }
-        )
-    return result
 
 
 async def _require_enabled_agent_runtime(runtime_id: str | None) -> dict[str, Any]:
@@ -716,170 +663,6 @@ async def create_message(conversation_id: str, body: CreateMessageRequest) -> di
         raise HTTPException(status_code=409, detail=str(exc))
     kick_conversation_queue(conversation_id)
     return _redact_payload(result)
-
-
-@router.post("/{conversation_id}/task-drafts", status_code=status.HTTP_201_CREATED)
-async def create_task_draft(
-    conversation_id: str,
-    body: CreateTaskDraftRequest,
-    response: Response,
-) -> dict[str, Any]:
-    """Create a V2 Task draft pinned to one published workflow version."""
-
-    async with _operation_lock(_TASK_DRAFT_LOCKS, conversation_id):
-        return await _create_task_draft_locked(conversation_id, body, response)
-
-
-async def _create_task_draft_locked(
-    conversation_id: str,
-    body: CreateTaskDraftRequest,
-    response: Response,
-) -> dict[str, Any]:
-
-    store = _store()
-    try:
-        conversation = await store.get_conversation(conversation_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="AI conversation not found")
-
-    source_message = None
-    if body.source_message_id:
-        try:
-            source_message = await store.get_message(body.source_message_id)
-        except KeyError:
-            raise HTTPException(status_code=404, detail="来源消息不存在")
-        if source_message.get("conversation_id") != conversation_id:
-            raise HTTPException(status_code=422, detail="来源消息不属于当前线程")
-
-    source_run = None
-    if body.source_ai_run_id:
-        try:
-            source_run = await store.get_run(body.source_ai_run_id)
-        except KeyError:
-            raise HTTPException(status_code=404, detail="来源 AI 运行不存在")
-        if source_run.get("conversation_id") != conversation_id:
-            raise HTTPException(status_code=422, detail="来源 AI 运行不属于当前线程")
-    if (source_message is None) != (source_run is None):
-        raise HTTPException(status_code=422, detail="来源消息与来源 AI 运行必须同时提供")
-    if source_message is not None and source_run is not None:
-        message_run_id = str(source_message.get("run_id") or "").strip()
-        run_message_id = str(source_run.get("input_message_id") or "").strip()
-        source_role = str(source_message.get("role") or "").strip()
-        if (
-            message_run_id != str(source_run.get("id") or "")
-            or (
-                source_role != "assistant"
-                and run_message_id != str(source_message.get("id") or "")
-            )
-        ):
-            raise HTTPException(status_code=422, detail="来源消息与来源 AI 运行不对应")
-
-    initial_context = conversation.get("initial_context")
-    context = initial_context if isinstance(initial_context, dict) else {}
-    workflow_id = str(body.workflow_id or context.get("selected_workflow_id") or "").strip()
-    requested_version_id = str(
-        body.workflow_version_id
-        or context.get("selected_workflow_version_id")
-        or ""
-    ).strip()
-    if not workflow_id:
-        raise HTTPException(status_code=422, detail="请先选择已发布工作流版本")
-    _require_selected_workflow_available({"selected_workflow_id": workflow_id})
-
-    versions = WorkflowVersionStore(settings.data_path / "workbench" / "workflows.db")
-    try:
-        header = versions.get_workflow(workflow_id)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="工作流或版本不存在") from exc
-    version_id = requested_version_id or str(header.published_version_id or "")
-    if not version_id:
-        raise HTTPException(status_code=409, detail="所选工作流尚无已发布版本")
-    try:
-        version = versions.get_version(version_id)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="工作流或版本不存在") from exc
-    if version.workflow_id != workflow_id:
-        raise HTTPException(status_code=422, detail="工作流版本与工作流不匹配")
-    if version.state != "published":
-        raise HTTPException(status_code=409, detail="任务草稿只能绑定已发布工作流版本")
-    if (
-        workflow_id in _RESERVED_BUILTIN_WORKFLOW_IDS
-        and version_id != str(header.published_version_id or "")
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail="内置工作流版本已更新，请刷新页面并选择最新发布版本",
-        )
-    if not version.compiled_definition or not version.compiled_plan:
-        raise HTTPException(status_code=409, detail="已发布工作流缺少服务端编译计划")
-
-    workspace_id = str(conversation.get("workspace_id") or "").strip()
-    workspace = _require_task_workspace(workspace_id)
-    task_store = WorkbenchTaskStore(settings.data_path / "workbench" / "workflows.db")
-    link_store = AIWorkbenchLinkStore()
-    for existing_link in await link_store.list_links(
-        conversation_id=conversation_id,
-        relation_type="task_created_from_ai",
-    ):
-        metadata = (
-            existing_link.get("metadata")
-            if isinstance(existing_link.get("metadata"), dict)
-            else {}
-        )
-        if (
-            str(existing_link.get("message_id") or "") == str(body.source_message_id or "")
-            and str(existing_link.get("ai_run_id") or "") == str(body.source_ai_run_id or "")
-            and str(metadata.get("workflow_id") or "") == workflow_id
-            and str(metadata.get("workflow_version_id") or "") == version_id
-        ):
-            try:
-                existing_task = task_store.get_task(
-                    str(existing_link.get("task_id") or "")
-                )
-            except KeyError:
-                continue
-            response.status_code = status.HTTP_200_OK
-            missing_inputs = _task_draft_missing_inputs(version.compiled_definition)
-            return {
-                "task": {
-                    **asdict(existing_task),
-                    "workspace_name": workspace["name"],
-                    "workflow_name": header.name,
-                },
-                "next_required_step": 3 if missing_inputs else 4,
-                "missing_inputs": missing_inputs,
-            }
-    description_parts = []
-    if source_message:
-        description_parts.append(str(source_message.get("content") or "").strip())
-    description_parts.append(f"来源 AI 线程：{conversation_id}")
-    task = task_store.create_task(
-        name=str(conversation.get("title") or header.name or "AI 任务")[:240],
-        description="\n\n".join(part for part in description_parts if part),
-        workspace_id=workspace["id"],
-        workflow_id=workflow_id,
-        workflow_version_id=version_id,
-        lifecycle_status="draft",
-        tags=["ai-thread"],
-    )
-    missing_inputs = _task_draft_missing_inputs(version.compiled_definition)
-    await link_store.create_link(
-        conversation_id=conversation_id,
-        message_id=body.source_message_id,
-        ai_run_id=body.source_ai_run_id,
-        task_id=task.task_id,
-        relation_type="task_created_from_ai",
-        metadata={
-            "workflow_id": workflow_id,
-            "workflow_version_id": version_id,
-            "workspace_id": workspace_id,
-        },
-    )
-    return {
-        "task": {**asdict(task), "workspace_name": workspace["name"], "workflow_name": header.name},
-        "next_required_step": 3 if missing_inputs else 4,
-        "missing_inputs": missing_inputs,
-    }
 
 
 @router.post(

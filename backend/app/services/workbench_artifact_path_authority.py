@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 _INSTALLED = False
-SAFE_RUNTIME_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+SAFE_RUNTIME_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
 def install_workbench_artifact_path_authority() -> None:

@@ -18,7 +18,7 @@ from app.services.workflow_run_status import validate_status_axes
 
 
 _LOCK = threading.RLock()
-SAFE_RUNTIME_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+SAFE_RUNTIME_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
 def _now() -> str:
@@ -222,6 +222,8 @@ class WorkbenchTaskRunEventStore:
             return "waiting_for_input"
         if status == "cancelled":
             return "cancelled"
+        if status == "timed_out":
+            return "timed_out"
         if status in {"running", "queued", "prepared"}:
             return status
         return "failed"

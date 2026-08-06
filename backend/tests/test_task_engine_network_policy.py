@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import pytest
 
@@ -7,8 +7,8 @@ from app.services.task_engine import _build_summary
 
 
 @pytest.mark.asyncio
-async def test_legacy_task_summary_rejects_unapproved_model_endpoint_before_http(monkeypatch):
-    """Legacy task summaries must not bypass the V3 model egress policy."""
+async def test_legacy_task_summary_uses_configured_model_endpoint_without_proxy_env(monkeypatch):
+    """Legacy task summaries pass through configured model endpoints without env proxy leakage."""
     monkeypatch.setattr("app.services.network_policy.settings.intranet_network_mode", True)
     monkeypatch.setattr("app.services.network_policy.settings.intranet_allowed_hosts", [])
     monkeypatch.setattr("app.services.network_policy.settings.intranet_allowed_cidrs", [])
@@ -18,7 +18,20 @@ async def test_legacy_task_summary_rejects_unapproved_model_endpoint_before_http
         data={"documentation": "local evidence"},
     )
 
-    with patch("app.services.task_engine.httpx.AsyncClient") as client:
+    class FailingAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, *_args, **_kwargs):
+            raise ConnectionError("blocked by test double")
+
+    with patch("app.services.task_engine.httpx.AsyncClient", side_effect=FailingAsyncClient) as client:
         summary = await _build_summary(
             [result],
             {
@@ -29,4 +42,8 @@ async def test_legacy_task_summary_rejects_unapproved_model_endpoint_before_http
         )
 
     assert summary == "local-tool: generated documentation (14 chars, 0 diagrams). Preview: local evidence"
-    client.assert_not_called()
+    client.assert_called_once_with(
+        base_url="https://api.openai.com/v1",
+        timeout=ANY,
+        trust_env=False,
+    )

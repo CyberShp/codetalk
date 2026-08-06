@@ -27,6 +27,7 @@ import {
   User,
 } from "lucide-react";
 import { api, currentApiBase } from "@/lib/api";
+import { compactMachineToken } from "@/lib/display-text";
 import type { AgentRuntime, AIContextReference, AIConversation, AIConversationRun, AIMessage, AIRunEvent, WorkbenchTaskArtifact, Workspace } from "@/lib/types";
 import MarkdownRenderer from "@/components/ui/MarkdownRenderer";
 
@@ -327,8 +328,24 @@ function threadWorkspaceId(thread: AIConversation | null): string {
 
 function publicWorkspaceLabel(workspace: Workspace | null, thread: AIConversation | null): string {
   const id = workspace?.id ?? threadWorkspaceId(thread);
-  if (id && id !== "global") return `workspace:${id}`;
-  return thread?.memory_namespace ?? "global";
+  if (id && id !== "global") return `workspace:${compactMachineToken(id, 18)}`;
+  return compactMachineToken(thread?.memory_namespace ?? "global", 22);
+}
+
+function publicScopeLabel(thread: AIConversation | null): string {
+  if (!thread) return "global";
+  if (thread.scope_type === "workspace" || thread.workspace_id) {
+    return `workspace / ${compactMachineToken(threadWorkspaceId(thread), 18)}`;
+  }
+  return `${thread.scope_type} / ${compactMachineToken(thread.scope_id, 18)}`;
+}
+
+function publicMemoryNamespace(value: string | null | undefined): string {
+  const text = String(value ?? "global");
+  if (text.startsWith("workspace:")) {
+    return `workspace:${compactMachineToken(text.slice("workspace:".length), 18)}`;
+  }
+  return compactMachineToken(text, 22);
 }
 
 function uniqueReferences(messages: AIMessage[]): AIContextReference[] {
@@ -842,7 +859,6 @@ export default function AIThreadPage() {
   const [railThreads, setRailThreads] = useState<AIConversation[]>([]);
   const [agentRuntimes, setAgentRuntimes] = useState<AgentRuntime[]>([]);
   const [savingRuntime, setSavingRuntime] = useState(false);
-  const [creatingTaskFromMessageId, setCreatingTaskFromMessageId] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
@@ -1354,32 +1370,6 @@ export default function AIThreadPage() {
     }
   };
 
-  const createTaskDraft = async (
-    sourceMessage?: AIMessage,
-    workflowId = selectedWorkflowId,
-    workflowVersionId = selectedWorkflowVersionId,
-  ) => {
-    if (!workflowId || creatingTaskFromMessageId) return;
-    const busyId = sourceMessage?.id ?? "thread";
-    setCreatingTaskFromMessageId(busyId);
-    setError(null);
-    try {
-      const result = await api.aiConversations.createTaskDraft(conversationId, {
-        ...(sourceMessage ? { source_message_id: sourceMessage.id } : {}),
-        ...(sourceMessage?.run_id ? { source_ai_run_id: sourceMessage.run_id } : {}),
-        workflow_id: workflowId,
-        ...(workflowVersionId ? { workflow_version_id: workflowVersionId } : {}),
-        mode: "draft",
-      });
-      router.push(
-        `/tasks/new?task=${encodeURIComponent(result.task.task_id)}&step=${result.next_required_step}`,
-      );
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "创建任务草稿失败");
-      setCreatingTaskFromMessageId(null);
-    }
-  };
-
   const exportThreadMarkdown = () => {
     if (!canExportThread) return;
     const markdown = buildThreadMarkdown(conversation, messages);
@@ -1525,7 +1515,9 @@ export default function AIThreadPage() {
         <div className="ct-codex-ai__project">
           <span>当前项目</span>
           <strong>{workspace?.name ?? "未绑定项目"}</strong>
-          <small>{publicWorkspaceLabel(workspace, conversation)}</small>
+          <small title={workspace?.id ?? conversation?.memory_namespace ?? undefined}>
+            {publicWorkspaceLabel(workspace, conversation)}
+          </small>
         </div>
         <div className="ct-codex-ai__rail-group">
           <div className="ct-codex-ai__rail-label">
@@ -1642,7 +1634,9 @@ export default function AIThreadPage() {
         <div className="ct-codex-ai__chrome">
           <header className="ct-codex-ai__topbar">
           <div>
-            <span>{conversation?.scope_type} / {conversation?.scope_id}</span>
+            <span title={`${conversation?.scope_type ?? "global"} / ${conversation?.scope_id ?? "global"}`}>
+              {publicScopeLabel(conversation)}
+            </span>
             <h1>{conversation?.title ?? "AI 调查线程"}</h1>
           </div>
           <select
@@ -1747,22 +1741,17 @@ export default function AIThreadPage() {
             {messages.length === 0 && !streamingContent ? (
               <div className="ct-codex-ai__empty">
                 <Sparkles size={32} />
-                {selectedWorkflowId ? (
-                  <>
-                    <p>
-                      已绑定“{selectedWorkflowName}”{selectedWorkflowVersionId ? "的固定发布版本" : "（旧绑定未记录版本）"}。当前线程可使用工作流约束回答，但不会创建任务、Run Attempt 或执行 DAG。
-                    </p>
-                    <button
-                      type="button"
-                      className="ct-codex-ai__workflow-launch"
-                      disabled={Boolean(creatingTaskFromMessageId)}
-                      onClick={() => void createTaskDraft()}
-                    >
-                      <PlayCircle size={15} />
-                      创建任务草稿并补齐配置
-                    </button>
-                  </>
-                ) : (
+	                {selectedWorkflowId ? (
+	                  <>
+	                    <p>
+	                      历史线程绑定了“{selectedWorkflowName}”{selectedWorkflowVersionId ? "的固定发布版本" : "（旧绑定未记录版本）"}。当前版本仅保留对话和运行记录，不再从这里创建 Workflow 任务。
+	                    </p>
+	                    <Link href="/tasks/new" className="ct-codex-ai__workflow-launch">
+	                      <PlayCircle size={15} />
+	                      进入 Skill 任务向导
+	                    </Link>
+	                  </>
+	                ) : (
                   <p>直接提问。这个线程会持续保存，并只围绕当前项目命名空间召回记忆。</p>
                 )}
               </div>
@@ -1794,18 +1783,16 @@ export default function AIThreadPage() {
                         }
                       />
                     )}
-                    {message.role === "assistant" &&
-                      testActivityActions(message.actions).map((action) => {
-                        const profiles = actionArrayField(action, "domain_profiles").slice(0, 6);
-                        const outputs = actionArrayField(action, "recommended_outputs").slice(0, 8);
-                        const rationale = actionArrayField(action, "focus_rationale").slice(0, 3);
-                        const evidencePolicy = actionRecordField(action, "evidence_policy");
-                        const sourceFirst = evidencePolicy?.source_first === true;
-                        const evidenceSources = evidencePolicySources(evidencePolicy);
-                        const workflowId = actionTextField(action, "workflow_template_id") || selectedWorkflowId;
-                        const workflowVersionId = actionTextField(action, "workflow_version_id") || selectedWorkflowVersionId;
+	                    {message.role === "assistant" &&
+	                      testActivityActions(message.actions).map((action) => {
+	                        const profiles = actionArrayField(action, "domain_profiles").slice(0, 6);
+	                        const outputs = actionArrayField(action, "recommended_outputs").slice(0, 8);
+	                        const rationale = actionArrayField(action, "focus_rationale").slice(0, 3);
+	                        const evidencePolicy = actionRecordField(action, "evidence_policy");
+	                        const sourceFirst = evidencePolicy?.source_first === true;
+	                        const evidenceSources = evidencePolicySources(evidencePolicy);
 
-                        return (
+	                        return (
                           <section key={`${message.id}-${actionId(action) || "test-activity"}`} className="ct-test-activity-card">
                             <div className="ct-test-activity-card__header">
                               <span>
@@ -1851,40 +1838,30 @@ export default function AIThreadPage() {
                                 </ul>
                               </details>
                             )}
-                            <div className="ct-test-activity-card__actions">
-                              <button
-                                type="button"
-                                disabled={!workflowId || Boolean(creatingTaskFromMessageId)}
-                                onClick={() => void createTaskDraft(message, workflowId, workflowVersionId)}
-                              >
-                                <PlayCircle size={14} />
-                                {creatingTaskFromMessageId === message.id ? "正在创建…" : "创建任务草稿"}
-                              </button>
-                              <small>进入六步配置后才会创建并运行 Attempt</small>
-                            </div>
-                          </section>
-                        );
-                      })}
-                    {message.role === "assistant" && taskDraftActions(message.actions).map((action) => {
-                      const workflowId = actionTextField(action, "workflow_id") || selectedWorkflowId;
-                      const workflowVersionId = actionTextField(action, "workflow_version_id") || selectedWorkflowVersionId;
-                      return (
-                        <div className="ct-codex-message__task-action" key={`${message.id}-${actionId(action)}`}>
-                          <div>
-                            <strong>{actionLabel(action) || "创建任务草稿"}</strong>
-                            <span>{actionTextField(action, "notice") || "进入任务向导后才会创建真实运行。"}</span>
-                          </div>
-                          <button
-                            type="button"
-                            disabled={!workflowId || Boolean(creatingTaskFromMessageId)}
-                            onClick={() => void createTaskDraft(message, workflowId, workflowVersionId)}
-                          >
-                            <FilePlus2 size={14} />
-                            {creatingTaskFromMessageId === message.id ? "正在创建…" : "创建任务草稿"}
-                          </button>
-                        </div>
-                      );
-                    })}
+	                            <div className="ct-test-activity-card__actions">
+	                              <Link href="/tasks/new">
+	                                <PlayCircle size={14} />
+	                                进入 Skill 任务向导
+	                              </Link>
+	                              <small>选择已发布 Skill Version 后才会创建并运行 Attempt</small>
+	                            </div>
+	                          </section>
+	                        );
+	                      })}
+	                    {message.role === "assistant" && taskDraftActions(message.actions).map((action) => {
+	                      return (
+	                        <div className="ct-codex-message__task-action" key={`${message.id}-${actionId(action)}`}>
+	                          <div>
+	                            <strong>{actionLabel(action) || "创建 Skill 任务"}</strong>
+	                            <span>{actionTextField(action, "notice") || "进入任务向导后选择已发布 Skill Version。"}</span>
+	                          </div>
+	                          <Link href="/tasks/new">
+	                            <FilePlus2 size={14} />
+	                            打开任务向导
+	                          </Link>
+	                        </div>
+	                      );
+	                    })}
                     {message.role === "assistant" && suggestedFollowupActions(message.actions).length > 0 && (
                       <div className="ct-codex-message__followups" aria-label="建议追问">
                         {suggestedFollowupActions(message.actions).map((action) => (
@@ -2017,7 +1994,9 @@ export default function AIThreadPage() {
             </div>
             <div>
               <span>记忆命名空间</span>
-              <code>{conversation?.memory_namespace ?? "global"}</code>
+              <code title={conversation?.memory_namespace ?? "global"}>
+                {publicMemoryNamespace(conversation?.memory_namespace)}
+              </code>
             </div>
           </div>
         </section>
@@ -2072,19 +2051,14 @@ export default function AIThreadPage() {
                 </Link>
               )
             )}
-            {threadNavigationBusy || creatingTaskFromMessageId ? (
-              <span className="ct-ai-action is-disabled" role="link" aria-disabled="true">
-                <PlayCircle size={15} />
-                创建任务草稿
-              </span>
-            ) : selectedWorkflowId ? (
-              <button type="button" className="ct-ai-action" onClick={() => void createTaskDraft()}>
-                <PlayCircle size={15} />
-                创建任务草稿
-              </button>
-            ) : (
-              <Link href="/tasks/new" className="ct-ai-action">
-                <PlayCircle size={15} />
+	            {threadNavigationBusy ? (
+	              <span className="ct-ai-action is-disabled" role="link" aria-disabled="true">
+	                <PlayCircle size={15} />
+	                新建任务
+	              </span>
+	            ) : (
+	              <Link href="/tasks/new" className="ct-ai-action">
+	                <PlayCircle size={15} />
                 新建任务
               </Link>
             )}

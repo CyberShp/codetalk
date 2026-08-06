@@ -49,10 +49,10 @@ export interface WorkbenchTask {
   description: string;
   workspace_id: string;
   workspace_name: string;
-  workflow_id: string;
-  workflow_name: string;
-  workflow_version_id: string;
-  workflow_version_number?: number | null;
+  skill_id: string;
+  skill_name: string;
+  skill_version_id: string;
+  skill_content_digest: string;
   lifecycle_status: WorkbenchTaskLifecycle;
   execution_profile_id: string;
   input_values: Record<string, unknown>;
@@ -65,11 +65,11 @@ export interface WorkbenchTask {
   created_at: string;
   updated_at: string;
   archived_at: string | null;
-  workflow_version?: {
+  skill_version?: {
     version_id: string;
-    version_number: number;
-    compiled_definition: Record<string, unknown>;
-    compiled_plan: Record<string, unknown>;
+    skill_id: string;
+    content_digest: string;
+    ir: Record<string, unknown>;
   };
   ai_origins?: Array<{
     conversation_id: string;
@@ -86,7 +86,7 @@ export interface WorkbenchTaskListQuery {
   lifecycle_status?: string;
   execution_status?: string;
   quality_status?: string;
-  workflow_id?: string;
+  skill_id?: string;
   workspace_id?: string;
   page?: number;
   page_size?: number;

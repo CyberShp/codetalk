@@ -43,6 +43,8 @@
     ".next-playwright-e2e/dev/types/**/*.ts"
   ],
   "exclude": [
-    "node_modules"
+    "node_modules",
+    ".next-playwright-e2e",
+    ".next-coverage-e2e"
   ]
 }

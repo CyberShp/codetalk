@@ -169,17 +169,16 @@ def test_phase0_published_v1_and_v2_workflow_fixtures_remain_loadable(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_phase0_task_detail_aggregates_frozen_historical_task_attempt_and_version(
+async def test_phase0_history_lists_frozen_legacy_task_attempt_without_active_task_binding(
     tmp_path, monkeypatch
 ):
-    """Read a frozen historical task through the public Task detail route.
+    """Read a frozen historical attempt through the public legacy history route.
 
     This deliberately inserts the captured rows and attempt payload verbatim.
-    It must not compile or publish the historical workflows with today's code.
+    It must not recreate legacy Workflow authority in active workbench_tasks.
     """
     from app.api import workbench_v2_tasks
     from app.services.workbench_task_run import WorkbenchTaskRunStore
-    from app.services.workbench_task_store import WorkbenchTaskStore
     from app.services.workflow_version_store import WorkflowVersionStore
 
     workflow_db = tmp_path / "workflows.db"
@@ -194,30 +193,7 @@ async def test_phase0_task_detail_aggregates_frozen_historical_task_attempt_and_
 
     task_attempt = _phase0_fixture("historical-task-attempt.json")
     task = task_attempt["task"]
-    attempt = task_attempt["task_run"]
-    task_store = WorkbenchTaskStore(workflow_db)
-    task_store.initialize_and_migrate()
-    with sqlite3.connect(workflow_db) as db:
-        db.execute(
-            """
-            INSERT INTO workbench_tasks(
-                task_id, name, description, workspace_id, workflow_id,
-                workflow_version_id, lifecycle_status, execution_profile_id,
-                input_values_json, execution_overrides_json, output_overrides_json,
-                tags_json, last_run_id, created_at, updated_at, archived_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                task["task_id"], task["name"], task["description"], task["workspace_id"],
-                task["workflow_id"], task["workflow_version_id"], task["lifecycle_status"],
-                task["execution_profile_id"],
-                json.dumps(task["input_values"], ensure_ascii=False, sort_keys=True),
-                json.dumps(task["execution_overrides"], ensure_ascii=False, sort_keys=True),
-                json.dumps(task["output_overrides"], ensure_ascii=False, sort_keys=True),
-                json.dumps(task["tags"], ensure_ascii=False), task["last_run_id"],
-                task["created_at"], task["updated_at"], task["archived_at"],
-            ),
-        )
+    attempt = {**task_attempt["task_run"], "task_id": ""}
 
     attempt_root = tmp_path / "task_runs"
     attempt_dir = attempt_root / attempt["task_run_id"]
@@ -240,8 +216,6 @@ async def test_phase0_task_detail_aggregates_frozen_historical_task_attempt_and_
     from app.config import settings
 
     monkeypatch.setattr(settings, "sqlite_db", str(runtime_db))
-    monkeypatch.setattr(workbench_v2_tasks, "task_store", lambda: task_store)
-    monkeypatch.setattr(workbench_v2_tasks, "version_store", lambda: version_store)
     monkeypatch.setattr(workbench_v2_tasks, "task_run_store", lambda: run_store)
 
     app = FastAPI()
@@ -249,24 +223,14 @@ async def test_phase0_task_detail_aggregates_frozen_historical_task_attempt_and_
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
-        response = await client.get(f"/api/workbench/tasks/{task['task_id']}")
+        response = await client.get("/api/workbench/tasks/history/runs")
 
     assert response.status_code == 200
     payload = response.json()
-    version = fixtures[0]["workflow_version"]
-    assert payload["task_id"] == task["task_id"]
-    assert payload["workflow_version_id"] == version["version_id"]
-    assert payload["last_run_id"] == attempt["task_run_id"]
-    assert payload["workflow_version"] == {
-        "version_id": version["version_id"],
-        "version_number": version["version_number"],
-        "compiled_definition": version["compiled_definition"],
-        "compiled_plan": version["compiled_plan"],
-    }
-    assert payload["runs"] == [
+    assert payload["items"] == [
         {
             "task_run_id": attempt["task_run_id"],
-            "task_id": task["task_id"],
+            "task_id": "",
             "attempt_number": attempt["attempt_number"],
             "parent_task_run_id": attempt["parent_task_run_id"],
             "workflow_id": task["workflow_id"],
@@ -277,6 +241,9 @@ async def test_phase0_task_detail_aggregates_frozen_historical_task_attempt_and_
             "started_at": attempt["started_at"],
             "completed_at": attempt["completed_at"],
             "created_at": attempt["created_at"],
+            "waiting_reason": "",
+            "recovery_actions": [],
+            "legacy": True,
         }
     ]
     assert version_store.get_version(fixtures[1]["workflow_version"]["version_id"]).state == "published"

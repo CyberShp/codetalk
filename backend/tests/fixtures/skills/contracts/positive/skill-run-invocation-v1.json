@@ -4,9 +4,25 @@
   "invocation_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
   "task_run_id": "run/f014",
   "task_id": "task f014",
+  "skill_id": "skill.example",
   "skill_version_id": "version/f014",
   "skill_content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "skill_ir_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "source_zip": {
+    "ref": "source-package.zip",
+    "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "access_scope": "read"
+  },
+  "skill_ir": {
+    "ref": "ir/skill-ir-v1.json",
+    "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "access_scope": "read"
+  },
+  "validation_report": {
+    "ref": "validation/validation-report.json",
+    "digest": "sha256:1212121212121212121212121212121212121212121212121212121212121212",
+    "access_scope": "read"
+  },
   "input_snapshot": {
     "ref": "输入/源码.json",
     "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"

@@ -293,7 +293,7 @@ async def test_llm_connection_failure(client):
     assert response.status_code == 200
     data = response.json()
     assert data["success"] is False
-    assert data["message"] == "模型连接失败。请检查模型配置或联系管理员。"
+    assert data["message"] == "模型连接失败。请检查模型配置、凭据或当前网络。"
     assert data["code"] == "model_connection_failed"
 
 
@@ -311,7 +311,7 @@ async def test_llm_connection_failure_redacts_api_key_from_message(client):
     assert response.status_code == 200
     data = response.json()
     assert data["success"] is False
-    assert data["message"] == "模型连接失败。请检查模型配置或联系管理员。"
+    assert data["message"] == "模型连接失败。请检查模型配置、凭据或当前网络。"
     assert data["code"] == "model_connection_failed"
     assert secret not in data["message"]
 

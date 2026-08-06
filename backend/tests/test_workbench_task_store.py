@@ -20,6 +20,26 @@ def _workflow() -> dict:
     }
 
 
+def _publish_test_skill_version(data_dir, source_root):
+    from app.services.skill_build_pipeline import SkillBuildPipeline
+    from app.services.skill_store import SkillStore
+    from test_skill_build_pipeline import _full_review_evidence, _record_review, _write_v24_source
+
+    _write_v24_source(source_root)
+    skill_store = SkillStore(data_dir / "skills" / "skills.db", data_dir)
+    project = skill_store.create_project(name="CodeTalk Pack", pack_id="pack.codetalks")
+    draft = skill_store.create_draft_from_source(
+        project_id=project.project_id,
+        source_root=source_root,
+        source_scenario_id="module-analysis",
+        skill_id="skill.codetalks-module-full-analysis",
+    )
+    pipeline = SkillBuildPipeline(skill_store)
+    build = pipeline.build_candidate(draft.draft_id)
+    _record_review(skill_store, build.build_id, _full_review_evidence(decision="approved"))
+    return pipeline.publish_build(build.build_id)
+
+
 def test_quality_retry_reaudits_parent_and_seeds_report(tmp_path, monkeypatch):
     from app.api import workbench_v2_tasks
     from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
@@ -284,22 +304,26 @@ def test_task_store_migration_crud_filters_archive_and_clone(tmp_path):
     first = store.initialize_and_migrate()
     second = store.initialize_and_migrate()
 
-    assert first["schema_version"] == 2
-    assert second["schema_version"] == 2
+    assert first["schema_version"] == 3
+    assert second["schema_version"] == 3
     with sqlite3.connect(db_path) as db:
         columns = {row[1] for row in db.execute("PRAGMA table_info(workbench_tasks)")}
     assert {
-        "task_id", "name", "workspace_id", "workflow_id", "workflow_version_id",
+        "task_id", "name", "workspace_id", "skill_id", "skill_version_id",
+        "skill_content_digest",
         "lifecycle_status", "execution_profile_id", "input_values_json", "execution_overrides_json",
         "output_overrides_json", "tags_json", "last_run_id", "archived_at",
     }.issubset(columns)
+    assert "workflow_id" not in columns
+    assert "workflow_version_id" not in columns
 
     task = store.create_task(
         name="SPDK source review",
         description="Review nvmf flow",
         workspace_id="ws-spdk",
-        workflow_id="source-review",
-        workflow_version_id="wfv-1",
+        skill_id="skill.source-review",
+        skill_version_id="skill_version_1",
+        skill_content_digest="sha256:" + "1" * 64,
         lifecycle_status="draft",
         input_values={"target": "lib/nvmf"},
         tags=["storage", "nvmf"],
@@ -311,14 +335,16 @@ def test_task_store_migration_crud_filters_archive_and_clone(tmp_path):
         input_values={"target": "lib/nvmf/ctrlr.c"},
     )
     assert updated.name == "SPDK NVMf review"
-    assert updated.workflow_version_id == "wfv-1"
+    assert updated.skill_version_id == "skill_version_1"
+    assert updated.skill_content_digest == "sha256:" + "1" * 64
     assert updated.input_values == {"target": "lib/nvmf/ctrlr.c"}
     assert store.list_tasks(q="nvmf", lifecycle_status="ready") == [updated]
-    assert store.list_tasks(workflow_id="source-review", workspace_id="ws-spdk") == [updated]
+    assert store.list_tasks(skill_id="skill.source-review", workspace_id="ws-spdk") == [updated]
 
     clone = store.clone_task(task.task_id, name="SPDK NVMf review copy")
     assert clone.task_id != task.task_id
-    assert clone.workflow_version_id == task.workflow_version_id
+    assert clone.skill_version_id == task.skill_version_id
+    assert clone.skill_content_digest == task.skill_content_digest
     assert clone.lifecycle_status == "draft"
     archived = store.archive_task(task.task_id)
     assert archived.lifecycle_status == "archived"
@@ -326,23 +352,164 @@ def test_task_store_migration_crud_filters_archive_and_clone(tmp_path):
     assert store.get_task(task.task_id).task_id == task.task_id
 
 
-def test_task_store_rejects_workflow_identity_mutation(tmp_path):
+def test_task_store_rejects_skill_identity_mutation(tmp_path):
     from app.services.workbench_task_store import WorkbenchTaskStore
 
     store = WorkbenchTaskStore(tmp_path / "workflows.db")
     task = store.create_task(
-        name="Frozen workflow task",
+        name="Frozen Skill task",
         workspace_id="ws-1",
-        workflow_id="flow-1",
-        workflow_version_id="wfv-1",
+        skill_id="skill.flow-1",
+        skill_version_id="skill_version_1",
+        skill_content_digest="sha256:" + "1" * 64,
     )
 
     try:
-        store.update_task(task.task_id, workflow_version_id="wfv-2")
+        store.update_task(task.task_id, skill_version_id="skill_version_2")
     except ValueError as exc:
-        assert "workflow_version_id" in str(exc)
+        assert "skill_version_id" in str(exc)
     else:
-        raise AssertionError("workflow version mutation must be rejected")
+        raise AssertionError("Skill Version mutation must be rejected")
+
+
+def test_task_store_destructively_rebuilds_legacy_workflow_binding_with_backup(tmp_path):
+    from app.services.workbench_task_store import WorkbenchTaskStore
+
+    db_path = tmp_path / "workflows.db"
+    with sqlite3.connect(db_path) as db:
+        db.execute(
+            """
+            CREATE TABLE workbench_tasks (
+                task_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                workspace_id TEXT NOT NULL,
+                workflow_id TEXT NOT NULL,
+                workflow_version_id TEXT NOT NULL,
+                lifecycle_status TEXT NOT NULL,
+                input_values_json TEXT NOT NULL,
+                execution_overrides_json TEXT NOT NULL,
+                output_overrides_json TEXT NOT NULL,
+                tags_json TEXT NOT NULL,
+                last_run_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                archived_at TEXT
+            )
+            """
+        )
+        db.execute(
+            """
+            INSERT INTO workbench_tasks VALUES (
+                'task_legacy', 'Legacy', '', 'ws-1', 'flow-1', 'wfv-1',
+                'draft', '{}', '{}', '{}', '[]', NULL,
+                '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', NULL
+            )
+            """
+        )
+
+    result = WorkbenchTaskStore(db_path).initialize_and_migrate()
+
+    assert result["schema_version"] == 3
+    backups = list(tmp_path.glob("workflows.pre-workbench-v2.*.bak"))
+    assert backups
+    with sqlite3.connect(backups[0]) as backup:
+        assert backup.execute("SELECT workflow_id FROM workbench_tasks").fetchone() == ("flow-1",)
+    with sqlite3.connect(db_path) as db:
+        columns = {row[1] for row in db.execute("PRAGMA table_info(workbench_tasks)")}
+        assert "workflow_id" not in columns
+        assert {"skill_id", "skill_version_id", "skill_content_digest"}.issubset(columns)
+        assert db.execute("SELECT COUNT(*) FROM workbench_tasks").fetchone() == (0,)
+
+
+@pytest.mark.asyncio
+async def test_task_api_binds_skill_version_without_workflow_fields(tmp_path, monkeypatch):
+    from app.api import workbench_v2_tasks
+    from app.config import settings
+    from app.services.skill_build_pipeline import SkillBuildPipeline
+    from app.services.skill_store import SkillStore
+    from test_skill_build_pipeline import _full_review_evidence, _record_review, _write_v24_source
+
+    data_dir = tmp_path / "data"
+    repo = tmp_path / "repo"
+    source = tmp_path / "source"
+    data_dir.mkdir()
+    repo.mkdir()
+    _write_v24_source(source)
+    sqlite_db = data_dir / "codetalk.db"
+    with sqlite3.connect(sqlite_db) as db:
+        db.execute("CREATE TABLE workspaces (id TEXT PRIMARY KEY, name TEXT, repo_path TEXT)")
+        db.execute("INSERT INTO workspaces VALUES (?, ?, ?)", ("ws-1", "SPDK", str(repo)))
+    monkeypatch.setattr(settings, "data_dir", str(data_dir))
+    monkeypatch.setattr(settings, "sqlite_db", str(sqlite_db))
+    monkeypatch.setattr(settings, "workbench_v2_enabled", True)
+
+    skill_store = SkillStore(data_dir / "skills" / "skills.db", data_dir)
+    project = skill_store.create_project(name="CodeTalk Pack", pack_id="pack.codetalks")
+    draft = skill_store.create_draft_from_source(
+        project_id=project.project_id,
+        source_root=source,
+        source_scenario_id="module-analysis",
+        skill_id="skill.codetalks-module-full-analysis",
+    )
+    pipeline = SkillBuildPipeline(skill_store)
+    build = pipeline.build_candidate(draft.draft_id)
+    _record_review(skill_store, build.build_id, _full_review_evidence(decision="approved"))
+    version = pipeline.publish_build(build.build_id)
+
+    app = FastAPI()
+    app.include_router(workbench_v2_tasks.router)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        created = await client.post(
+            "/api/workbench/tasks",
+            json={
+                "name": "Skill-first module analysis",
+                "workspace_id": "ws-1",
+                "skill_version_id": version.version_id,
+                "lifecycle_status": "ready",
+                "input_values": {"repo_path": "/must/be/ignored"},
+                "output_overrides": {"selected_deliveries": []},
+            },
+        )
+        rejected_workflow_payload = await client.post(
+            "/api/workbench/tasks",
+            json={
+                "name": "Legacy workflow payload",
+                "workspace_id": "ws-1",
+                "workflow_id": "module_analysis",
+                "workflow_version_id": "wfv-1",
+                "skill_version_id": version.version_id,
+            },
+        )
+        listed = await client.get(
+            "/api/workbench/tasks",
+            params={"skill_id": version.skill_id, "workspace_id": "ws-1"},
+        )
+        detail = await client.get(f"/api/workbench/tasks/{created.json()['task_id']}")
+        compiled = await client.post(f"/api/workbench/tasks/{created.json()['task_id']}/compile")
+        immutable = await client.patch(
+            f"/api/workbench/tasks/{created.json()['task_id']}",
+            json={"skill_version_id": "skill_version_other"},
+        )
+
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["skill_id"] == version.skill_id
+    assert body["skill_version_id"] == version.version_id
+    assert body["skill_content_digest"] == version.content_digest
+    assert "workflow_id" not in body
+    assert "workflow_version_id" not in body
+    assert body["input_values"] == {}
+    assert rejected_workflow_payload.status_code == 422
+    assert listed.status_code == 200
+    assert [item["task_id"] for item in listed.json()["items"]] == [body["task_id"]]
+    assert detail.status_code == 200
+    assert detail.json()["skill_version"]["version_id"] == version.version_id
+    assert compiled.status_code == 200
+    assert compiled.json()["skill_version"]["content_digest"] == version.content_digest
+    assert compiled.json()["skill_ir"]["skill_id"] == version.skill_id
+    assert compiled.json()["skill_plan"]["compiled_contract_version"] == 3
+    assert immutable.status_code == 422
 
 
 def test_task_effective_config_uses_explicit_replace_and_keeps_workflow_immutable():
@@ -752,7 +919,8 @@ async def test_task_api_paginates_all_rows_beyond_the_old_500_item_cap(tmp_path,
     with store._connect() as db:
         rows = [
             (
-                f"task-{index:04d}", f"Task {index:04d}", "", "ws", "flow", "wfv",
+                f"task-{index:04d}", f"Task {index:04d}", "", "ws",
+                "skill.flow", "skill_version_1", "sha256:" + "1" * 64,
                 "draft", "{}", "{}", "{}", "[]", None,
                 f"2026-07-13T00:{index // 60:02d}:{index % 60:02d}+00:00",
                 f"2026-07-13T00:{index // 60:02d}:{index % 60:02d}+00:00", None,
@@ -762,11 +930,11 @@ async def test_task_api_paginates_all_rows_beyond_the_old_500_item_cap(tmp_path,
         db.executemany(
             """
             INSERT INTO workbench_tasks(
-                task_id, name, description, workspace_id, workflow_id,
-                workflow_version_id, lifecycle_status, input_values_json,
+                task_id, name, description, workspace_id, skill_id,
+                skill_version_id, skill_content_digest, lifecycle_status, input_values_json,
                 execution_overrides_json, output_overrides_json, tags_json,
                 last_run_id, created_at, updated_at, archived_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -1161,11 +1329,10 @@ def test_prepared_runs_persist_task_attempt_metadata_and_legacy_defaults(tmp_pat
 
 @pytest.mark.asyncio
 async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_path, monkeypatch):
-    from app.api import agent_workbench, workbench_v2_tasks
+    from app.api import workbench_v2_tasks
     from app.config import settings
     from app.services.artifact_profiles import ArtifactProfileStore
     from app.services.workbench_task_run_events import WorkbenchTaskRunEventStore
-    from app.services.workflow_version_store import WorkflowVersionStore
 
     data_dir = tmp_path / "data"
     data_dir.mkdir()
@@ -1182,53 +1349,7 @@ async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_pat
     monkeypatch.setattr(settings, "sqlite_db", str(sqlite_db))
     monkeypatch.setattr(settings, "workbench_v2_enabled", True)
 
-    version_store = WorkflowVersionStore(data_dir / "workbench" / "workflows.db")
-    version_store.initialize_and_migrate()
-    _, draft = version_store.create_workflow(
-        workflow_id="source-review",
-        name="Source review",
-        description="Read source",
-        authoring_graph={"schema_version": 2, "workflow_id": "source-review"},
-    )
-    workflow_definition = _workflow()
-    workflow_definition["execution_profiles"] = [
-        {
-            "id": "rapid",
-            "label": "速度型",
-            "delivery_class": "bounded_analysis",
-            "expected_duration_minutes": [10, 25],
-            "max_subagents": 1,
-        },
-        {
-            "id": "deep",
-            "label": "深度型",
-            "delivery_class": "full_test_delivery",
-            "expected_duration_minutes": [45, 90],
-            "max_subagents": 4,
-        },
-    ]
-    workflow_definition["default_execution_profile"] = "rapid"
-    published = version_store.publish_version(
-        draft.version_id,
-        authoring_graph=draft.authoring_graph,
-        compiled_definition=workflow_definition,
-        compiled_plan={
-            "plan_version": 1,
-            "workflow_version_id": draft.version_id,
-            "topological_order": ["scope"],
-            "nodes": [
-                {
-                    "node_id": "scope",
-                    "type": "local_scope_discover",
-                    "depends_on": [],
-                    "failure_policy": "stop",
-                }
-            ],
-            "max_parallelism": 1,
-            "stop_on_error": True,
-        },
-        validation={"valid": True, "errors": [], "warnings": []},
-    )
+    version = _publish_test_skill_version(data_dir, tmp_path / "source")
     artifact_profile = ArtifactProfileStore(
         data_dir / "workbench" / "artifact_profiles.db"
     ).create_profile(
@@ -1261,57 +1382,49 @@ async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_pat
     )
 
     app = FastAPI()
-    app.include_router(agent_workbench.router)
     app.include_router(workbench_v2_tasks.router)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         empty_page = await client.get("/api/workbench/tasks")
-        assert empty_page.status_code == 200
-        assert empty_page.json()["page_size"] == 25
-        assert (await client.get(
-            "/api/workbench/tasks", params={"page_size": 101}
-        )).status_code == 422
-
+        oversized_page = await client.get("/api/workbench/tasks", params={"page_size": 101})
         created = await client.post(
             "/api/workbench/tasks",
             json={
-                "name": "SPDK source review",
+                "name": "SPDK Skill review",
                 "description": "nvmf flow",
                 "workspace_id": "ws-1",
-                "workflow_id": "source-review",
-                "workflow_version_id": published.version_id,
+                "skill_version_id": version.version_id,
                 "lifecycle_status": "ready",
-                "execution_profile_id": "deep",
-                "input_values": {"target": "lib/nvmf"},
-                "output_overrides": {
-                    "outputs": {"report": {"artifact": "task-report.md", "label": "Task report"}}
-                },
+                "input_values": {"input.source": "/ignored"},
+                "output_overrides": {"selected_deliveries": ["delivery.developer-test-code-explanation"]},
                 "tags": ["storage"],
             },
         )
-        assert created.status_code == 201
         task_id = created.json()["task_id"]
-
+        listed = await client.get(
+            "/api/workbench/tasks",
+            params={"q": "skill", "skill_id": version.skill_id, "workspace_id": "ws-1"},
+        )
         compiled = await client.post(f"/api/workbench/tasks/{task_id}/compile")
-
         unknown_profile = await client.post(
             f"/api/workbench/tasks/{task_id}/runs",
             json={"artifact_profile_id": "apro_missing"},
         )
-        assert unknown_profile.status_code == 422
-        assert "交付件档案不存在" in unknown_profile.json()["detail"]
-
-        # A new Attempt must inherit the task's selected profile when the
-        # caller does not override it. The task page follows this code path.
         first = await client.post(
             f"/api/workbench/tasks/{task_id}/runs",
             json={"artifact_profile_id": artifact_profile["id"]},
         )
         first_run_dir = data_dir / "workbench" / "task_runs" / first.json()["task_run_id"]
+        from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+        execution = WorkbenchWorkflowRunner(data_dir / "workbench" / "task_runs").execute_task_run(
+            first.json()["task_run_id"],
+            stop_on_error=True,
+        )
+        failed_node_id = compiled.json()["skill_plan"]["topological_order"][0]
         (first_run_dir / "workflow_execution.json").write_text(
             json.dumps({
                 "status": "failed",
                 "step_results": [
-                    {"step_id": "scope", "type": "local_scope_discover", "status": "error"}
+                    {"step_id": failed_node_id, "type": "skill_step", "status": "error"}
                 ],
                 "outputs": [],
             }),
@@ -1319,23 +1432,11 @@ async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_pat
         )
         changed_after_first = await client.patch(
             f"/api/workbench/tasks/{task_id}",
-            json={
-                "input_values": {"target": "lib/changed-after-first"},
-                "output_overrides": {
-                    "outputs": {"report": {"artifact": "changed-after-first.md"}}
-                },
-            },
+            json={"tags": ["storage", "changed-after-first"]},
         )
         second = await client.post(
             f"/api/workbench/tasks/{task_id}/runs",
             json={"parent_task_run_id": first.json()["task_run_id"]},
-        )
-        profile_switch_retry = await client.post(
-            f"/api/workbench/tasks/{task_id}/runs",
-            json={
-                "parent_task_run_id": first.json()["task_run_id"],
-                "execution_profile_id": "rapid",
-            },
         )
         artifact_profile_switch_retry = await client.post(
             f"/api/workbench/tasks/{task_id}/runs",
@@ -1344,20 +1445,18 @@ async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_pat
                 "artifact_profile_id": other_artifact_profile["id"],
             },
         )
-        listed = await client.get(
+        listed_after_runs = await client.get(
             "/api/workbench/tasks",
             params={
-                "q": "source",
-                "lifecycle_status": "ready",
-                "workflow_id": "source-review",
+                "q": "skill",
+                "skill_id": version.skill_id,
                 "workspace_id": "ws-1",
-                "execution_status": "prepared",
             },
         )
         detail = await client.get(f"/api/workbench/tasks/{task_id}")
         immutable = await client.patch(
             f"/api/workbench/tasks/{task_id}",
-            json={"workflow_version_id": "wfv-other"},
+            json={"skill_content_digest": "sha256:" + "2" * 64},
         )
         event_store = WorkbenchTaskRunEventStore(data_dir / "workbench" / "task_runs")
         event_store.mark_status(second.json()["task_run_id"], "running")
@@ -1365,19 +1464,37 @@ async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_pat
         event_store.mark_status(second.json()["task_run_id"], "failed")
         archived = await client.post(f"/api/workbench/tasks/{task_id}/archive")
 
+    assert empty_page.status_code == 200
+    assert empty_page.json()["page_size"] == 25
+    assert oversized_page.status_code == 422
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["skill_id"] == version.skill_id
+    assert body["skill_version_id"] == version.version_id
+    assert body["skill_content_digest"] == version.content_digest
+    assert body["input_values"] == {}
+    assert "workflow_id" not in body
+    assert "workflow_version_id" not in body
+    assert listed.status_code == 200
+    assert [item["task_id"] for item in listed.json()["items"]] == [task_id]
+    assert compiled.status_code == 200
+    assert compiled.json()["skill_version"]["version_id"] == version.version_id
+    assert compiled.json()["skill_plan"]["compiled_contract_version"] == 3
+    assert compiled.json()["selected_deliveries"] == ["delivery.developer-test-code-explanation"]
+    assert unknown_profile.status_code == 422
+    assert "交付件档案不存在" in unknown_profile.json()["detail"]
     assert first.status_code == 201
-    assert changed_after_first.status_code == 200
     assert first.json()["attempt_number"] == 1
+    assert execution.execution_status == "completed"
     assert second.status_code == 201
     assert second.json()["attempt_number"] == 2
     assert second.json()["parent_task_run_id"] == first.json()["task_run_id"]
-    assert profile_switch_retry.status_code == 422
-    assert "沿用父运行" in profile_switch_retry.json()["detail"]
+    assert changed_after_first.status_code == 200
     assert artifact_profile_switch_retry.status_code == 422
     assert "沿用父运行的交付件档案" in artifact_profile_switch_retry.json()["detail"]
-    assert listed.status_code == 200
-    assert [item["task_id"] for item in listed.json()["items"]] == [task_id]
-    assert listed.json()["items"][0]["latest_run"]["attempt_number"] == 2
+    assert listed_after_runs.status_code == 200
+    assert [item["task_id"] for item in listed_after_runs.json()["items"]] == [task_id]
+    assert listed_after_runs.json()["items"][0]["latest_run"]["attempt_number"] == 2
     assert detail.status_code == 200
     assert [run["attempt_number"] for run in detail.json()["runs"]] == [2, 1]
     assert immutable.status_code == 422
@@ -1385,8 +1502,6 @@ async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_pat
     assert "取消" in archive_blocked.json()["detail"]
     assert archived.status_code == 200
     assert archived.json()["lifecycle_status"] == "archived"
-    assert compiled.status_code == 200
-    assert compiled.json()["compiled_definition"]["outputs"][0]["artifact"] == "task-report.md"
     run_bundle = json.loads(
         (data_dir / "workbench" / "task_runs" / first.json()["task_run_id"] / "task_run.json").read_text(encoding="utf-8")
     )["task_bundle"]
@@ -1396,32 +1511,51 @@ async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_pat
     retried_bundle_artifact = json.loads(
         (data_dir / "workbench" / "task_runs" / second.json()["task_run_id"] / "task_bundle.json").read_text(encoding="utf-8")
     )
-    assert run_bundle["effective_compiled_definition"]["outputs"][0]["artifact"] == "task-report.md"
-    assert run_bundle["execution_profile"]["id"] == "deep"
+    invocation_payload = json.loads(
+        (data_dir / "workbench" / "task_runs" / first.json()["task_run_id"] / "skill_invocation.json").read_text(encoding="utf-8")
+    )
+    assert run_bundle["skill_version_id"] == version.version_id
+    assert run_bundle["skill_content_digest"] == version.content_digest
+    assert run_bundle["compiled_plan"]["compiled_contract_version"] == 3
+    assert run_bundle["compiled_plan"]["skill_id"] == version.skill_id
+    assert run_bundle["effective_compiled_definition"]["id"] == version.skill_id
+    assert "workflow_version_id" not in run_bundle
+    assert run_bundle["workflow_id"] == version.skill_id
+    assert run_bundle["skill_invocation"] == invocation_payload
+    assert run_bundle["skill_judge_required"] is True
+    assert invocation_payload["schema_version"] == "skill-run-invocation-v1"
+    assert invocation_payload["skill_version_id"] == version.version_id
+    assert invocation_payload["skill_content_digest"] == version.content_digest
+    assert invocation_payload["task_id"] == task_id
+    assert invocation_payload["selected_delivery_ids"] == ["delivery.developer-test-code-explanation"]
+    assert invocation_payload["judge"]["required"] is True
+    compiled_plan_artifact = json.loads(
+        (data_dir / "workbench" / "task_runs" / first.json()["task_run_id"] / "compiled_plan.json").read_text(encoding="utf-8")
+    )
+    assert compiled_plan_artifact["compiled_contract_version"] == 3
     assert run_bundle["artifact_profile"]["resolution_source"] == "run_selection"
     assert run_bundle["artifact_profile"]["profile_id"] == artifact_profile["id"]
     assert run_bundle["artifact_profile"]["artifacts"][0]["filename"] == "protocol-review.md"
-    assert retried_bundle["inputs"]["target"] == "lib/nvmf"
+    assert retried_bundle["skill_version_id"] == version.version_id
+    assert retried_bundle["skill_content_digest"] == version.content_digest
+    assert retried_bundle["skill_invocation"]["skill_version_id"] == version.version_id
     assert retried_bundle["artifact_profile"]["resolution_source"] == "parent_attempt"
     assert retried_bundle["artifact_profile"]["profile_id"] == artifact_profile["id"]
     assert retried_bundle["artifact_profile"]["profile_version"] == artifact_profile["version"]
-    assert retried_bundle["effective_compiled_definition"]["outputs"][0]["artifact"] == "task-report.md"
+    assert retried_bundle["effective_compiled_definition"]["id"] == version.skill_id
     assert retried_bundle["retry_source"] == {
         "task_run_id": first.json()["task_run_id"],
         "mode": "from_failed_node",
-        "failed_node_ids": ["scope"],
+        "failed_node_ids": [failed_node_id],
     }
     assert retried_bundle["retry_seed_results"] == {}
     assert retried_bundle_artifact == retried_bundle
-    assert published.compiled_definition["outputs"][0]["artifact"] == "report.md"
 
 
 @pytest.mark.asyncio
-async def test_task_api_accepts_a_migrated_builtin_style_workflow(tmp_path, monkeypatch):
-    from app.api import agent_workbench, workbench_v2_tasks
+async def test_task_api_rejects_migrated_workflow_binding_payload(tmp_path, monkeypatch):
+    from app.api import workbench_v2_tasks
     from app.config import settings
-    from app.services.workflow_dsl import WorkflowStore
-    from app.services.workflow_version_store import WorkflowVersionStore
 
     data_dir = tmp_path / "data"
     data_dir.mkdir()
@@ -1438,82 +1572,31 @@ async def test_task_api_accepts_a_migrated_builtin_style_workflow(tmp_path, monk
     monkeypatch.setattr(settings, "sqlite_db", str(sqlite_db))
     monkeypatch.setattr(settings, "workbench_v2_enabled", True)
 
-    db_path = data_dir / "workbench" / "workflows.db"
-    legacy_workflow = _workflow()
-    legacy_workflow["inputs"].insert(
-        0,
-        {
-            "id": "repo_path",
-            "type": "directory",
-            "required": True,
-            "resolver": "local",
-        },
-    )
-    WorkflowStore(db_path).save_workflow(legacy_workflow)
-    version_store = WorkflowVersionStore(db_path)
-    migration = version_store.initialize_and_migrate()
-    header = version_store.get_workflow("source-review")
-    published = version_store.get_version(header.published_version_id)
-
-    assert migration["upgraded_workflows"] == 0
-    assert published.compiled_plan is not None
-    with sqlite3.connect(db_path) as db:
-        assert db.execute(
-            "SELECT compiled_plan_json FROM workflow_versions WHERE version_id = ?",
-            (header.published_version_id,),
-        ).fetchone()[0] is None
-
     app = FastAPI()
-    app.include_router(agent_workbench.router)
     app.include_router(workbench_v2_tasks.router)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        created = await client.post(
+        rejected = await client.post(
             "/api/workbench/tasks",
             json={
                 "name": "Migrated workflow task",
                 "workspace_id": "ws-legacy",
                 "workflow_id": "source-review",
-                "workflow_version_id": published.version_id,
-                "lifecycle_status": "ready",
-                "input_values": {
-                    "target": "lib/nvmf",
-                    "repo_path": "/tmp/forged-repository",
-                },
+                "workflow_version_id": "wfv_legacy",
             },
         )
-        assert created.status_code == 201, created.text
-        assert created.json()["input_values"] == {"target": "lib/nvmf"}
-        compiled = await client.post(
-            f"/api/workbench/tasks/{created.json()['task_id']}/compile"
-        )
-        attempt = await client.post(
-            f"/api/workbench/tasks/{created.json()['task_id']}/runs",
-            json={},
-        )
 
-    assert compiled.status_code == 200, compiled.text
-    assert attempt.status_code == 201, attempt.text
-    assert compiled.json()["compiled_plan"]["compatibility_mode"] == "legacy_sequential"
-    assert compiled.json()["compiled_definition"]["id"] == "source-review"
-    run_payload = json.loads(
-        (
-            data_dir
-            / "workbench"
-            / "task_runs"
-            / attempt.json()["task_run_id"]
-            / "task_run.json"
-        ).read_text(encoding="utf-8")
-    )
-    assert run_payload["input_snapshot"]["repo_path"] == str(repo)
+    assert rejected.status_code == 422
+    detail = rejected.json()["detail"]
+    assert any(item["loc"][-1] == "skill_version_id" for item in detail)
+    assert any(item["loc"][-1] == "workflow_id" for item in detail)
 
 
 @pytest.mark.asyncio
-async def test_task_api_rejects_draft_workflow_and_lists_legacy_runs(tmp_path, monkeypatch):
-    from app.api import agent_workbench, workbench_v2_tasks
+async def test_task_api_rejects_workflow_payload_and_lists_legacy_runs(tmp_path, monkeypatch):
+    from app.api import workbench_v2_tasks
     from app.config import settings
     from app.services.workbench_task_run import WorkbenchTaskRunPreparer
     from app.services.workflow_dsl import WorkflowStore
-    from app.services.workflow_version_store import WorkflowVersionStore
 
     data_dir = tmp_path / "data"
     data_dir.mkdir()
@@ -1527,13 +1610,6 @@ async def test_task_api_rejects_draft_workflow_and_lists_legacy_runs(tmp_path, m
     monkeypatch.setattr(settings, "sqlite_db", str(sqlite_db))
     monkeypatch.setattr(settings, "workbench_v2_enabled", True)
 
-    version_store = WorkflowVersionStore(data_dir / "workbench" / "workflows.db")
-    _, draft = version_store.create_workflow(
-        workflow_id="draft-flow",
-        name="Draft",
-        description="",
-        authoring_graph={"schema_version": 2, "workflow_id": "draft-flow"},
-    )
     legacy_store = WorkflowStore(data_dir / "workbench" / "legacy.db")
     legacy_store.save_workflow(_workflow())
     legacy = WorkbenchTaskRunPreparer(
@@ -1547,7 +1623,6 @@ async def test_task_api_rejects_draft_workflow_and_lists_legacy_runs(tmp_path, m
     )
 
     app = FastAPI()
-    app.include_router(agent_workbench.router)
     app.include_router(workbench_v2_tasks.router)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         rejected = await client.post(
@@ -1556,25 +1631,22 @@ async def test_task_api_rejects_draft_workflow_and_lists_legacy_runs(tmp_path, m
                 "name": "Draft task",
                 "workspace_id": "ws-1",
                 "workflow_id": "draft-flow",
-                "workflow_version_id": draft.version_id,
+                "workflow_version_id": "wfv_draft",
             },
         )
         history = await client.get("/api/workbench/tasks/history/runs")
 
     assert rejected.status_code == 422
-    assert "已发布" in rejected.json()["detail"]
+    assert any(item["loc"][-1] == "skill_version_id" for item in rejected.json()["detail"])
     assert history.status_code == 200
     assert [item["task_run_id"] for item in history.json()["items"]] == [legacy.task_run_id]
     assert history.json()["items"][0]["legacy"] is True
 
 
 @pytest.mark.asyncio
-async def test_new_builtin_task_rejects_superseded_published_version(tmp_path, monkeypatch):
-    from app.api import agent_workbench, workbench_v2_tasks
+async def test_new_builtin_task_rejects_workflow_version_payload(tmp_path, monkeypatch):
+    from app.api import workbench_v2_tasks
     from app.config import settings
-    from app.services.workflow_dsl import WorkflowStore
-    from app.services.workflow_presets import get_workflow_preset
-    from app.services.workflow_version_store import WorkflowVersionStore
 
     data_dir = tmp_path / "data"
     data_dir.mkdir()
@@ -1588,76 +1660,27 @@ async def test_new_builtin_task_rejects_superseded_published_version(tmp_path, m
     monkeypatch.setattr(settings, "sqlite_db", str(sqlite_db))
     monkeypatch.setattr(settings, "workbench_v2_enabled", True)
 
-    definition = get_workflow_preset("module_analysis")["definition"]
-    db_path = data_dir / "workbench" / "workflows.db"
-    WorkflowStore(db_path).save_workflow(definition)
-    version_store = WorkflowVersionStore(db_path)
-    version_store.initialize_and_migrate()
-    old_version_id = version_store.get_workflow("module_analysis").published_version_id
-    with sqlite3.connect(db_path) as db:
-        db.execute(
-            "UPDATE workflow_versions SET compiled_plan_json = ? WHERE version_id = ?",
-            (
-                json.dumps({
-                    "plan_version": 1,
-                    "workflow_version_id": old_version_id,
-                    "topological_order": ["shadow"],
-                    "nodes": [],
-                    "shadow_plan": True,
-                }),
-                old_version_id,
-            ),
-        )
-    assert version_store.ensure_legacy_published_workflows([definition]) == 1
-    current_version_id = version_store.get_workflow("module_analysis").published_version_id
-    assert current_version_id != old_version_id
-    assert version_store.retire_workflows({"module_analysis"}) == 1
-
-    historical = workbench_v2_tasks.task_store().create_task(
-        name="Historical built-in task",
-        workspace_id="ws-1",
-        workflow_id="module_analysis",
-        workflow_version_id=old_version_id,
-    )
-    request = {
-        "name": "New built-in task",
-        "workspace_id": "ws-1",
-        "workflow_id": "module_analysis",
-        "lifecycle_status": "draft",
-    }
     app = FastAPI()
-    app.include_router(agent_workbench.router)
     app.include_router(workbench_v2_tasks.router)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         rejected = await client.post(
             "/api/workbench/tasks",
-            json={**request, "workflow_version_id": old_version_id},
-        )
-        retired_current = await client.post(
-            "/api/workbench/tasks",
-            json={**request, "workflow_version_id": current_version_id},
-        )
-        historical_detail = await client.get(f"/api/workbench/tasks/{historical.task_id}")
-        clone_rejected = await client.post(
-            f"/api/workbench/tasks/{historical.task_id}/clone",
-            json={"name": "Superseded clone"},
+            json={
+                "name": "New built-in task",
+                "workspace_id": "ws-1",
+                "workflow_id": "module_analysis",
+                "workflow_version_id": "wfv_old",
+            },
         )
 
-    assert rejected.status_code == 409
-    assert "已下线" in rejected.json()["detail"]
-    assert retired_current.status_code == 409, retired_current.text
-    assert "已下线" in retired_current.json()["detail"]
-    assert historical_detail.status_code == 200, historical_detail.text
-    assert historical_detail.json()["workflow_version_id"] == old_version_id
-    assert clone_rejected.status_code == 409
-    assert "已下线" in clone_rejected.json()["detail"]
+    assert rejected.status_code == 422
+    assert any(item["loc"][-1] == "skill_version_id" for item in rejected.json()["detail"])
 
 
 @pytest.mark.asyncio
-async def test_archived_custom_workflow_rejects_new_task_and_clone(tmp_path, monkeypatch):
-    from app.api import agent_workbench, workbench_v2_tasks
+async def test_archived_custom_workflow_payload_is_not_a_task_binding(tmp_path, monkeypatch):
+    from app.api import workbench_v2_tasks
     from app.config import settings
-    from app.services.workflow_version_store import WorkflowVersionStore
 
     data_dir = tmp_path / "data"
     data_dir.mkdir()
@@ -1671,58 +1694,18 @@ async def test_archived_custom_workflow_rejects_new_task_and_clone(tmp_path, mon
     monkeypatch.setattr(settings, "sqlite_db", str(sqlite_db))
     monkeypatch.setattr(settings, "workbench_v2_enabled", True)
 
-    definition = _workflow()
-    definition["id"] = "archived-custom"
-    definition["name"] = "Archived custom"
-    db_path = data_dir / "workbench" / "workflows.db"
-    version_store = WorkflowVersionStore(db_path)
-    _, draft = version_store.create_workflow(
-        workflow_id=definition["id"],
-        name=definition["name"],
-        description="",
-        authoring_graph={"schema_version": 2, "workflow_id": definition["id"]},
-    )
-    published = version_store.publish_version(
-        draft.version_id,
-        authoring_graph=draft.authoring_graph,
-        compiled_definition=definition,
-        compiled_plan={
-            "plan_version": 1,
-            "workflow_version_id": draft.version_id,
-            "topological_order": ["scope"],
-            "nodes": [{"node_id": "scope", "type": "local_scope_discover"}],
-        },
-        validation={"valid": True, "errors": [], "warnings": []},
-    )
-    historical = workbench_v2_tasks.task_store().create_task(
-        name="Historical archived custom task",
-        workspace_id="ws-1",
-        workflow_id=definition["id"],
-        workflow_version_id=published.version_id,
-    )
-    version_store.archive_workflow(definition["id"])
-
-    request = {
-        "name": "New archived custom task",
-        "workspace_id": "ws-1",
-        "workflow_id": definition["id"],
-        "workflow_version_id": published.version_id,
-        "lifecycle_status": "draft",
-    }
     app = FastAPI()
-    app.include_router(agent_workbench.router)
     app.include_router(workbench_v2_tasks.router)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        rejected_create = await client.post("/api/workbench/tasks", json=request)
-        historical_detail = await client.get(f"/api/workbench/tasks/{historical.task_id}")
-        rejected_clone = await client.post(
-            f"/api/workbench/tasks/{historical.task_id}/clone",
-            json={"name": "Archived custom clone"},
+        rejected = await client.post(
+            "/api/workbench/tasks",
+            json={
+                "name": "New archived custom task",
+                "workspace_id": "ws-1",
+                "workflow_id": "archived-custom",
+                "workflow_version_id": "wfv_archived",
+            },
         )
 
-    assert rejected_create.status_code == 409
-    assert rejected_clone.status_code == 409
-    assert "已归档" in rejected_create.json()["detail"]
-    assert "已归档" in rejected_clone.json()["detail"]
-    assert historical_detail.status_code == 200
-    assert historical_detail.json()["workflow_version_id"] == published.version_id
+    assert rejected.status_code == 422
+    assert any(item["loc"][-1] == "skill_version_id" for item in rejected.json()["detail"])

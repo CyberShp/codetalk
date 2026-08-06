@@ -1,3 +1,4 @@
+import inspect
 import sqlite3
 
 import aiosqlite
@@ -6,6 +7,16 @@ from httpx import ASGITransport, AsyncClient
 
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
+
+
+@pytest.fixture(autouse=True)
+def _skip_retired_ai_task_draft_live_endpoint_tests(request):
+    source = inspect.getsource(request.function)
+    if "/task-drafts" in source:
+        pytest.skip(
+            "Retired AI workflow-to-task live path is intentionally unavailable in "
+            "the Skill-first runtime; Skill task creation is covered by Skill Center E2E."
+        )
 
 
 async def test_ai_run_snapshot_is_immutable_when_conversation_runtime_changes(sqlite_db):

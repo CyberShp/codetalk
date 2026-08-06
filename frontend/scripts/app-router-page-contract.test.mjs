@@ -33,21 +33,9 @@ test("workbench page module only exports App Router page-safe fields", () => {
   assert.deepEqual(illegalExports, []);
 });
 
-test("workbench sibling routes redirect to the Phase2 surfaces without importing a page module", () => {
-  const designerSource = readFileSync(
-    new URL("../src/app/workbench/designer/page.tsx", import.meta.url),
-    "utf8",
-  );
-  const semanticSource = readFileSync(
-    new URL("../src/app/workbench/semantic/page.tsx", import.meta.url),
-    "utf8",
-  );
-
-  assert.doesNotMatch(designerSource, /from\s+["']\.\.\/page["']/);
-  assert.doesNotMatch(semanticSource, /from\s+["']\.\.\/page["']/);
-  assert.match(designerSource, /redirect\(`?\/workflows/);
-  assert.match(semanticSource, /WorkbenchEntryGate/);
-  assert.match(semanticSource, /destination="\/semantic-library"/);
+test("workbench no longer carries deleted Workflow sibling product routes", () => {
+  assert.equal(existsSync(new URL("../src/app/workbench/designer/page.tsx", import.meta.url)), false);
+  assert.equal(existsSync(new URL("../src/app/workbench/semantic/page.tsx", import.meta.url)), false);
 });
 
 test("workspace creation keeps the optional local folder browser wired", () => {

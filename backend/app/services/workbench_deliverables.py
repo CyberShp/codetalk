@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from app.services.artifact_profiles import validate_profile_artifacts
+from app.services.skill_judge import evaluate_skill_judge
 from app.services.workbench_artifact_manifest import build_task_artifact_manifest
 
 
@@ -103,6 +104,19 @@ def build_task_run_deliverables(task_run: Any) -> dict[str, Any]:
     task_dir = Path(str(task_run.artifact_dir)).resolve()
     execution = _read_json(task_dir / "workflow_execution.json")
     output_contract = _read_json(task_dir / "output_contract.json")
+    task_bundle = getattr(task_run, "task_bundle", {}) or {}
+    invocation = (
+        _read_json(task_dir / "skill_invocation.json")
+        if (task_dir / "skill_invocation.json").exists()
+        else {}
+    )
+    invocation_judge = invocation.get("judge") if isinstance(invocation.get("judge"), dict) else {}
+    judge_required = bool(task_bundle.get("skill_judge_required") or invocation_judge.get("required"))
+    judge = (
+        evaluate_skill_judge(task_dir, required=judge_required)
+        if invocation
+        else {}
+    )
     include_paths: list[str] | None = None
     if isinstance(output_contract, dict) and isinstance(output_contract.get("artifacts"), list):
         profile = {
@@ -133,6 +147,15 @@ def build_task_run_deliverables(task_run: Any) -> dict[str, Any]:
             for item in output_items
             if item.get("status") in {"ok", "accepted"} and item.get("path")
         ] or None
+    if judge_required and not judge.get("ready"):
+        validation["accepted"] = False
+        validation["judge_status"] = judge.get("status") or "PENDING_VALIDATION"
+        validation["blocking_reasons"] = [
+            *[str(item) for item in validation.get("blocking_reasons") or []],
+            "skill_judge_required",
+        ]
+    elif judge:
+        validation["judge_status"] = judge.get("status")
     workflow_snapshot = getattr(task_run, "workflow_snapshot", {}) or {}
     workflow_name = str(
         workflow_snapshot.get("name")

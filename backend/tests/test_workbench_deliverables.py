@@ -177,3 +177,51 @@ def test_profile_filename_is_materialized_from_matching_workflow_output(tmp_path
     assert [item["relative_path"] for item in result["manifest"]["artifacts"]] == [
         "protocol-review.md"
     ]
+
+
+def test_required_skill_judge_blocks_delivery_until_ready(tmp_path):
+    from app.services.workbench_deliverables import build_task_run_deliverables
+
+    task_dir = tmp_path / "run"
+    output = task_dir / "report.md"
+    task_dir.mkdir(parents=True)
+    output.write_text("# Report\n", encoding="utf-8")
+    (task_dir / "skill_invocation.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "skill-run-invocation-v1",
+                "skill_version_id": "skill_version_1",
+                "skill_content_digest": "sha256:" + "1" * 64,
+                "input_snapshot": {"ref": "skill_input_snapshot.json", "digest": "sha256:" + "2" * 64},
+                "selected_delivery_ids": ["delivery.report"],
+                "judge": {
+                    "required": True,
+                    "isolated_session": True,
+                    "artifact_ids": ["artifact.report"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (task_dir / "workflow_execution.json").write_text(
+        json.dumps({"status": "completed", "outputs": [{"id": "report", "status": "ok", "path": "report.md"}]}),
+        encoding="utf-8",
+    )
+    task_run = SimpleNamespace(
+        task_run_id="run-judge",
+        artifact_dir=str(task_dir),
+        workflow_snapshot={"name": "Judge gated"},
+        task_bundle={},
+    )
+
+    pending = build_task_run_deliverables(task_run)
+    assert pending["validation"]["accepted"] is False
+    assert pending["validation"]["judge_status"] == "PENDING_VALIDATION"
+
+    (task_dir / "skill_judge_report.json").write_text(
+        json.dumps({"status": "READY", "ready": True}),
+        encoding="utf-8",
+    )
+    ready = build_task_run_deliverables(task_run)
+    assert ready["validation"]["accepted"] is True
+    assert ready["validation"]["judge_status"] == "READY"

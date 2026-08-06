@@ -34,7 +34,6 @@ from app.services.input_consumption import (
 from app.services.network_policy import IntranetNetworkPolicy
 from app.services.test_semantic_library import TestSemanticLibraryStore
 from app.services.workbench_artifact_manifest import write_task_artifact_manifest
-from app.services.workbench_skills import resolve_workbench_skill_instructions
 from app.services.workbench_input_ingest import (
     ingest_workbench_inputs,
     validate_workbench_inputs,
@@ -67,7 +66,7 @@ SOURCE_SCAN_IGNORED_DIRS = frozenset({
 })
 _GIT_SOURCE_FILE_CACHE: dict[tuple[str, str, int, tuple[str, ...]], tuple[str, ...]] = {}
 _GIT_SOURCE_FILE_CACHE_LOCK = threading.Lock()
-SAFE_RUNTIME_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+SAFE_RUNTIME_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _COMPATIBILITY_EXECUTION_PROFILES = (
     {
         "id": "rapid",
@@ -684,10 +683,10 @@ class WorkbenchTaskRunPreparer:
                 continue
             step = {
                 **step,
-                "skill_instructions": resolve_workbench_skill_instructions(
-                    step.get("skills") or [],
-                    step.get("skill_instructions") or [],
-                ),
+                "skill_instructions": [
+                    item for item in step.get("skill_instructions") or []
+                    if isinstance(item, dict)
+                ],
             }
             step_id = str(step.get("id") or f"step_{len(agent_runs) + 1}")
             provider = _canonical_agent_provider(

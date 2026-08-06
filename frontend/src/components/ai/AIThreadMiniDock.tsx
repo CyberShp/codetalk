@@ -12,7 +12,16 @@ const IDLE_THREAD_POLL_MS = 60000;
 
 export default function AIThreadMiniDock() {
   const pathname = usePathname();
-  const isFocusedToolRoute = pathname.startsWith("/ai") || pathname.startsWith("/workflows") || pathname.startsWith("/tasks");
+  const isFocusedToolRoute =
+    pathname === "/" ||
+    pathname.startsWith("/ai") ||
+    pathname.startsWith("/artifact-profiles") ||
+    pathname.startsWith("/evidence-library") ||
+    pathname.startsWith("/knowledge-center") ||
+    pathname.startsWith("/semantic-library") ||
+    pathname.startsWith("/skills") ||
+    pathname.startsWith("/tasks") ||
+    pathname.startsWith("/workbench");
   const [items, setItems] = useState<AIConversation[]>([]);
   const [loading, setLoading] = useState(false);
   const mountedRef = useRef(true);

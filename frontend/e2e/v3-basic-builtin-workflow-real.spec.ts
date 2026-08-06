@@ -2,6 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { expect, test } from "@playwright/test";
+import { assertCanMutatePublicRuntime } from "../scripts/playwright-runtime-policy.mjs";
+
+assertCanMutatePublicRuntime({ env: process.env, flowName: "V3 basic built-in workflow real E2E" });
 
 const enabled = process.env.CODETALK_E2E_REAL_BUILTIN_B === "1";
 const apiKey = process.env.CODETALK_E2E_LLM_API_KEY ?? "";

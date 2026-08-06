@@ -4967,7 +4967,7 @@ class TestAgentRuntimes:
                 assert "--json" in argv
                 assert prompt not in argv
             else:
-                assert argv[-4:-1] == ["run", "--format", "json"]
+                assert argv[-5:-1] == ["run", "--auto", "--format", "json"]
 
     async def test_opencode_managed_transport_resumes_session_and_requests_json_format(self):
         from app.services.agent_cli_bridge import stream_agent_runtime
@@ -4989,7 +4989,7 @@ class TestAgentRuntimes:
             chunks.append(chunk)
 
         args = json.loads("".join(chunks))
-        assert args[:5] == ["run", "--session", "opencode-session-1", "--format", "json"]
+        assert args[:6] == ["run", "--session", "opencode-session-1", "--auto", "--format", "json"]
         assert args[-1] == "继续分析源码"
 
     async def test_agent_runtime_idle_completion_extends_while_stderr_is_active(self):
@@ -7089,6 +7089,7 @@ class TestAgentRuntimes:
         assert captured["command"] == "C:/Users/me/AppData/Roaming/npm/opencode.cmd"
         assert captured["args"] == [
             "run",
+            "--auto",
             "--format",
             "json",
             "读取工作区源码并输出结论",

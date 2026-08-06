@@ -126,7 +126,7 @@ from app.services.workflow_execution_lease import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/workbench", tags=["agent-workbench"])
-SAFE_RUNTIME_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+SAFE_RUNTIME_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
 def _require_v3_writes() -> None:
@@ -1177,7 +1177,7 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
         for item in compiled_plan.get("nodes") or []
         if isinstance(item, dict) and str(item.get("node_id") or "")
     }
-    step_ids = {str(step.get("id") or "") for step in steps}
+    step_ids = {_task_run_ui_step_id(step) for step in steps}
     steps.extend(
         {
             "id": node_id,
@@ -1190,9 +1190,9 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
     )
     event_context = _task_run_ui_event_context(task_root)
     step_labels = {
-        str(step.get("id") or ""): _task_run_ui_node_label(
+        _task_run_ui_step_id(step): _task_run_ui_node_label(
             step=step,
-            plan_node=plan_nodes.get(str(step.get("id") or ""), {}),
+            plan_node=plan_nodes.get(_task_run_ui_step_id(step), {}),
         )
         for step in steps
     }
@@ -1207,12 +1207,12 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
             task_run=task_run,
             task_root=task_root,
             step=step,
-            plan_node=plan_nodes.get(str(step.get("id") or ""), {}),
-            next_node_ids=next_by_step.get(str(step.get("id") or ""), []),
+            plan_node=plan_nodes.get(_task_run_ui_step_id(step), {}),
+            next_node_ids=next_by_step.get(_task_run_ui_step_id(step), []),
             step_labels=step_labels,
-            event_context=event_context.get(str(step.get("id") or ""), {}),
+            event_context=event_context.get(_task_run_ui_step_id(step), {}),
             workflow_contract=contract,
-            step_result=step_results.get(str(step.get("id") or "")),
+            step_result=step_results.get(_task_run_ui_step_id(step)),
             output_by_key=output_by_key,
         )
         for step in steps
@@ -1525,7 +1525,7 @@ def _task_run_ui_node_summary(
     step_result: dict[str, Any] | None,
     output_by_key: dict[tuple[str, str, str], dict[str, Any]],
 ) -> dict[str, Any]:
-    step_id = str(step.get("id") or "")
+    step_id = _task_run_ui_step_id(step)
     execution_contract = _agent_step_execution_contract(task_root=task_root, step_id=step_id)
     status_value = str((step_result or {}).get("status") or "prepared")
     node_outputs = _task_run_ui_node_outputs(
@@ -1728,10 +1728,16 @@ def _task_run_ui_kind_label(kind: str) -> str:
     return _TASK_RUN_UI_KIND_LABELS.get(str(kind or "").strip().lower(), "工作流节点")
 
 
+def _task_run_ui_step_id(step: dict[str, Any]) -> str:
+    return str(step.get("id") or step.get("step_id") or step.get("node_id") or "").strip()
+
+
 def _task_run_ui_node_label(*, step: dict[str, Any], plan_node: dict[str, Any]) -> str:
     for candidate in (
         plan_node.get("label"),
+        plan_node.get("title"),
         step.get("label"),
+        step.get("title"),
         step.get("name"),
     ):
         value = str(candidate or "").strip()
@@ -1787,7 +1793,7 @@ def _task_run_ui_step_execution_metadata(
     step_result: dict[str, Any],
 ) -> dict[str, str]:
     step_type = str(step.get("type") or "")
-    step_id = str(step.get("id") or "")
+    step_id = _task_run_ui_step_id(step)
     agent_run = (
         _read_json(task_root / "agent_runs" / _safe_segment(step_id, "step_id") / "agent_run.json")
         if step_type == "agent_task" and step_id
@@ -2302,456 +2308,6 @@ def _safe_segment(value: str, label: str) -> str:
     if not value or value in {".", ".."} or ".." in value or not SAFE_RUNTIME_ID_RE.fullmatch(value):
         raise HTTPException(status_code=400, detail=f"invalid {label}")
     return value
-
-
-@router.post("/workflows", status_code=201)
-async def save_workflow(payload: dict[str, Any]) -> dict[str, Any]:
-    _require_v3_writes()
-    if settings.workbench_v2_enabled and isinstance(payload.get("authoring_graph"), dict):
-        from dataclasses import asdict
-
-        from app.services.workflow_version_store import (
-            WorkflowVersionError,
-            WorkflowVersionStore,
-        )
-
-        try:
-            header, _draft = WorkflowVersionStore(
-                _workbench_dir() / "workflows.db"
-            ).create_workflow(
-                workflow_id=str(payload.get("id") or ""),
-                name=str(payload.get("name") or ""),
-                description=str(payload.get("description") or ""),
-                authoring_graph=dict(payload["authoring_graph"]),
-            )
-        except (ValueError, WorkflowVersionError) as exc:
-            status_code = 409 if "already exists" in str(exc) else 422
-            raise HTTPException(status_code=status_code, detail=str(exc))
-        return asdict(header)
-    workflow_id = str(payload.get("id") or "").strip() if isinstance(payload, dict) else ""
-    if _is_builtin_workflow_id(workflow_id):
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "message": "内置工作流预设是只读的，请另存为自定义工作流后再编辑。",
-                "workflow_id": workflow_id,
-                "suggested_id": f"{workflow_id}_custom",
-            },
-        )
-    try:
-        workflow = _workflow_store().save_workflow(payload)
-    except WorkflowValidationError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    return _workflow_response(workflow.raw)
-
-
-@router.post("/workflows/audit-draft")
-async def audit_workflow_draft(payload: dict[str, Any]) -> dict[str, Any]:
-    try:
-        audit = audit_workflow_definition(payload)
-    except WorkflowValidationError as exc:
-        return {
-            "status": "invalid",
-            "valid": False,
-            "error": str(exc),
-            "warnings": [],
-        }
-    return {
-        "status": audit.get("status") or "ok",
-        "valid": True,
-        "error": "",
-        "warnings": list(audit.get("warnings") or []),
-    }
-
-
-@router.post("/workflows/generate-draft")
-async def generate_workflow_draft(payload: GenerateWorkflowDraftRequest) -> dict[str, Any]:
-    _require_v3_writes()
-    prompt_text = payload.prompt.strip()
-    generation_id = f"workflow_gen_{uuid.uuid4().hex}"
-    messages = _workflow_generation_messages(
-        prompt_text,
-        preferred_id=payload.preferred_id,
-        preferred_name=payload.preferred_name,
-    )
-    try:
-        from app.llm.factory import create_llm_client_from_active
-
-        llm = await create_llm_client_from_active()
-        response = await llm.complete(messages, max_tokens=4096, temperature=0.2)
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"工作流生成模型不可用：{exc}")
-
-    raw_output = response.content.strip()
-    try:
-        draft = _extract_workflow_json(raw_output)
-        if payload.preferred_id.strip():
-            draft["id"] = _safe_workflow_id(payload.preferred_id)
-        if payload.preferred_name.strip():
-            draft["name"] = payload.preferred_name.strip()
-        workflow = validate_workflow_definition(draft)
-        audit = audit_workflow_definition(workflow.raw)
-    except WorkflowValidationError as exc:
-        artifact_path = _write_workflow_generation_artifact(
-            generation_id=generation_id,
-            prompt=prompt_text,
-            raw_output=raw_output,
-            workflow=None,
-            audit={"status": "invalid", "valid": False, "error": str(exc), "warnings": []},
-        )
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "message": f"AI 生成的工作流未通过校验：{exc}",
-                "generation_id": generation_id,
-                "artifact": {"path": _public_workbench_artifact_path(artifact_path)},
-            },
-        )
-    except Exception as exc:
-        artifact_path = _write_workflow_generation_artifact(
-            generation_id=generation_id,
-            prompt=prompt_text,
-            raw_output=raw_output,
-            workflow=None,
-            audit={"status": "invalid", "valid": False, "error": str(exc), "warnings": []},
-        )
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "message": f"无法解析 AI 工作流 JSON：{exc}",
-                "generation_id": generation_id,
-                "artifact": {"path": _public_workbench_artifact_path(artifact_path)},
-            },
-        )
-
-    artifact_path = _write_workflow_generation_artifact(
-        generation_id=generation_id,
-        prompt=prompt_text,
-        raw_output=raw_output,
-        workflow=workflow.raw,
-        audit=audit,
-    )
-    workflow_response = _workflow_response(workflow.raw)
-    audit_response = {
-        "status": audit.get("status") or "ok",
-        "valid": True,
-        "error": "",
-        "warnings": list(audit.get("warnings") or []),
-    }
-    return {
-        "generation_id": generation_id,
-        "workflow": workflow_response,
-        "audit": audit_response,
-        "artifact": {"path": _public_workbench_artifact_path(artifact_path)},
-        "model": response.model,
-        "usage": response.usage,
-    }
-
-
-@router.get("/workflows")
-async def list_workflows() -> list[dict[str, Any]]:
-    store = _workflow_store_with_builtin_presets()
-    legacy_items = [_workflow_response(item.raw) for item in store.list_workflows()]
-    from app.services.workflow_version_store import WorkflowVersionStore
-
-    version_store = WorkflowVersionStore(_workbench_dir() / "workflows.db")
-    if not settings.workbench_v2_enabled:
-        archived_v2_ids = {
-            header.workflow_id
-            for header in version_store.list_workflows(include_archived=True)
-            if header.status == "archived"
-        }
-        return [
-            item
-            for item in legacy_items
-            if str(item.get("id") or "") not in archived_v2_ids
-        ]
-    version_store.ensure_legacy_published_workflows(
-        [
-            dict(preset["definition"])
-            for preset in builtin_workflow_presets_for_bootstrap()
-        ]
-    )
-    version_store.retire_workflows(
-        reserved_builtin_workflow_ids().difference(_active_builtin_workflow_ids())
-    )
-    all_v2_headers = version_store.list_workflows(include_archived=True)
-    archived_v2_ids = {
-        header.workflow_id for header in all_v2_headers if header.status == "archived"
-    }
-    v2_items = {
-        header.workflow_id: _v2_workflow_compatibility_response(version_store, header)
-        for header in all_v2_headers
-        if header.status != "archived"
-    }
-    merged = []
-    for item in legacy_items:
-        workflow_id = str(item.get("id") or "")
-        if workflow_id in archived_v2_ids:
-            continue
-        v2_item = v2_items.pop(workflow_id, None)
-        if v2_item is None:
-            merged.append(item)
-        elif _is_active_builtin_workflow_id(workflow_id):
-            merged.append(
-                {
-                    **item,
-                    "authoring_graph": dict(v2_item.get("authoring_graph") or {}),
-                    "v2": dict(v2_item.get("v2") or {}),
-                }
-            )
-        else:
-            merged.append(v2_item)
-    merged.extend(v2_items.values())
-    return merged
-
-
-@router.post("/workflows/restore-builtins")
-async def restore_builtin_workflows() -> dict[str, Any]:
-    _require_v3_writes()
-    store = _workflow_store()
-    restored = restore_builtin_workflow_presets(store)
-    return {
-        "status": "ok",
-        "restored_count": len(restored),
-        "items": [
-            _workflow_response(item.raw)
-            for item in _WorkflowCatalog(store).list_workflows()
-        ],
-    }
-
-
-@router.get("/workflows/{workflow_id}")
-async def get_workflow(workflow_id: str) -> dict[str, Any]:
-    if settings.workbench_v2_enabled and not _is_builtin_workflow_id(workflow_id):
-        from app.services.workflow_version_store import WorkflowVersionStore
-
-        version_store = WorkflowVersionStore(_workbench_dir() / "workflows.db")
-        try:
-            header = version_store.get_workflow(workflow_id)
-        except KeyError:
-            pass
-        else:
-            return _v2_workflow_compatibility_response(version_store, header)
-    try:
-        workflow = _workflow_store_with_builtin_presets().get_workflow(workflow_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"Unknown workflow: {workflow_id}")
-    return _workflow_response(workflow.raw)
-
-
-@router.get("/workflows/{workflow_id}/snapshot")
-async def get_workflow_snapshot(workflow_id: str) -> dict[str, Any]:
-    try:
-        return _workflow_store_with_builtin_presets().freeze_workflow_snapshot(workflow_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"Unknown workflow: {workflow_id}")
-
-
-@router.get("/workflow-presets")
-async def list_workflow_presets() -> dict[str, Any]:
-    return {"items": active_builtin_workflow_presets()}
-
-
-@router.get("/workflow-capabilities")
-async def get_workflow_capabilities() -> dict[str, Any]:
-    """Return the declarative workflow surface available to user-defined tasks."""
-    endpoint = "/api/workbench/workflow-capabilities"
-    try:
-        _raise_designer_resource_fault("capabilities")
-        payload = {
-        "status": "ok",
-        "input_types": sorted(ALLOWED_INPUT_TYPES),
-        "input_resolvers": ["agent_mcp", "local", "manual", "workspace"],
-        "step_types": sorted(ALLOWED_STEP_TYPES),
-        "output_types": [
-            "json",
-            "markdown",
-            "text",
-            "patch",
-            "diff",
-            "test_cases",
-            "scope_report",
-            "test_design_mindmap",
-        ],
-        "input_features": {
-            "json_schema_validation": True,
-            "file_copy_and_hash": True,
-            "text_extraction_chunks": True,
-            "agent_owned_mcp_inputs": True,
-        },
-        "output_features": {
-            "json_schema_validation": True,
-            "workflow_output_materialization": True,
-            "semantic_case_import_from_outputs": True,
-            "sha256_and_size_recorded": True,
-            "optional_content_presets": True,
-        },
-        "agent_cli_features": {
-            "agent_owned_mcp_credentials": True,
-            "provider_selection": True,
-            "startup_probe": True,
-            "required_artifacts_validation": True,
-            "source_slice_second_turn": True,
-            "skill_injection": True,
-        },
-        "skill_catalog": [
-            {
-                "id": "source-evidence-first",
-                "label": "源码证据优先",
-                "source": "codetalk_builtin",
-                "default_enabled": True,
-                "description": "除非用户明确排除源码，先查工作区、GitNexus 和 CGC 产物，再生成结论。",
-                "prompt_hint": "优先读取工作区源码、GitNexus 和 CGC 产物；所有关键结论必须引用真实文件或产物证据。",
-            },
-            {
-                "id": "storage-flow-analysis",
-                "label": "存储流程梳理",
-                "source": "codetalk_builtin",
-                "default_enabled": True,
-                "description": "面向 SPDK/存储系统梳理入口、状态迁移、异常分支、恢复路径和可观测行为。",
-                "prompt_hint": "按入口、前置条件、关键状态、正常流程、异常流程、恢复路径和外部可观测行为组织分析。",
-            },
-            {
-                "id": "sfmea",
-                "label": "SFMEA",
-                "source": "codetalk_builtin",
-                "default_enabled": True,
-                "description": "生成 failure mode、cause、effect、detection、S/O/D/RPN 和 mitigation。",
-                "prompt_hint": "SFMEA 每条必须包含 failure mode、cause、effect、detection、severity、occurrence、detection score、RPN、mitigation，并解释评分依据。",
-            },
-            {
-                "id": "black-box-test-design",
-                "label": "黑盒测试设计",
-                "source": "codetalk_builtin",
-                "default_enabled": True,
-                "description": "只输出外部输入、操作、预期结果、日志/指标/状态和诊断线索。",
-                "prompt_hint": "黑盒用例不得要求修改内部代码或调用内部函数；每条包含前置条件、步骤、预期、观测点和失败诊断线索。",
-            },
-            {
-                "id": "test-strategy-planning",
-                "label": "测试策略与计划",
-                "source": "codetalk_builtin",
-                "default_enabled": False,
-                "description": "把测试目标拆成范围、风险、资源、环境、优先级、准入/准出和里程碑。",
-                "prompt_hint": "输出测试策略、范围、风险优先级、准入/准出标准、资源/环境依赖、里程碑和未决问题。",
-            },
-            {
-                "id": "coverage-gap-analysis",
-                "label": "覆盖率与缺口分析",
-                "source": "codetalk_builtin",
-                "default_enabled": False,
-                "description": "分析覆盖率、入口发现、低覆盖路径、灰盒/黑盒边界和补充建议。",
-                "prompt_hint": "结合覆盖率文件、源码入口和现有测试目录，标出覆盖缺口、补充测试建议和证据映射。",
-            },
-            {
-                "id": "test-execution-orchestration",
-                "label": "测试执行编排",
-                "source": "codetalk_builtin",
-                "default_enabled": False,
-                "description": "生成执行矩阵、批次、环境准备、数据准备、观测点、失败处置和复跑策略。",
-                "prompt_hint": "输出可执行测试矩阵，包含环境、前置条件、批次顺序、并发/长跑安排、观测指标、失败诊断和复跑规则。",
-            },
-            {
-                "id": "defect-triage-regression",
-                "label": "缺陷分诊与回归",
-                "source": "codetalk_builtin",
-                "default_enabled": False,
-                "description": "根据失败、日志、patch、风险和历史证据做缺陷分级、回归范围和阻塞判断。",
-                "prompt_hint": "输出缺陷分级、复现线索、影响范围、回归测试范围、阻塞/放行建议和需要补充的证据。",
-            },
-            {
-                "id": "performance-reliability-testing",
-                "label": "性能与可靠性测试",
-                "source": "codetalk_builtin",
-                "default_enabled": False,
-                "description": "覆盖性能基线、压力、soak、故障恢复、资源泄漏和可观测性指标。",
-                "prompt_hint": "输出性能/可靠性测试计划，包含基线、负载模型、时延/吞吐/资源指标、故障注入、soak、退化阈值和诊断数据。",
-            },
-            {
-                "id": "artifact-contract",
-                "label": "产物契约",
-                "source": "codetalk_builtin",
-                "default_enabled": True,
-                "description": "要求 Agent 写入声明的 JSON/Markdown artifact，CodeTalk 校验后才接受。",
-                "prompt_hint": "必须把结果写入 required_artifacts 声明的文件；终端文字只能作为进度说明，不能替代 artifact。",
-            },
-        ],
-        "output_content_presets": [
-            {
-                "id": str(item.get("id") or ""),
-                "label": str(item.get("label") or ""),
-                "source": str(item.get("source") or "codetalk_builtin"),
-                "description": str(item.get("description") or ""),
-                "prompt_hint": str(item.get("prompt_hint") or ""),
-                "roles": list(item.get("roles") or []),
-                "headings": list(item.get("headings") or []),
-            }
-            for item in OUTPUT_CONTENT_PRESETS
-        ],
-        "semantic_library_import_formats": ["json", "jsonl", "ndjson", "csv", "txt"],
-        "artifact_contract": {
-            "required_artifacts": "validated locally before outputs are accepted",
-            "raw_output": "stored for audit but never accepted as evidence without artifacts",
-            "workflow_outputs": "collected from declared outputs and checked before acceptance",
-        },
-        }
-        return _designer_resource_ready(payload, endpoint)
-    except Exception as exc:
-        return _designer_resource_unavailable(
-            "workflow_capabilities_unavailable", endpoint, exc
-        )
-
-
-@router.get("/node-registry")
-async def get_node_registry(schema_version: int = Query(3, ge=2, le=3)) -> dict[str, Any]:
-    """Expose backend-owned node metadata for the workflow designer."""
-    endpoint = "/api/workbench/node-registry"
-    try:
-        _raise_designer_resource_fault("registry")
-        payload = node_registry_payload(schema_version=schema_version)
-        return _designer_resource_ready(payload, endpoint)
-    except Exception as exc:
-        return _designer_resource_unavailable("node_registry_unavailable", endpoint, exc)
-
-
-@router.get("/core-workflow-readiness")
-async def get_core_workflow_readiness() -> dict[str, Any]:
-    """Audit the active release workflow as an executable contract."""
-    required = [
-        _core_workflow_readiness_item(item)
-        for item in active_builtin_workflow_presets()
-    ]
-    missing_required = [
-        item for item in required
-        if item.get("status") != "ready"
-    ]
-    return {
-        "status": "ready" if not missing_required else "incomplete",
-        "summary": {
-            "workflow_count": len(required),
-            "missing_required": len(missing_required),
-            "agent_step_count": sum(int(item.get("agent_step_count") or 0) for item in required),
-            "output_count": sum(int(item.get("output_count") or 0) for item in required),
-        },
-        "workflows": required,
-        "missing_required": missing_required,
-        "notes": [
-            "Readiness means preset structure, artifact contract, and output contract are declared.",
-            "Runtime readiness still depends on provider startup probes and task acceptance audits.",
-        ],
-    }
-
-
-@router.post("/workflow-presets/{preset_id}/install", status_code=201)
-async def install_builtin_workflow_preset(preset_id: str) -> dict[str, Any]:
-    _require_v3_writes()
-    _require_workflow_available_for_new_run(preset_id)
-    try:
-        workflow = install_workflow_preset(_workflow_store(), preset_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"Unknown workflow preset: {preset_id}")
-    return _workflow_response(workflow.raw)
 
 
 @router.post("/input-files/upload", status_code=201)
@@ -5923,89 +5479,6 @@ async def download_task_run_artifact(
             "Cache-Control": "no-store",
         },
     )
-
-
-@router.post("/task-runs/prepare", status_code=201)
-async def prepare_task_run(payload: PrepareTaskRunRequest) -> dict[str, Any]:
-    _require_v3_writes()
-    _require_workflow_available_for_new_run(payload.workflow_id)
-    await apply_persisted_agent_provider_settings()
-    try:
-        result = WorkbenchTaskRunPreparer(
-            artifact_root=_task_runs_dir(),
-            workflow_store=_workflow_store_with_builtin_presets(),
-            evidence_memory=_memory_store(),
-            semantic_library=_semantic_store(),
-        ).prepare(
-            workflow_id=payload.workflow_id,
-            workspace_id=payload.workspace_id,
-            repo_path=payload.repo_path,
-            inputs=payload.inputs,
-            provider_override=payload.provider_override,
-        )
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"Unknown workflow: {payload.workflow_id}")
-    except (FileNotFoundError, ValueError) as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    return _public_task_run_payload(result)
-
-
-@router.post("/task-runs/run", status_code=202)
-async def prepare_and_execute_task_run(payload: RunTaskRunRequest) -> dict[str, Any]:
-    _require_v3_writes()
-    _require_workflow_available_for_new_run(payload.workflow_id)
-    await apply_persisted_agent_provider_settings()
-    try:
-        prepared = WorkbenchTaskRunPreparer(
-            artifact_root=_task_runs_dir(),
-            workflow_store=_workflow_store_with_builtin_presets(),
-            evidence_memory=_memory_store(),
-            semantic_library=_semantic_store(),
-        ).prepare(
-            workflow_id=payload.workflow_id,
-            workspace_id=payload.workspace_id,
-            repo_path=payload.repo_path,
-            inputs=payload.inputs,
-            provider_override=payload.provider_override,
-        )
-        execute_payload = TaskRunExecuteRequest(
-            timeout_sec=payload.timeout_sec,
-            stop_on_error=payload.stop_on_error,
-        )
-        event_store = WorkbenchTaskRunEventStore(_task_runs_dir())
-        event_store.mark_status(prepared.task_run_id, "queued")
-        event_store.append(
-            prepared.task_run_id,
-            "queued",
-            {
-                "timeout_sec": execute_payload.timeout_sec,
-                "stop_on_error": execute_payload.stop_on_error,
-            },
-        )
-        asyncio.create_task(
-            _execute_task_run_background(
-                task_run_id=prepared.task_run_id,
-                payload=execute_payload,
-            )
-        )
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"Unknown workflow: {payload.workflow_id}")
-    except (FileNotFoundError, ValueError) as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(prepared.task_run_id)
-    task_dir = Path(task_run.artifact_dir)
-    return {
-        "status": "queued",
-        "task_run_id": task_run.task_run_id,
-        "workflow_id": task_run.workflow_id,
-        "workspace_id": task_run.workspace_id,
-        "task_run": _public_task_run_payload(task_run),
-        "run_ui_summary": _build_task_run_ui_summary(task_run, task_dir),
-        "artifact": {
-            "path": _public_task_artifact_path(task_dir, task_dir / "task_run.json"),
-            "manifest_path": _public_task_artifact_path(task_dir, task_dir / "task_artifact_manifest.json"),
-        },
-    }
 
 
 def _workflow_response(payload: dict[str, Any]) -> dict[str, Any]:

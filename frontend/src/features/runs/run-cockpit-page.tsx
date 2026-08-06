@@ -347,6 +347,7 @@ export function RunCockpitPage({ taskId, runId }: { taskId: string; runId: strin
 
     <section className="ct-v2-run-results">
       {failed && <FailurePanel summary={summary} onRetry={() => void retry()} busy={actionBusy} />}
+      <SkillInvocationPanel run={run} currentNode={currentNode} />
       <section className="ct-v2-run-deliverables"><header><div><h2>{deliveryBlocked ? "受阻产物" : "交付件"}</h2><span>{deliveryBlocked ? `${deliverables.length} 个待修复草稿` : `${deliverables.length} 个可交付文件`}</span></div></header><div>{deliverables.length ? <>{deliveryBlocked && <p>{v3Contract ? "声明产物未通过校验或被阻断：以下文件仅用于查看问题与辅助修复，尚不能作为正式交付。" : "质量门禁未通过：以下文件仅用于查看问题与辅助修复，尚不能作为正式交付。"}</p>}{deliverables.map((item, index) => <ArtifactRow key={artifactRowKey(item, index)} item={item} runId={runId} onOpen={openArtifact} nodeLabels={nodeLabels} />)}</> : <p>运行完成后，用户可下载的最终文件会显示在这里。</p>}</div></section>
       {v3Axes ? <V3StatusPanel axes={v3Axes} /> : <QualityPanel run={run} onRetry={() => void retry()} busy={actionBusy} />}
       <InputConsumptionPanel ledger={run.input_consumption} nodeLabels={nodeLabels} />
@@ -528,6 +529,20 @@ function HumanApprovalPanel({ node, recovered, busy, onDecide }: {
     </div>
   </section>;
 }
+function SkillInvocationPanel({ run, currentNode }: { run: PreparedWorkbenchTaskRun; currentNode?: WorkbenchRunUiNodeSummary }) {
+  const invocation = recordValue(run.task_bundle?.skill_invocation);
+  const plan = recordValue(run.task_bundle?.compiled_plan);
+  if (!invocation && !plan) return null;
+  const selectedDeliveries = stringList(invocation?.selected_delivery_ids);
+  const requiredArtifacts = stringList(invocation?.required_artifact_ids);
+  const requiredCapabilities = stringList(recordValue(invocation?.runtime)?.producer ? recordValue(recordValue(invocation?.runtime)?.producer)?.requested_capabilities : []);
+  const judge = recordValue(invocation?.judge);
+  const judgeRequired = Boolean(judge?.required || run.task_bundle?.skill_judge_required);
+  const axes = v3RunAxes(run);
+  const judgeStatus = String(axes?.governance || (judgeRequired ? "pending" : "not_requested"));
+  const steps = stringList(plan?.topological_order);
+  return <section className="ct-v2-run-quality" aria-label="Skill invocation"><header><div><h2>Skill 运行契约</h2><strong>{String(invocation?.skill_version_id || run.task_bundle?.skill_version_id || run.workflow_id)}</strong></div><span>{String(invocation?.skill_content_digest || run.task_bundle?.skill_content_digest || "").replace(/^sha256:/, "").slice(0, 12)}</span></header><div className="ct-v2-quality-axes"><QualityAxis label="当前步骤" status={statusOf(run)} value={null} detail={currentNode ? publicNodeLabel(currentNode) : steps[0] || "等待调度"} /><QualityAxis label="能力" status={requiredCapabilities.length ? "passed" : "not_checked"} value={null} detail={requiredCapabilities.join("、") || "未声明"} /><QualityAxis label="Judge" status={judgeRequired ? judgeStatus : "not_requested"} value={null} detail={judgeRequired ? `必需 · ${taskStatusLabel(taskGovernanceLabels, judgeStatus)}` : "未请求"} /><QualityAxis label="交付边界" status={selectedDeliveries.length ? "passed" : "pending"} value={null} detail={`${selectedDeliveries.length} delivery · ${requiredArtifacts.length} artifact`} /></div><p>此 Attempt 使用冻结 Skill Version、输入快照、delivery 选择和 required artifact 列表；交付件与支撑 artifact 在下方分开展示。</p></section>;
+}
 function NodeInspector({ node, nodeLabels }: { node?: WorkbenchRunUiNodeSummary; nodeLabels: NodeLabelMap }) { return <aside className="ct-v2-node-inspector"><header><span>运行上下文</span><h2>节点详情</h2></header>{node ? <div><strong>{publicNodeLabel(node)}</strong><small>{displayNodeType(node.type || "agent_task")} · {publicNodeText(node.status_label, nodeLabels)}</small><InspectorText label="节点目标" value={displayNodeGoal(node, nodeLabels)} /><InspectorText label="为什么执行" value={publicNodeText(node.why || "由工作流依赖关系调度", nodeLabels)} /><InspectorGroup label="直接依赖" values={referencedNodeLabels(node.depends_on, node.dependency_labels, nodeLabels)} nodeLabels={nodeLabels} /><InspectorInputGroup values={node.received_inputs || []} nodeLabels={nodeLabels} /><InspectorGroup label="Agent / Provider" values={[node.executor_label || node.provider || "系统内置"]} nodeLabels={nodeLabels} /><InspectorGroup label="Skills" values={(node.skills || []).map((item) => item.label || item.id)} nodeLabels={nodeLabels} /><InspectorGroup label="MCP" values={node.mcp_profiles || []} nodeLabels={nodeLabels} /><InspectorGroup label="正在调用的工具" values={node.active_tools || []} nodeLabels={nodeLabels} /><InspectorGroup label="已产生的输出" values={(node.outputs || []).filter((item) => item.status_label === "已生成").map((item) => item.artifact || item.id)} nodeLabels={nodeLabels} /><InspectorGroup label="下一节点" values={referencedNodeLabels(node.next_node_ids, node.next_node_labels, nodeLabels)} nodeLabels={nodeLabels} /><InspectorText label="开始时间" value={formatNodeTime(node.started_at)} /><InspectorText label="节点耗时" value={formatNodeDuration(node.duration_ms)} /></div> : <p>等待调度第一个节点。</p>}</aside>; }
 function InspectorGroup({ label, values, nodeLabels }: { label: string; values: string[]; nodeLabels: NodeLabelMap }) { const publicValues = values.map((item) => publicNodeText(item, nodeLabels)).filter(Boolean); return <section><h3>{label}</h3>{publicValues.length ? publicValues.map((item, index) => <span key={`${index}-${item}`}>{item}</span>) : <small>无</small>}</section>; }
 function InspectorText({ label, value }: { label: string; value: string }) { return <section><h3>{label}</h3><p>{value || "无"}</p></section>; }
@@ -554,6 +569,8 @@ function QualityPanel({ run, onRetry, busy }: { run: PreparedWorkbenchTaskRun; o
   </section>;
 }
 function QualityAxis({ label, status, value, detail }: { label: string; status?: string; value?: number | null; detail: string }) { const checked = status !== "not_checked" && value !== null && value !== undefined; return <article className={`is-${status || "not_checked"}`}><span>{label}</span><strong>{checked ? `${value}%` : "未检查"}</strong><small>{detail}</small></article>; }
+function recordValue(value: unknown): Record<string, unknown> | null { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null; }
+function stringList(value: unknown): string[] { return Array.isArray(value) ? value.map((item) => String(item)).filter(Boolean) : []; }
 function InputConsumptionPanel({ ledger, nodeLabels }: { ledger?: PreparedWorkbenchTaskRun["input_consumption"]; nodeLabels: NodeLabelMap }) {
   const inputs = ledger?.inputs || [];
   if (!inputs.length) return null;

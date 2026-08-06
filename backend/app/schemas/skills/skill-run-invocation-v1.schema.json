@@ -9,9 +9,13 @@
     "invocation_digest",
     "task_run_id",
     "task_id",
+    "skill_id",
     "skill_version_id",
     "skill_content_digest",
     "skill_ir_digest",
+    "source_zip",
+    "skill_ir",
+    "validation_report",
     "input_snapshot",
     "declared_context_refs",
     "runtime",
@@ -38,6 +42,9 @@
     "task_id": {
       "$ref": "#/$defs/opaqueId"
     },
+    "skill_id": {
+      "$ref": "#/$defs/semanticId"
+    },
     "skill_version_id": {
       "$ref": "#/$defs/opaqueId"
     },
@@ -46,6 +53,15 @@
     },
     "skill_ir_digest": {
       "$ref": "#/$defs/digest"
+    },
+    "source_zip": {
+      "$ref": "#/$defs/reference"
+    },
+    "skill_ir": {
+      "$ref": "#/$defs/reference"
+    },
+    "validation_report": {
+      "$ref": "#/$defs/reference"
     },
     "input_snapshot": {
       "$ref": "#/$defs/reference"

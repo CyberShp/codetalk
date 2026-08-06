@@ -2,10 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const inspector = readFileSync(
-  new URL("../src/features/workflows/designer/node-inspector.tsx", import.meta.url),
-  "utf8",
-);
 const wizard = readFileSync(
   new URL("../src/features/tasks/task-wizard.tsx", import.meta.url),
   "utf8",
@@ -18,15 +14,6 @@ const styles = readFileSync(
   new URL("../src/app/globals.css", import.meta.url),
   "utf8",
 );
-
-test("designer exposes the governed mindmap output without manual JSON", () => {
-  assert.match(inspector, /测试设计脑图/);
-  assert.match(inspector, /test_design_mindmap/);
-  assert.match(inspector, /test_design_mindmap\.json/);
-  assert.match(inspector, /test_design_mindmap\.html/);
-  assert.match(inspector, /test_design_mindmap\.svg/);
-  assert.match(inspector, /companion_artifacts/);
-});
 
 test("task wizard keeps optional mindmap disabled by default and offers a Chinese choice", () => {
   assert.match(wizard, /default_enabled/);
@@ -55,7 +42,8 @@ test("cockpit keeps total runtime live and presents workflow nodes in Chinese", 
   assert.match(cockpit, /function RunDuration/);
   assert.doesNotMatch(cockpit, /const runClockMs = useRunClock/);
   assert.match(cockpit, /function displayNodeName/);
-  assert.match(cockpit, /const partial = runPartial \|\|/);
+  assert.match(cockpit, /const partial = status === "partial"/);
+  assert.match(cockpit, /const partial = !recovered && \(runPartial \|\|/);
   assert.match(cockpit, /工作流已结束，当前最佳结果已保留/);
   assert.match(cockpit, /运行已结束/);
   assert.match(cockpit, /节点因上游门禁阻断/);

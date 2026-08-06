@@ -3,6 +3,9 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
+import { assertCanMutatePublicRuntime } from "../scripts/playwright-runtime-policy.mjs";
+
+assertCanMutatePublicRuntime({ env: process.env, flowName: "V3 in-flight restart real E2E" });
 
 const enabled = process.env.CODETALK_E2E_V3_INFLIGHT_RESTART === "1";
 const apiKey = process.env.CODETALK_E2E_LLM_API_KEY ?? "";

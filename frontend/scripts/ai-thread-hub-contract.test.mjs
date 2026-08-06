@@ -12,15 +12,14 @@ test("AI thread hub exposes deletion through the real conversation API", () => {
   assert.match(source, /window\.confirm\(`删除线程/);
 });
 
-test("AI thread creation can bind a workflow and open a real task draft", () => {
-  assert.match(source, /api\.workbench\.workflows\.list/);
-  assert.match(source, /aria-label="线程工作流模板"/);
-  assert.match(source, /selected_workflow_id/);
-  assert.match(source, /selected_workflow_name/);
-  assert.match(threadSource, /当前线程可使用工作流约束回答，但不会创建任务、Run Attempt 或执行 DAG/);
-  assert.match(threadSource, /创建任务草稿并补齐配置/);
-  assert.match(threadSource, /api\.aiConversations\.createTaskDraft/);
-  assert.match(threadSource, /\/tasks\/new\?task=/);
+test("AI thread no longer creates Workflow-bound task drafts", () => {
+  assert.doesNotMatch(source, /api\.workbench\.workflows\.list/);
+  assert.doesNotMatch(source, /aria-label="线程工作流模板"/);
+  assert.match(threadSource, /历史线程绑定了/);
+  assert.match(threadSource, /进入 Skill 任务向导/);
+  const removedCreateTaskDraftPattern = new RegExp(String.raw`api\.aiConversations\.create` + String.raw`TaskDraft`);
+  assert.doesNotMatch(threadSource, removedCreateTaskDraftPattern);
+  assert.doesNotMatch(threadSource, /\/tasks\/new\?task=/);
 });
 
 test("AI thread composer preserves multiline prompts until explicit send", () => {

@@ -130,7 +130,7 @@ def test_store_load_keeps_already_canonical_paths_stable(tmp_path):
     store_root = tmp_path / "task_runs"
     task_run_id = "task_run_fedcba9876543210fedcba9876543210"
     task_root = store_root / task_run_id
-    agent_root = task_root / "agent_runs" / "analyze_source_flow"
+    agent_root = task_root / "agent_runs" / "step.analyze-source-flow"
     _write_json(
         agent_root / "agent_run.json",
         {"run_id": "run", "artifact_dir": str(agent_root)},
@@ -149,7 +149,7 @@ def test_store_load_keeps_already_canonical_paths_stable(tmp_path):
             "artifact_dir": str(task_root),
             "workflow_snapshot": {
                 "compiled_contract_version": 3,
-                "steps": [{"id": "analyze_source_flow", "type": "agent_task"}],
+                "steps": [{"id": "step.analyze-source-flow", "type": "agent_task"}],
             },
             "input_snapshot": {},
             "task_bundle": {
@@ -158,7 +158,7 @@ def test_store_load_keeps_already_canonical_paths_stable(tmp_path):
             },
             "agent_runs": [
                 {
-                    "step_id": "analyze_source_flow",
+                    "step_id": "step.analyze-source-flow",
                     "run_id": "run",
                     "artifact_dir": str(agent_root),
                 }

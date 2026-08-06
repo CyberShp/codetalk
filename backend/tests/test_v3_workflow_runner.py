@@ -743,6 +743,25 @@ def test_string_contract_version_does_not_coerce_into_supported_v3(tmp_path: Pat
     assert result.step_results[0]["error"] == "unsupported_compiled_contract_version"
 
 
+def test_v3_skill_step_requires_frozen_invocation(tmp_path: Path) -> None:
+    task_run = _task_run(tmp_path, profile="none", outputs=[], validators=[])
+    task_run.task_bundle["compiled_definition"]["steps"] = [
+        {"id": "skill.step-01", "type": "skill_step"}
+    ]
+    task_run.task_bundle["compiled_plan"]["nodes"] = [
+        {"node_id": "skill.step-01", "type": "skill_step", "depends_on": []}
+    ]
+    task_run.task_bundle["compiled_plan"]["topological_order"] = ["skill.step-01"]
+    task_run = replace(task_run, agent_runs=[])
+    _persist_task_run(tmp_path, task_run)
+
+    result = WorkbenchWorkflowRunner(tmp_path).execute_task_run(task_run.task_run_id)
+
+    assert result.execution_status == "failed"
+    assert result.delivery_status == "blocked"
+    assert result.step_results[0]["technical_diagnostics"]["error"] == "missing_skill_invocation"
+
+
 def test_missing_contract_version_uses_unchanged_legacy_branch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     task_run = _task_run(tmp_path, contract_version=None)
     task_run.task_bundle["compiled_definition"].pop("compiled_contract_version")

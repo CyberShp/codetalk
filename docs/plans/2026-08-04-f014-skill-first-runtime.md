@@ -393,9 +393,10 @@ Map every AC to a command, log, artifact, screenshot, or independent verdict.
 
 ## 5. Sub-Agent Plan
 
-Maximum concurrency is three child Agents plus the main integrator. A child may
-own one production path in a wave. Shared integration files are never assigned
-to multiple Agents.
+Use as many useful child Agents as the current control-plane concurrency limit
+and task shape allow. A child may own one production path in a wave, or one
+read-only verification/review boundary. Shared integration files are never
+assigned to multiple Agents.
 
 ### Wave 0: Contract discovery
 

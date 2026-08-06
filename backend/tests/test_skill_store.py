@@ -145,3 +145,62 @@ def test_create_draft_rejects_source_roots_outside_filesystem_and_missing_projec
         )
 
     assert caught.value.code == "unsafe_source_root"
+
+
+def test_record_review_retains_audit_metadata_without_mutating_draft_source(tmp_path: Path) -> None:
+    module = _store_module()
+    db_path, data_dir, source = _paths(tmp_path)
+    _write_minimal_source(source)
+    store = module.SkillStore(db_path=db_path, data_dir=data_dir)
+    project = store.create_project(name="Codetalks Pack")
+    draft = store.create_draft_from_source(
+        project_id=project.project_id,
+        source_root=source,
+        source_scenario_id="custom",
+        skill_id="skill.codetalks-custom",
+    )
+    build = store.register_build(
+        draft_id=draft.draft_id,
+        build_id="build-review-red",
+        status="built",
+        content_digest="sha256:" + "a" * 64,
+        zip_digest="sha256:" + "b" * 64,
+    )
+    record_path = data_dir / "skills" / "builds" / build.build_id / "reviews" / "review.full" / "skill-review-v1.json"
+    review_record = {
+        "schema_version": "skill-review-v1",
+        "review_id": "review.full",
+        "skill_id": draft.skill_id,
+        "content_digest": build.content_digest,
+        "review_evidence_digest": "sha256:" + "c" * 64,
+        "review_evidence": {
+            "purpose": "full release review",
+            "session_id": "session-review-1",
+            "review_kind": "full",
+            "reviewed_at": "2026-08-04T00:00:00Z",
+            "provider": "deepseek",
+            "requested_model": "deepseek-v4-flash",
+            "effective_model": "deepseek-v4-flash",
+            "response_model": "deepseek-v4-flash",
+            "declared_context_window_tokens": 200000,
+            "requested_max_output_tokens": 4096,
+            "decision": "approved",
+            "findings": [],
+            "proposed_patches": [],
+        },
+    }
+    before = (draft.filesystem_path / "workflows" / "custom.md").read_text(encoding="utf-8")
+
+    review = store.record_review(build_id=build.build_id, review_record=review_record, record_path=record_path)
+
+    assert review.review_id == "review.full"
+    assert review.review_kind == "full"
+    assert review.decision == "approved"
+    assert review.record_path == record_path
+    assert json.loads(record_path.read_text(encoding="utf-8")) == review_record
+    assert store.required_full_review_for_build(build.build_id).review_id == review.review_id
+    assert (draft.filesystem_path / "workflows" / "custom.md").read_text(encoding="utf-8") == before
+
+    with sqlite3.connect(db_path) as db:
+        columns = {row[1] for row in db.execute("PRAGMA table_info(skill_reviews)").fetchall()}
+    assert {"build_id", "review_kind", "decision", "review_evidence_digest", "record_path"} <= columns

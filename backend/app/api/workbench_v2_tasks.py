@@ -19,22 +19,20 @@ from app.services.evidence_memory import EvidenceMemoryStore
 from app.services.ai_workbench_links import AIWorkbenchLinkStore
 from app.services.test_semantic_library import TestSemanticLibraryStore
 from app.services.knowledge_store import KnowledgeStore
+from app.services.skill_store import SkillStore
+from app.services.skill_run_invocation import (
+    SkillRunInvocationError,
+    freeze_skill_run_invocation,
+)
 from app.services.workbench_task_run import (
     WorkbenchTaskRunPreparer,
     WorkbenchTaskRunStore,
     refresh_run_snapshot_v3,
-    resolve_execution_profile,
 )
 from app.services.workbench_run_enrichment import enrich_prepared_task_run
 from app.services.workbench_task_run_events import WorkbenchTaskRunEventStore
 from app.services.workbench_task_store import WorkbenchTask, WorkbenchTaskStore
-from app.services.workbench_task_compile import TaskConfigurationError, compile_task_configuration
 from app.services.workflow_dsl import WorkflowStore
-from app.services.workflow_presets import (
-    active_builtin_workflow_presets,
-    reserved_builtin_workflow_ids,
-)
-from app.services.workflow_version_store import WorkflowVersionStore, workflow_header_status
 from app.services.workflow_migration_policy import (
     WORKFLOW_V3_READ_ONLY_DETAIL,
     workflow_v3_writes_enabled,
@@ -43,11 +41,6 @@ from app.services.workflow_migration_policy import (
 
 router = APIRouter(prefix="/api/workbench/tasks", tags=["workbench-v2-tasks"])
 _ATTEMPT_LOCK = threading.RLock()
-_BUILTIN_WORKFLOW_IDS = reserved_builtin_workflow_ids()
-_ACTIVE_BUILTIN_WORKFLOW_IDS = frozenset(
-    str(preset["definition"]["id"])
-    for preset in active_builtin_workflow_presets()
-)
 
 
 class TaskCreateRequest(BaseModel):
@@ -56,8 +49,7 @@ class TaskCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=240)
     description: str = ""
     workspace_id: str = Field(min_length=1)
-    workflow_id: str = Field(min_length=1)
-    workflow_version_id: str = Field(min_length=1)
+    skill_version_id: str = Field(min_length=1)
     lifecycle_status: str = "draft"
     execution_profile_id: str = ""
     input_values: dict[str, Any] = Field(default_factory=dict)
@@ -96,8 +88,11 @@ def task_store() -> WorkbenchTaskStore:
     return WorkbenchTaskStore(settings.data_path / "workbench" / "workflows.db")
 
 
-def version_store() -> WorkflowVersionStore:
-    return WorkflowVersionStore(settings.data_path / "workbench" / "workflows.db")
+def skill_store() -> SkillStore:
+    return SkillStore(
+        db_path=settings.data_path / "skills" / "skills.db",
+        data_dir=settings.data_path,
+    )
 
 
 def task_run_store() -> WorkbenchTaskRunStore:
@@ -136,7 +131,7 @@ async def list_tasks(
     lifecycle_status: str = "",
     execution_status: str = "",
     quality_status: str = "",
-    workflow_id: str = "",
+    skill_id: str = "",
     workspace_id: str = "",
     updated_from: str = "",
     updated_to: str = "",
@@ -148,7 +143,7 @@ async def list_tasks(
     filters = dict(
         q=q,
         lifecycle_status=lifecycle_status,
-        workflow_id=workflow_id,
+        skill_id=skill_id,
         workspace_id=workspace_id,
         updated_from=updated_from,
         updated_to=updated_to,
@@ -194,27 +189,25 @@ async def list_tasks(
 async def create_task(payload: TaskCreateRequest) -> dict[str, Any]:
     _require_v2()
     _require_v3_writes()
-    _require_workflow_available_for_new_task(payload.workflow_id)
-    version = _published_version(
-        payload.workflow_id,
-        payload.workflow_version_id,
-        require_current_builtin=True,
-    )
+    version = _skill_version(payload.skill_version_id)
+    skill_ir = _skill_ir(version)
     _workspace(payload.workspace_id)
     input_values = _without_workspace_input_values(
-        version.compiled_definition or {}, payload.input_values
+        skill_ir, payload.input_values
     )
     if payload.lifecycle_status == "ready":
-        _validate_ready_inputs(version.compiled_definition or {}, input_values)
-    _effective_configuration_payload(
+        _validate_ready_inputs(skill_ir, input_values)
+    _effective_skill_configuration_payload(
         version=version,
+        skill_ir=skill_ir,
         execution_overrides=payload.execution_overrides,
         output_overrides=payload.output_overrides,
     )
-    _validate_execution_profile(version.compiled_definition or {}, payload.execution_profile_id)
     try:
         task_payload = payload.model_dump()
         task_payload["input_values"] = input_values
+        task_payload["skill_id"] = version.skill_id
+        task_payload["skill_content_digest"] = version.content_digest
         task = task_store().create_task(**task_payload)
     except (sqlite3.IntegrityError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -225,16 +218,16 @@ async def create_task(payload: TaskCreateRequest) -> dict[str, Any]:
 async def get_task(task_id: str) -> dict[str, Any]:
     _require_v2()
     task = _task(task_id)
-    version = _published_version(task.workflow_id, task.workflow_version_id)
+    version = _skill_version(task.skill_version_id, expected_digest=task.skill_content_digest)
     origins = await AIWorkbenchLinkStore().list_links(task_id=task_id)
     return {
         **_task_payload(task),
         "runs": [_run_summary(run) for run in _task_runs(task_id)],
-        "workflow_version": {
+        "skill_version": {
             "version_id": version.version_id,
-            "version_number": version.version_number,
-            "compiled_definition": version.compiled_definition,
-            "compiled_plan": version.compiled_plan,
+            "skill_id": version.skill_id,
+            "content_digest": version.content_digest,
+            "ir": _skill_ir(version),
         },
         "ai_origins": [
             {
@@ -256,29 +249,21 @@ async def update_task(task_id: str, payload: TaskUpdateRequest) -> dict[str, Any
     _require_v3_writes()
     current = _task(task_id)
     changes = payload.model_dump(exclude_unset=True)
-    version = None
+    skill_ir = None
     if "input_values" in changes:
-        version = _published_version(current.workflow_id, current.workflow_version_id)
+        skill_ir = _skill_ir(_skill_version(current.skill_version_id, expected_digest=current.skill_content_digest))
         changes["input_values"] = _without_workspace_input_values(
-            version.compiled_definition or {}, changes.get("input_values") or {}
+            skill_ir, changes.get("input_values") or {}
         )
     if changes.get("lifecycle_status") == "ready":
-        version = version or _published_version(
-            current.workflow_id, current.workflow_version_id
-        )
+        skill_ir = skill_ir or _skill_ir(_skill_version(current.skill_version_id, expected_digest=current.skill_content_digest))
         values = changes.get("input_values", current.input_values)
-        _validate_ready_inputs(version.compiled_definition or {}, values)
-    if "execution_profile_id" in changes:
-        version = version or _published_version(
-            current.workflow_id, current.workflow_version_id
-        )
-        _validate_execution_profile(
-            version.compiled_definition or {}, changes.get("execution_profile_id") or ""
-        )
+        _validate_ready_inputs(skill_ir, values)
     if any(key in changes for key in {"execution_overrides", "output_overrides"}):
-        version = _published_version(current.workflow_id, current.workflow_version_id)
-        _effective_configuration_payload(
+        version = _skill_version(current.skill_version_id, expected_digest=current.skill_content_digest)
+        _effective_skill_configuration_payload(
             version=version,
+            skill_ir=_skill_ir(version),
             execution_overrides=changes.get("execution_overrides", current.execution_overrides),
             output_overrides=changes.get("output_overrides", current.output_overrides),
         )
@@ -307,12 +292,7 @@ async def clone_task(task_id: str, payload: TaskCloneRequest) -> dict[str, Any]:
     _require_v2()
     _require_v3_writes()
     source = _task(task_id)
-    _require_workflow_available_for_new_task(source.workflow_id)
-    _published_version(
-        source.workflow_id,
-        source.workflow_version_id,
-        require_current_builtin=True,
-    )
+    _skill_version(source.skill_version_id, expected_digest=source.skill_content_digest)
     return _task_payload(task_store().clone_task(task_id, name=payload.name))
 
 
@@ -328,10 +308,12 @@ async def compile_task(task_id: str) -> dict[str, Any]:
     _require_v2()
     _require_v3_writes()
     task = _task(task_id)
-    version = _published_version(task.workflow_id, task.workflow_version_id)
-    _validate_ready_inputs(version.compiled_definition or {}, task.input_values)
-    effective = _effective_configuration_payload(
+    version = _skill_version(task.skill_version_id, expected_digest=task.skill_content_digest)
+    skill_ir = _skill_ir(version)
+    _validate_ready_inputs(skill_ir, task.input_values)
+    effective = _effective_skill_configuration_payload(
         version=version,
+        skill_ir=skill_ir,
         execution_overrides=task.execution_overrides,
         output_overrides=task.output_overrides,
     )
@@ -369,7 +351,11 @@ async def create_task_attempt(task_id: str, payload: TaskRunCreateRequest) -> di
             effective_plan = dict(parent_run.task_bundle.get("compiled_plan") or {})
             resolved_inputs = _inputs_from_parent_snapshot(parent_run.input_snapshot)
             repo_path = Path(str(parent_run.repo_path)).expanduser().resolve()
-            workflow_version_id = str(parent_run.task_bundle.get("workflow_version_id") or "")
+            skill_version_id = str(
+                parent_run.task_bundle.get("skill_version_id")
+                or parent_run.task_bundle.get("workflow_version_id")
+                or ""
+            )
             execution_overrides = dict(parent_run.task_bundle.get("execution_overrides") or {})
             output_overrides = dict(parent_run.task_bundle.get("output_overrides") or {})
             retry_seed_results, retry_failed_node_ids = _retry_seed_results_from_parent(
@@ -403,18 +389,22 @@ async def create_task_attempt(task_id: str, payload: TaskRunCreateRequest) -> di
                 )
             artifact_profile_id = ""
             feature_tags = []
+            version = _skill_version(skill_version_id, expected_digest=task.skill_content_digest)
+            skill_ir = _skill_ir(version)
         else:
-            version = _published_version(task.workflow_id, task.workflow_version_id)
-            effective = _effective_configuration_payload(
+            version = _skill_version(task.skill_version_id, expected_digest=task.skill_content_digest)
+            skill_ir = _skill_ir(version)
+            effective = _effective_skill_configuration_payload(
                 version=version,
+                skill_ir=skill_ir,
                 execution_overrides=task.execution_overrides,
                 output_overrides=task.output_overrides,
             )
-            effective_definition = effective["compiled_definition"]
-            effective_plan = effective["compiled_plan"]
+            effective_definition = _skill_compat_definition(version, skill_ir)
+            effective_plan = effective["skill_plan"]
             resolved_inputs = dict(task.input_values)
             repo_path = Path(str(workspace["repo_path"])).expanduser().resolve()
-            workflow_version_id = version.version_id
+            skill_version_id = version.version_id
             execution_overrides = task.execution_overrides
             output_overrides = task.output_overrides
             retry_seed_results = {}
@@ -438,7 +428,7 @@ async def create_task_attempt(task_id: str, payload: TaskRunCreateRequest) -> di
             raise HTTPException(status_code=422, detail=f"工作空间源码目录不可用：{repo_path}")
         for definition in effective_definition.get("inputs") or []:
             if _is_workspace_input_definition(definition):
-                resolved_inputs[str(definition["id"])] = str(repo_path)
+                resolved_inputs[_input_definition_id(definition)] = str(repo_path)
         _validate_ready_inputs(effective_definition, resolved_inputs)
         workflow_store = WorkflowStore(settings.data_path / "workbench" / "task_workflows.db")
         is_v3_contract = effective_definition.get("compiled_contract_version") == 3
@@ -451,7 +441,7 @@ async def create_task_attempt(task_id: str, payload: TaskRunCreateRequest) -> di
                 evidence_memory=EvidenceMemoryStore(settings.data_path / "workbench" / "evidence_memory.db"),
                 semantic_library=TestSemanticLibraryStore(settings.data_path / "workbench" / "test_semantics.db"),
             ).prepare(
-                workflow_id=task.workflow_id,
+                workflow_id=task.skill_id,
                 workspace_id=task.workspace_id,
                 repo_path=str(repo_path),
                 inputs=resolved_inputs,
@@ -485,9 +475,29 @@ async def create_task_attempt(task_id: str, payload: TaskRunCreateRequest) -> di
             )
         except (FileNotFoundError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=f"任务输入不完整或无效：{exc}") from exc
-        prepared.task_bundle["workflow_version_id"] = workflow_version_id
+        prepared.task_bundle["skill_version_id"] = skill_version_id
+        prepared.task_bundle["skill_content_digest"] = task.skill_content_digest
         prepared.task_bundle["compiled_plan"] = effective_plan
         prepared.task_bundle["effective_compiled_definition"] = effective_definition
+        try:
+            invocation = freeze_skill_run_invocation(
+                version=version,
+                task_run_id=prepared.task_run_id,
+                task_id=task.task_id,
+                artifact_root=prepared.artifact_dir,
+                inputs=resolved_inputs,
+                skill_ir=skill_ir,
+                selected_deliveries=(
+                    output_overrides.get("selected_deliveries")
+                    or output_overrides.get("deliveries")
+                    or []
+                ),
+                expected_content_digest=task.skill_content_digest,
+            )
+        except SkillRunInvocationError as exc:
+            raise HTTPException(status_code=422, detail=f"Skill invocation cannot be frozen: {exc}") from exc
+        prepared.task_bundle["skill_invocation"] = asdict(invocation)
+        prepared.task_bundle["skill_judge_required"] = bool(invocation.judge.get("required"))
         prepared.task_bundle["execution_overrides"] = execution_overrides
         prepared.task_bundle["output_overrides"] = output_overrides
         if parent_run is not None:
@@ -838,51 +848,25 @@ def _task(task_id: str) -> WorkbenchTask:
         raise HTTPException(status_code=404, detail=f"任务不存在：{task_id}") from exc
 
 
-def _require_workflow_available_for_new_task(workflow_id: str) -> None:
-    if (
-        workflow_id in _BUILTIN_WORKFLOW_IDS
-        and workflow_id not in _ACTIVE_BUILTIN_WORKFLOW_IDS
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail="该内置工作流已下线，仅保留历史任务与运行记录；请选择当前发布工作流。",
-        )
-    if workflow_header_status(
-        settings.data_path / "workbench" / "workflows.db",
-        workflow_id,
-    ) == "archived":
-        raise HTTPException(
-            status_code=409,
-            detail="该自建工作流已归档，仅保留历史任务与运行记录；请恢复工作流或选择其他工作流。",
-        )
-
-
-def _published_version(
-    workflow_id: str,
-    version_id: str,
-    *,
-    require_current_builtin: bool = False,
-):
-    store = version_store()
+def _skill_version(version_id: str, *, expected_digest: str = ""):
+    store = skill_store()
     try:
         version = store.get_version(version_id)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail="工作流版本不存在") from exc
-    if version.workflow_id != workflow_id:
-        raise HTTPException(status_code=422, detail="工作流版本与工作流不匹配")
-    if version.state != "published":
-        raise HTTPException(status_code=422, detail="普通任务只能选择已发布工作流版本")
-    if require_current_builtin and workflow_id in _BUILTIN_WORKFLOW_IDS:
-        try:
-            current_version_id = store.get_workflow(workflow_id).published_version_id
-        except KeyError as exc:
-            raise HTTPException(status_code=409, detail="内置工作流尚未准备好，请刷新后重试") from exc
-        if version_id != current_version_id:
-            raise HTTPException(
-                status_code=409,
-                detail="内置工作流版本已更新，请刷新页面并选择最新发布版本",
-            )
+        raise HTTPException(status_code=404, detail="Skill Version 不存在") from exc
+    if expected_digest and version.content_digest != expected_digest:
+        raise HTTPException(status_code=409, detail="Task 绑定的 Skill Version digest 已不匹配")
     return version
+
+
+def _skill_ir(version: Any) -> dict[str, Any]:
+    try:
+        payload = json.loads(Path(version.ir_path).read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="Skill Version IR 不可读取") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="Skill Version IR 无效")
+    return payload
 
 
 def _workspace(workspace_id: str) -> dict[str, str]:
@@ -906,26 +890,16 @@ def _validate_ready_inputs(definition: dict[str, Any], values: dict[str, Any]) -
             continue
         if _is_workspace_input_definition(item):
             continue
-        value = values.get(str(item.get("id") or ""))
+        value = values.get(_input_definition_id(item))
         if value is None or (isinstance(value, str) and not value.strip()) or value == [] or value == {}:
-            missing.append(str(item.get("label") or item.get("id") or "未命名输入"))
+            missing.append(str(item.get("label") or _input_definition_id(item) or "未命名输入"))
     if missing:
         raise HTTPException(status_code=422, detail=f"任务缺少必填输入：{'、'.join(missing)}")
 
 
-def _validate_execution_profile(definition: dict[str, Any], profile_id: str) -> None:
-    selected = str(profile_id or "").strip()
-    if not selected:
-        return
-    try:
-        # Keep validation exactly aligned with the run preparer. Older
-        # published versions intentionally fall back to compatibility profiles.
-        resolve_execution_profile(definition, execution_profile_id=selected)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-
 def _is_workspace_input_definition(item: dict[str, Any]) -> bool:
+    if str(item.get("kind") or "") == "workspace":
+        return True
     if str(item.get("resolver") or "") == "workspace":
         return True
     return (
@@ -938,25 +912,92 @@ def _without_workspace_input_values(
     definition: dict[str, Any], values: dict[str, Any]
 ) -> dict[str, Any]:
     reserved_ids = {
-        str(item.get("id") or "")
+        _input_definition_id(item)
         for item in definition.get("inputs") or []
         if isinstance(item, dict) and _is_workspace_input_definition(item)
     }
+    declared_ids = {
+        _input_definition_id(item)
+        for item in definition.get("inputs") or []
+        if isinstance(item, dict) and _input_definition_id(item)
+    }
+    if declared_ids:
+        return {
+            key: value
+            for key, value in values.items()
+            if key in declared_ids and key not in reserved_ids
+        }
     return {key: value for key, value in values.items() if key not in reserved_ids}
 
 
-def _effective_configuration_payload(*, version: Any, execution_overrides: dict[str, Any], output_overrides: dict[str, Any]) -> dict[str, Any]:
-    if not version.compiled_definition or not version.compiled_plan:
-        raise HTTPException(status_code=422, detail="工作流发布版本没有可执行编译计划")
-    try:
-        return compile_task_configuration(
-            compiled_definition=version.compiled_definition,
-            compiled_plan=version.compiled_plan,
-            execution_overrides=execution_overrides,
-            output_overrides=output_overrides,
-        )
-    except TaskConfigurationError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+def _input_definition_id(item: dict[str, Any]) -> str:
+    return str(item.get("id") or item.get("input_id") or "")
+
+
+def _effective_skill_configuration_payload(
+    *,
+    version: Any,
+    skill_ir: dict[str, Any],
+    execution_overrides: dict[str, Any],
+    output_overrides: dict[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(execution_overrides, dict) or not isinstance(output_overrides, dict):
+        raise HTTPException(status_code=422, detail="Task execution/output overrides must be objects")
+    requested_deliveries = output_overrides.get("selected_deliveries") or output_overrides.get("deliveries") or []
+    if requested_deliveries and not isinstance(requested_deliveries, list):
+        raise HTTPException(status_code=422, detail="selected deliveries must be an array")
+    declared = {
+        str(item.get("id") or item.get("delivery_id") or "")
+        for item in skill_ir.get("deliveries") or skill_ir.get("outputs") or []
+        if isinstance(item, dict)
+    }
+    selected = [str(item) for item in requested_deliveries if str(item)]
+    unknown = sorted(set(selected).difference(declared))
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"Skill delivery does not exist: {', '.join(unknown)}")
+    return {
+        "skill_version": {
+            "version_id": version.version_id,
+            "skill_id": version.skill_id,
+            "content_digest": version.content_digest,
+        },
+        "skill_ir": skill_ir,
+        "skill_plan": _skill_plan(skill_ir),
+        "selected_deliveries": selected,
+    }
+
+
+def _skill_plan(skill_ir: dict[str, Any]) -> dict[str, Any]:
+    steps = [
+        str(item.get("id") or item.get("step_id") or "")
+        for item in skill_ir.get("steps") or []
+        if isinstance(item, dict) and str(item.get("id") or item.get("step_id") or "")
+    ]
+    return {
+        "compiled_contract_version": 3,
+        "plan_version": 1,
+        "skill_id": str(skill_ir.get("skill_id") or ""),
+        "topological_order": steps,
+        "nodes": [
+            {
+                "node_id": step_id,
+                "type": "skill_step",
+                "depends_on": [],
+            }
+            for step_id in steps
+        ],
+    }
+
+
+def _skill_compat_definition(version: Any, skill_ir: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": version.skill_id,
+        "name": version.skill_id,
+        "compiled_contract_version": 3,
+        "inputs": skill_ir.get("inputs") or [],
+        "outputs": skill_ir.get("deliveries") or skill_ir.get("outputs") or [],
+        "steps": skill_ir.get("steps") or [],
+    }
 
 
 def _task_runs(task_id: str) -> list[Any]:
@@ -972,15 +1013,10 @@ def _task_payload(task: WorkbenchTask) -> dict[str, Any]:
     except HTTPException:
         payload["workspace_name"] = "工作空间不可用"
     try:
-        payload["workflow_name"] = version_store().get_workflow(task.workflow_id).name
-    except KeyError:
-        payload["workflow_name"] = "工作流不可用"
-    try:
-        payload["workflow_version_number"] = version_store().get_version(
-            task.workflow_version_id
-        ).version_number
-    except KeyError:
-        payload["workflow_version_number"] = None
+        version = _skill_version(task.skill_version_id, expected_digest=task.skill_content_digest)
+        payload["skill_name"] = version.skill_id
+    except HTTPException:
+        payload["skill_name"] = "Skill 不可用"
     return payload
 
 

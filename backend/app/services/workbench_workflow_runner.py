@@ -90,7 +90,7 @@ from app.services.workflow_handler_dispatcher import (
     WorkflowHandlerResult,
 )
 
-SAFE_RUNTIME_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+SAFE_RUNTIME_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 _BUILTIN_HARNESS_INTERNAL_ARTIFACTS = [
     "builtin_llm_execution_input.json",
@@ -1603,6 +1603,16 @@ class WorkbenchWorkflowRunner:
                         plan_by_id=plan_by_id,
                     )
                 )
+            elif str(node.get("type") or "") == "skill_step":
+                self._emit_event(
+                    "step_started",
+                    _v3_handler_started_event_payload(node),
+                )
+                result = self._execute_v3_skill_step_node(
+                    task_run=task_run,
+                    node=node,
+                    resolved_inputs=resolved_inputs,
+                )
             else:
                 step = steps_by_id.get(node_id)
                 if (
@@ -1923,6 +1933,74 @@ class WorkbenchWorkflowRunner:
         self._write_v3_execution_artifact(task_run.task_run_id, result)
         self._emit_event("v3_status_updated", _v3_status_event_payload(result))
         return result
+
+    def _execute_v3_skill_step_node(
+        self,
+        *,
+        task_run: Any,
+        node: dict[str, Any],
+        resolved_inputs: dict[str, Any],
+    ) -> dict[str, Any]:
+        node_id = str(node.get("node_id") or "")
+        task_dir = Path(task_run.artifact_dir)
+        step_dir = task_dir / "skill_steps" / _safe_segment(node_id or "skill_step")
+        step_dir.mkdir(parents=True, exist_ok=True)
+        invocation_path = task_dir / "skill_invocation.json"
+        if not invocation_path.is_file():
+            return {
+                "step_id": node_id,
+                "node_id": node_id,
+                "type": "skill_step",
+                "status": "error",
+                "error": "missing_skill_invocation",
+                "technical_diagnostics": {"error": "missing_skill_invocation"},
+                "artifact_dir": str(step_dir),
+            }
+        lifecycle_status = "completed"
+        lifecycle_events: list[dict[str, Any]] = []
+        from app.services.skill_run_executor import (
+            ScriptedSkillAgentAdapter,
+            SkillRunExecutor,
+            SkillRunExecutorError,
+        )
+
+        try:
+            lifecycle = SkillRunExecutor(
+                adapter=ScriptedSkillAgentAdapter([
+                    {"event": "skill_step_started", "status": "running", "node_id": node_id},
+                    {"event": "skill_step_completed", "status": "completed", "node_id": node_id},
+                ])
+            ).execute(invocation_path)
+            lifecycle_status = str(lifecycle.get("status") or "completed")
+            lifecycle_events = [
+                dict(item)
+                for item in lifecycle.get("events") or []
+                if isinstance(item, dict)
+            ]
+        except SkillRunExecutorError as exc:
+            return {
+                "step_id": node_id,
+                "node_id": node_id,
+                "type": "skill_step",
+                "status": "error",
+                "error": str(exc),
+                "technical_diagnostics": {"error": "skill_step_lifecycle_failed"},
+                "artifact_dir": str(step_dir),
+            }
+        return {
+            "step_id": node_id,
+            "node_id": node_id,
+            "type": "skill_step",
+            "status": "completed" if lifecycle_status == "completed" else lifecycle_status,
+            "artifact_dir": str(step_dir),
+            "skill_step": {
+                "node_id": node_id,
+                "lifecycle_status": lifecycle_status,
+                "resolved_input_ids": sorted(resolved_inputs),
+                "artifact_scope": "skill_invocation",
+            },
+            "lifecycle_events": lifecycle_events,
+        }
 
     def _execute_v3_tool_node(
         self,

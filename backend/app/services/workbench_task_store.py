@@ -15,7 +15,7 @@ from app.services.workbench_sqlite_backup import ensure_workbench_migration_back
 
 
 _LOCK = threading.RLock()
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 _LIFECYCLE_STATUSES = frozenset({"draft", "ready", "archived"})
 
 
@@ -29,8 +29,9 @@ class WorkbenchTask:
     name: str
     description: str
     workspace_id: str
-    workflow_id: str
-    workflow_version_id: str
+    skill_id: str
+    skill_version_id: str
+    skill_content_digest: str
     lifecycle_status: str
     execution_profile_id: str
     input_values: dict[str, Any]
@@ -52,6 +53,16 @@ class WorkbenchTaskStore:
     def initialize_and_migrate(self) -> dict[str, int]:
         ensure_workbench_migration_backup(self.db_path)
         with _LOCK, self._connect() as db:
+            existing_columns = {
+                str(row["name"])
+                for row in db.execute("PRAGMA table_info(workbench_tasks)").fetchall()
+            }
+            if existing_columns and (
+                "workflow_id" in existing_columns
+                or "workflow_version_id" in existing_columns
+                or "skill_version_id" not in existing_columns
+            ):
+                db.execute("DROP TABLE workbench_tasks")
             db.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS workbench_schema_meta (
@@ -65,8 +76,9 @@ class WorkbenchTaskStore:
                     name TEXT NOT NULL,
                     description TEXT NOT NULL DEFAULT '',
                     workspace_id TEXT NOT NULL,
-                    workflow_id TEXT NOT NULL,
-                    workflow_version_id TEXT NOT NULL,
+                    skill_id TEXT NOT NULL,
+                    skill_version_id TEXT NOT NULL,
+                    skill_content_digest TEXT NOT NULL,
                     lifecycle_status TEXT NOT NULL,
                     execution_profile_id TEXT NOT NULL DEFAULT '',
                     input_values_json TEXT NOT NULL,
@@ -81,8 +93,8 @@ class WorkbenchTaskStore:
 
                 CREATE INDEX IF NOT EXISTS idx_workbench_tasks_updated
                     ON workbench_tasks(updated_at DESC);
-                CREATE INDEX IF NOT EXISTS idx_workbench_tasks_workflow
-                    ON workbench_tasks(workflow_id, workflow_version_id);
+                CREATE INDEX IF NOT EXISTS idx_workbench_tasks_skill
+                    ON workbench_tasks(skill_id, skill_version_id);
                 CREATE INDEX IF NOT EXISTS idx_workbench_tasks_workspace
                     ON workbench_tasks(workspace_id);
                 """
@@ -113,8 +125,9 @@ class WorkbenchTaskStore:
         *,
         name: str,
         workspace_id: str,
-        workflow_id: str,
-        workflow_version_id: str,
+        skill_id: str,
+        skill_version_id: str,
+        skill_content_digest: str,
         description: str = "",
         lifecycle_status: str = "draft",
         execution_profile_id: str = "",
@@ -130,8 +143,9 @@ class WorkbenchTaskStore:
             raise ValueError("task name is required")
         for field_name, value in {
             "workspace_id": workspace_id,
-            "workflow_id": workflow_id,
-            "workflow_version_id": workflow_version_id,
+            "skill_id": skill_id,
+            "skill_version_id": skill_version_id,
+            "skill_content_digest": skill_content_digest,
         }.items():
             if not str(value or "").strip():
                 raise ValueError(f"{field_name} is required")
@@ -142,19 +156,20 @@ class WorkbenchTaskStore:
             db.execute(
                 """
                 INSERT INTO workbench_tasks(
-                    task_id, name, description, workspace_id, workflow_id,
-                    workflow_version_id, lifecycle_status, execution_profile_id, input_values_json,
+                    task_id, name, description, workspace_id, skill_id,
+                    skill_version_id, skill_content_digest, lifecycle_status, execution_profile_id, input_values_json,
                     execution_overrides_json, output_overrides_json, tags_json,
                     last_run_id, created_at, updated_at, archived_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)
                 """,
                 (
                     identifier,
                     clean_name,
                     str(description or "").strip(),
                     str(workspace_id).strip(),
-                    str(workflow_id).strip(),
-                    str(workflow_version_id).strip(),
+                    str(skill_id).strip(),
+                    str(skill_version_id).strip(),
+                    str(skill_content_digest).strip(),
                     lifecycle,
                     str(execution_profile_id or "").strip(),
                     self._json_object(input_values),
@@ -182,7 +197,7 @@ class WorkbenchTaskStore:
         *,
         q: str = "",
         lifecycle_status: str = "",
-        workflow_id: str = "",
+        skill_id: str = "",
         workspace_id: str = "",
         updated_from: str = "",
         updated_to: str = "",
@@ -194,7 +209,7 @@ class WorkbenchTaskStore:
         where, params = self._task_filters(
             q=q,
             lifecycle_status=lifecycle_status,
-            workflow_id=workflow_id,
+            skill_id=skill_id,
             workspace_id=workspace_id,
             updated_from=updated_from,
             updated_to=updated_to,
@@ -213,7 +228,7 @@ class WorkbenchTaskStore:
         *,
         q: str = "",
         lifecycle_status: str = "",
-        workflow_id: str = "",
+        skill_id: str = "",
         workspace_id: str = "",
         updated_from: str = "",
         updated_to: str = "",
@@ -223,7 +238,7 @@ class WorkbenchTaskStore:
         where, params = self._task_filters(
             q=q,
             lifecycle_status=lifecycle_status,
-            workflow_id=workflow_id,
+            skill_id=skill_id,
             workspace_id=workspace_id,
             updated_from=updated_from,
             updated_to=updated_to,
@@ -240,7 +255,7 @@ class WorkbenchTaskStore:
         *,
         q: str,
         lifecycle_status: str,
-        workflow_id: str,
+        skill_id: str,
         workspace_id: str,
         updated_from: str,
         updated_to: str,
@@ -259,9 +274,9 @@ class WorkbenchTaskStore:
             params.append(self._lifecycle(lifecycle_status))
         elif not include_archived:
             clauses.append("lifecycle_status != 'archived'")
-        if workflow_id:
-            clauses.append("workflow_id = ?")
-            params.append(workflow_id)
+        if skill_id:
+            clauses.append("skill_id = ?")
+            params.append(skill_id)
         if workspace_id:
             clauses.append("workspace_id = ?")
             params.append(workspace_id)
@@ -275,7 +290,7 @@ class WorkbenchTaskStore:
 
     def update_task(self, task_id: str, **changes: Any) -> WorkbenchTask:
         self.initialize_and_migrate()
-        immutable = {"task_id", "workspace_id", "workflow_id", "workflow_version_id", "created_at"}
+        immutable = {"task_id", "workspace_id", "skill_id", "skill_version_id", "skill_content_digest", "created_at"}
         attempted = immutable.intersection(changes)
         if attempted:
             raise ValueError(f"immutable task fields cannot change: {', '.join(sorted(attempted))}")
@@ -347,8 +362,9 @@ class WorkbenchTaskStore:
             name=str(name or f"{source.name} 副本"),
             description=source.description,
             workspace_id=source.workspace_id,
-            workflow_id=source.workflow_id,
-            workflow_version_id=source.workflow_version_id,
+            skill_id=source.skill_id,
+            skill_version_id=source.skill_version_id,
+            skill_content_digest=source.skill_content_digest,
             lifecycle_status="draft",
             execution_profile_id=source.execution_profile_id,
             input_values=source.input_values,
@@ -394,8 +410,9 @@ def _task_from_row(row: sqlite3.Row) -> WorkbenchTask:
         name=str(row["name"]),
         description=str(row["description"] or ""),
         workspace_id=str(row["workspace_id"]),
-        workflow_id=str(row["workflow_id"]),
-        workflow_version_id=str(row["workflow_version_id"]),
+        skill_id=str(row["skill_id"]),
+        skill_version_id=str(row["skill_version_id"]),
+        skill_content_digest=str(row["skill_content_digest"]),
         lifecycle_status=str(row["lifecycle_status"]),
         execution_profile_id=str(row["execution_profile_id"] or ""),
         input_values=dict(json.loads(row["input_values_json"] or "{}")),

@@ -3,12 +3,12 @@ import test from "node:test";
 
 import { ApiRequestError, request } from "./api.ts";
 
-test("failed derived workflow action exposes the preserved draft revision", async () => {
+test("failed Skill build action exposes the preserved draft revision", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response(
     JSON.stringify({
       detail: {
-        message: "工作流存在阻断问题",
+        message: "Skill 构建存在阻断问题",
         errors: [{ code: "required_input_unbound" }],
         draft_revision: 17,
       },
@@ -18,7 +18,7 @@ test("failed derived workflow action exposes the preserved draft revision", asyn
 
   try {
     await assert.rejects(
-      () => request("/api/workbench/workflows/wf/versions/v/compile", { method: "POST" }),
+      () => request("/api/skills/drafts/draft_1/builds", { method: "POST" }),
       (cause: unknown) => {
         assert.ok(cause instanceof ApiRequestError);
         assert.equal((cause as ApiRequestError & { draftRevision?: number }).draftRevision, 17);

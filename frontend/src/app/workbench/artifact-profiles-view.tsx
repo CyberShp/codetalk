@@ -208,7 +208,7 @@ export function ArtifactProfilesView({
   }
 
   return (
-    <div className="grid min-h-0 gap-4 xl:grid-cols-[280px_minmax(0,1fr)]">
+    <div className="ct-artifact-profiles-workspace grid min-h-0 gap-4 xl:grid-cols-[280px_minmax(0,1fr)]">
       <aside className="min-h-0 border-r border-outline-variant/30 pr-4">
         <div className="mb-3 flex items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-2">

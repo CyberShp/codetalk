@@ -15,7 +15,8 @@ import {
   Trash2,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { AgentRuntime, AIConversation, WorkflowDefinition, Workspace } from "@/lib/types";
+import { compactMachineToken } from "@/lib/display-text";
+import type { AgentRuntime, AIConversation, Workspace } from "@/lib/types";
 
 const PROJECT_LIST_RENDER_LIMIT = 80;
 
@@ -35,7 +36,14 @@ function projectIdForThread(thread: AIConversation): string {
 }
 
 function publicProjectDetail(workspace: Workspace): string {
-  return `workspace:${workspace.id}`;
+  return `workspace:${compactMachineToken(workspace.id, 18)}`;
+}
+
+function publicScopeDetail(thread: AIConversation): string {
+  if (thread.scope_type === "workspace" || thread.workspace_id) {
+    return `workspace / ${compactMachineToken(projectIdForThread(thread), 18)}`;
+  }
+  return `${thread.scope_type} / ${compactMachineToken(thread.scope_id, 18)}`;
 }
 
 function formatTime(value: string): string {
@@ -53,7 +61,7 @@ function scopeLabel(thread: AIConversation): string {
   const labels: Record<string, string> = {
     workspace: "项目线程",
     workbench_task_run: "运行复盘",
-    workflow: "工作流",
+    workflow: "历史编排",
     report: "报告",
     module: "代码模块",
     requirement_doc: "需求文档",
@@ -68,9 +76,7 @@ export default function AIHomePage() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [threads, setThreads] = useState<AIConversation[]>([]);
   const [agentRuntimes, setAgentRuntimes] = useState<AgentRuntime[]>([]);
-  const [workflows, setWorkflows] = useState<WorkflowDefinition[]>([]);
   const [selectedRuntimeId, setSelectedRuntimeId] = useState("");
-  const [selectedWorkflowId, setSelectedWorkflowId] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [projectQuery, setProjectQuery] = useState("");
   const [title, setTitle] = useState("");
@@ -86,17 +92,15 @@ export default function AIHomePage() {
       setLoading(true);
       setError(null);
       try {
-        const [workspaceItems, threadResult, runtimeResult, workflowItems] = await Promise.all([
+        const [workspaceItems, threadResult, runtimeResult] = await Promise.all([
           api.workspaces.list(),
           api.aiConversations.list({ limit: 100 }),
           api.settings.listAgentRuntimes({ enabled: true }).catch(() => ({ items: [] as AgentRuntime[] })),
-          api.workbench.workflows.list().catch(() => [] as WorkflowDefinition[]),
         ]);
         if (cancelled) return;
         setWorkspaces(workspaceItems);
         setThreads(threadResult.items);
         setAgentRuntimes(runtimeResult.items);
-        setWorkflows(workflowItems);
         setSelectedRuntimeId((current) => current || runtimeResult.items[0]?.id || "builtin_llm");
         setSelectedProjectId((current) => current || workspaceItems[0]?.id || "global");
       } catch (exc) {
@@ -157,7 +161,6 @@ export default function AIHomePage() {
     setCreating(true);
     setError(null);
     try {
-      const selectedWorkflow = workflows.find((workflow) => workflow.id === selectedWorkflowId) ?? null;
       const conversation = await api.aiConversations.create({
         scope_type: "workspace",
         scope_id: selectedProject.workspace.id,
@@ -170,8 +173,6 @@ export default function AIHomePage() {
           workspace_id: selectedProject.workspace.id,
           project_name: selectedProject.workspace.name,
           memory_namespace: `workspace:${selectedProject.workspace.id}`,
-          selected_workflow_id: selectedWorkflow?.id ?? "",
-          selected_workflow_name: selectedWorkflow?.name ?? "",
         },
       });
       router.push(`/ai/${conversation.id}`);
@@ -213,7 +214,6 @@ export default function AIHomePage() {
             CodeTalk AI
           </span>
           <h1>按项目管理持续对话</h1>
-          <p>直接像 Codex 一样打开线程、切换项目、持续追问；智能体编排、报告和工作空间只是上下文来源。</p>
         </div>
         <Link href="/workspaces/new" className="ct-ai-home__new-project">
           <FolderPlus size={16} />
@@ -264,7 +264,6 @@ export default function AIHomePage() {
               <div>
                 <span>当前项目</span>
                 <h2>{selectedProject?.name ?? "未选择项目"}</h2>
-                <p>{selectedProject?.detail ?? "选择一个项目来查看或新建线程"}</p>
               </div>
               {selectedProject?.workspace && (
                 <div className="ct-thread-create">
@@ -279,19 +278,6 @@ export default function AIHomePage() {
                       </option>
                     ))}
                     <option value="builtin_llm">内置模型</option>
-                  </select>
-                  <select
-                    className="ct-thread-create__workflow"
-                    value={selectedWorkflowId}
-                    onChange={(event) => setSelectedWorkflowId(event.target.value)}
-                    aria-label="线程工作流模板"
-                  >
-                    <option value="">自由对话</option>
-                    {workflows.map((workflow) => (
-                      <option key={workflow.id} value={workflow.id}>
-                        {workflow.name || workflow.id}
-                      </option>
-                    ))}
                   </select>
                   <input
                     value={title}
@@ -322,7 +308,7 @@ export default function AIHomePage() {
                       <div>
                         <span>{scopeLabel(thread)}</span>
                         <h3>{thread.title}</h3>
-                        <p>{thread.scope_type} / {thread.scope_id}</p>
+                        <p title={`${thread.scope_type} / ${thread.scope_id}`}>{publicScopeDetail(thread)}</p>
                       </div>
                       <div className="ct-thread-card__meta">
                         <span>

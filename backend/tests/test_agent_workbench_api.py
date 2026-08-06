@@ -102,6 +102,227 @@ def _write_frozen_plan_authority(task_dir: Path, plan: dict) -> None:
     )
 
 
+async def test_task_run_detail_accepts_skill_step_ids_with_dots(workbench_client):
+    task_run_id = "task_run_skill_step_dot"
+    step_id = "step.step-01"
+    task_dir = _task_run_dir(task_run_id)
+    task_bundle = {
+        "task_run_id": task_run_id,
+        "compiled_plan": {
+            "nodes": [
+                {
+                    "node_id": step_id,
+                    "type": "skill_step",
+                    "depends_on": [],
+                }
+            ]
+        },
+        "skill_invocation": {
+            "schema_version": "skill-run-invocation-v1",
+            "skill_version_id": "skill_version_dot",
+            "skill_content_digest": "sha256:" + "a" * 64,
+            "selected_delivery_ids": ["delivery.report"],
+            "required_artifact_ids": ["artifact.report"],
+            "judge": {"required": True},
+        },
+        "skill_judge_required": True,
+    }
+    (task_dir / "task_bundle.json").parent.mkdir(parents=True)
+    (task_dir / "task_bundle.json").write_text(
+        json.dumps(task_bundle, sort_keys=True),
+        encoding="utf-8",
+    )
+    (task_dir / "task_run.json").write_text(
+        json.dumps(
+            {
+                "task_run_id": task_run_id,
+                "workflow_id": "skill-flow",
+                "workspace_id": "workspace",
+                "repo_path": str(task_dir),
+                "artifact_dir": str(task_dir),
+                "workflow_snapshot": {
+                    "id": "skill-flow",
+                    "compiled_contract_version": 3,
+                    "steps": [
+                        {
+                            "step_id": step_id,
+                            "title": "Skill step 01",
+                            "produces": ["artifact.report"],
+                        }
+                    ],
+                },
+                "input_snapshot": {},
+                "task_bundle": task_bundle,
+                "agent_runs": [],
+                "status": "prepared",
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+    response = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["run_ui_summary"]["nodes"][0]["id"] == step_id
+    assert body["run_ui_summary"]["nodes"][0]["label"] == "Skill step 01"
+    assert body["task_bundle"]["skill_invocation"]["skill_version_id"] == "skill_version_dot"
+
+
+async def test_skill_first_task_run_artifacts_content_and_acceptance_audit_are_active(
+    workbench_client,
+):
+    task_run_id = "task_run_skill_artifact_surface"
+    task_dir = _task_run_dir(task_run_id)
+    task_bundle = {
+        "task_run_id": task_run_id,
+        "compiled_plan": {
+            "nodes": [
+                {
+                    "node_id": "skill.step-01",
+                    "type": "skill_step",
+                    "depends_on": [],
+                }
+            ]
+        },
+        "skill_invocation": {
+            "schema_version": "skill-run-invocation-v1",
+            "skill_version_id": "skill_version_artifact_surface",
+            "skill_content_digest": "sha256:" + "b" * 64,
+            "selected_delivery_ids": ["delivery.report"],
+            "required_artifact_ids": ["artifact.report"],
+            "judge": {"required": True},
+        },
+        "skill_judge_required": True,
+    }
+    task_dir.mkdir(parents=True)
+    (task_dir / "task_bundle.json").write_text(
+        json.dumps(task_bundle, sort_keys=True),
+        encoding="utf-8",
+    )
+    (task_dir / "diagnostics.log").write_text(
+        "Authorization: Bearer sk-skill-artifact-secret-1234567890\n",
+        encoding="utf-8",
+    )
+    (task_dir / "task_run.json").write_text(
+        json.dumps(
+            {
+                "task_run_id": task_run_id,
+                "workflow_id": "skill-flow",
+                "workspace_id": "workspace",
+                "repo_path": str(task_dir),
+                "artifact_dir": str(task_dir),
+                "workflow_snapshot": {
+                    "id": "skill-flow",
+                    "compiled_contract_version": 3,
+                    "steps": [{"step_id": "skill.step-01", "title": "Skill step 01"}],
+                },
+                "input_snapshot": {},
+                "task_bundle": task_bundle,
+                "agent_runs": [],
+                "status": "completed",
+                "execution_status": "completed",
+                "artifact_validation_status": "passed",
+                "governance_status": "passed",
+                "delivery_status": "ready",
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+    artifacts = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}/artifacts")
+    content = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}/artifacts/content/diagnostics.log"
+    )
+    traversal = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}/artifacts/content/../task_run.json"
+    )
+    audit = await workbench_client.post(f"/api/workbench/task-runs/{task_run_id}/acceptance-audit")
+
+    assert artifacts.status_code == 200
+    paths = {item["relative_path"]: item for item in artifacts.json()["artifacts"]}
+    assert paths["task_bundle.json"]["kind"] == "task_bundle"
+    assert paths["diagnostics.log"]["kind"] == "text"
+    assert content.status_code == 200
+    assert "sk-skill-artifact-secret" not in content.json()["content"]
+    assert "<redacted>" in content.json()["content"]
+    assert traversal.status_code in {400, 404}
+    assert audit.status_code == 200
+    assert audit.json() == {
+        "status": "not_applicable",
+        "reason": "frozen_contract_uses_validation_profile",
+        "compiled_contract_version": 3,
+    }
+
+
+async def test_skill_first_task_run_cancel_events_and_materialize_endpoint_are_active(
+    workbench_client,
+):
+    task_run_id = "task_run_skill_cancel_events"
+    task_dir = _task_run_dir(task_run_id)
+    task_bundle = {
+        "task_run_id": task_run_id,
+        "compiled_plan": {"nodes": [{"node_id": "skill.step-01", "type": "skill_step"}]},
+        "skill_invocation": {
+            "schema_version": "skill-run-invocation-v1",
+            "skill_version_id": "skill_version_cancel_events",
+            "skill_content_digest": "sha256:" + "c" * 64,
+            "selected_delivery_ids": ["delivery.report"],
+            "required_artifact_ids": ["artifact.report"],
+            "judge": {"required": True},
+        },
+        "skill_judge_required": True,
+    }
+    task_dir.mkdir(parents=True)
+    (task_dir / "task_bundle.json").write_text(
+        json.dumps(task_bundle, sort_keys=True),
+        encoding="utf-8",
+    )
+    (task_dir / "task_run.json").write_text(
+        json.dumps(
+            {
+                "task_run_id": task_run_id,
+                "workflow_id": "skill-flow",
+                "workspace_id": "workspace",
+                "repo_path": str(task_dir),
+                "artifact_dir": str(task_dir),
+                "workflow_snapshot": {
+                    "id": "skill-flow",
+                    "compiled_contract_version": 3,
+                    "steps": [{"step_id": "skill.step-01", "title": "Skill step 01"}],
+                },
+                "input_snapshot": {},
+                "task_bundle": task_bundle,
+                "agent_runs": [],
+                "status": "queued",
+                "execution_status": "queued",
+                "artifact_validation_status": "not_started",
+                "governance_status": "not_requested",
+                "delivery_status": "pending",
+                "runtime": {"status": "queued"},
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+    materialize = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/materialize-outputs"
+    )
+    cancel = await workbench_client.post(f"/api/workbench/task-runs/{task_run_id}/cancel")
+    events = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}/events")
+
+    assert materialize.status_code == 400
+    assert materialize.json()["detail"] == "workflow outputs have not been generated"
+    assert cancel.status_code == 200
+    assert cancel.json()["status"] == "cancelled"
+    assert cancel.json()["cancelled"] is True
+    assert events.status_code == 200
+    assert any(item["event_type"] == "cancelled" for item in events.json()["items"])
+
+
 async def test_public_task_run_payload_loads_stage_level_input_consumption(tmp_path):
     from app.api.agent_workbench import _load_public_input_consumption_ledger
 

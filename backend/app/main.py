@@ -33,30 +33,17 @@ async def lifespan(app: FastAPI):
     settings.outputs_path.mkdir(parents=True, exist_ok=True)
     settings.tiktoken_cache_path.mkdir(parents=True, exist_ok=True)
     await init_db()
-    from app.services.workbench_task_store import WorkbenchTaskStore
-    from app.services.workflow_presets import (
-        active_builtin_workflow_presets,
-        builtin_workflow_presets_for_bootstrap,
-        reserved_builtin_workflow_ids,
-    )
-    from app.services.workflow_version_store import WorkflowVersionStore
+    from app.services.skill_presets import ensure_codetalk_skill_presets
+    from app.services.skill_store import SkillStore
 
-    workflow_versions = WorkflowVersionStore(
-        settings.data_path / "workbench" / "workflows.db"
+    skill_preset_seed = ensure_codetalk_skill_presets(
+        SkillStore(
+            db_path=settings.data_path / "skills" / "skills.db",
+            data_dir=settings.data_path,
+        )
     )
-    workflow_migration = workflow_versions.initialize_and_migrate()
-    builtin_versions = workflow_versions.ensure_legacy_published_workflows(
-        [
-            dict(preset["definition"])
-            for preset in builtin_workflow_presets_for_bootstrap()
-        ]
-    )
-    active_builtin_ids = {
-        str(preset["id"]) for preset in active_builtin_workflow_presets()
-    }
-    retired_builtins = workflow_versions.retire_workflows(
-        reserved_builtin_workflow_ids().difference(active_builtin_ids)
-    )
+    logger.info("Skill preset seed ready: %s", skill_preset_seed)
+    from app.services.workbench_task_store import WorkbenchTaskStore
     task_migration = WorkbenchTaskStore(
         settings.data_path / "workbench" / "workflows.db"
     ).initialize_and_migrate()
@@ -69,10 +56,7 @@ async def lifespan(app: FastAPI):
             sorted(tool_runtime.tools_by_id),
         )
     logger.info(
-        "Workbench V2 migrations ready: workflows=%s builtin_versions=%s retired_builtins=%s tasks=%s",
-        workflow_migration,
-        builtin_versions,
-        retired_builtins,
+        "Workbench task migrations ready: tasks=%s",
         task_migration,
     )
     ai_reconcile = await AIConversationStore().reconcile_interrupted_runs()
@@ -137,13 +121,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from app.api import agent_runtimes, agent_workbench, ai_conversations, artifact_profiles, knowledge_center, tasks, settings as settings_router, tools, export, prompts, coverage, workbench_deliverables, workbench_v2_assets, workbench_v2_release, workbench_v2_tasks, workbench_v2_workflows, ws  # noqa: E402
+from app.api import agent_runtimes, agent_workbench, ai_conversations, artifact_profiles, knowledge_center, tasks, settings as settings_router, skills, tools, export, prompts, coverage, workbench_deliverables, workbench_v2_assets, workbench_v2_release, workbench_v2_tasks, ws  # noqa: E402
 from app.api.repo_analysis import router as repo_analysis_router  # noqa: E402
 from app.api.workspaces import router as workspaces_router  # noqa: E402
 
 app.include_router(tasks.router)
+app.include_router(skills.router)
 app.include_router(agent_workbench.router)
-app.include_router(workbench_v2_workflows.router)
 app.include_router(workbench_v2_tasks.router)
 app.include_router(workbench_v2_assets.router)
 app.include_router(workbench_v2_release.router)
