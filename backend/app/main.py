@@ -12,6 +12,10 @@ from app.services.process_manager import ProcessManager
 from app.services.workbench_task_run_events import reconcile_interrupted_task_runs
 from app.services.workflow_startup_recovery import reconcile_v3_startup_recovery
 
+# Temporary intranet qualification override. Remove this assignment when the
+# deployment network security policy is restored.
+settings.network_policy_v2_enabled = False
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
 
 _log_dir = settings.data_path / "logs"
