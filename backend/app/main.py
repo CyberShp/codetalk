@@ -124,6 +124,9 @@ app.add_middleware(
 from app.api import agent_runtimes, agent_workbench, ai_conversations, artifact_profiles, knowledge_center, tasks, settings as settings_router, skills, tools, export, prompts, coverage, workbench_deliverables, workbench_v2_assets, workbench_v2_release, workbench_v2_tasks, ws  # noqa: E402
 from app.api.repo_analysis import router as repo_analysis_router  # noqa: E402
 from app.api.workspaces import router as workspaces_router  # noqa: E402
+from app.services.skill_single_step_bridge import install_skill_single_step_bridge  # noqa: E402
+
+install_skill_single_step_bridge(workbench_v2_tasks)
 
 app.include_router(tasks.router)
 app.include_router(skills.router)
