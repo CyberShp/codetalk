@@ -1071,14 +1071,17 @@ def _opencode_run_args(
     *,
     resume_session_id: str | None = None,
 ) -> list[str]:
-    args = list(base_args)
+    # OpenCode releases in the field no longer consistently accept the legacy
+    # ``--auto`` spelling. Normalize old saved runtime args and use the explicit
+    # unattended permission flag exposed by current ``opencode run --help``.
+    args = [str(item) for item in base_args if str(item) != "--auto"]
     if "run" not in args:
         args.append("run")
     session_id = str(resume_session_id or "").strip()
     if session_id and "--session" not in args:
         args.extend(["--session", session_id])
-    if "--auto" not in args:
-        args.append("--auto")
+    if "--dangerously-skip-permissions" not in args:
+        args.append("--dangerously-skip-permissions")
     if "--format" not in args:
         args.extend(["--format", "json"])
     args.append(prompt)
