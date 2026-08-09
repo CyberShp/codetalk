@@ -39,3 +39,13 @@ test("file upload merges into the latest input state instead of an async render 
     /const uploaded = await Promise\.all[\s\S]{0,400}onChange\(\{ \.\.\.values, \[id\]:/,
   );
 });
+
+test("task wizard freezes an enabled Agent Runtime before a Skill run", () => {
+  assert.match(taskWizardSource, /listAgentRuntimes\(\{ enabled: true \}\)/);
+  assert.match(taskWizardSource, /agent_runtime_id: agentRuntimeId/);
+  assert.match(taskWizardSource, /Agent Runtime \*/);
+  assert.match(
+    taskWizardSource,
+    /step===4&&!data\.agentRuntimeId.*请选择 Agent Runtime/,
+  );
+});

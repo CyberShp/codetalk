@@ -1848,6 +1848,32 @@ class WorkbenchWorkflowRunner:
                 else:
                     governance_results.append(normalized)
 
+        skill_step_results = [
+            item for item in execution_results if str(item.get("type") or "") == "skill_step"
+        ]
+        skill_judge_required = bool(
+            task_run.task_bundle.get("skill_judge_required")
+        )
+        judge_result: dict[str, Any] | None = None
+        if skill_judge_required and skill_step_results and all(
+            str(item.get("status") or "") in SUCCESS_STATUSES
+            for item in skill_step_results
+        ):
+            self._emit_event(
+                "step_started",
+                {
+                    "step_id": "skill.judge",
+                    "step_type": "skill_judge",
+                    "executor": "agent_runtime",
+                    "started_at": _now(),
+                },
+            )
+            judge_result = self._execute_v3_skill_judge_node(task_run=task_run)
+            step_results.append(judge_result)
+            execution_results.append(judge_result)
+            results_by_node["skill.judge"] = judge_result
+            self._emit_step_finished(judge_result)
+
         execution_status = _v3_execution_status(execution_results)
         validator_blocked_by_failed_governance = any(
             str(item.get("status") or "") == "blocked"
@@ -1872,7 +1898,18 @@ class WorkbenchWorkflowRunner:
                 and validator_blocked_by_failed_governance
             ),
         )
+        if skill_step_results:
+            artifact_validation_status = (
+                "passed" if execution_status == "completed" else "failed"
+            )
         governance_status = _v3_governance_status(governance_results)
+        if skill_judge_required:
+            governance_status = (
+                "passed"
+                if judge_result
+                and str(judge_result.get("status") or "") in SUCCESS_STATUSES
+                else "failed"
+            )
         delivery_status = derive_delivery_status(
             execution_status=execution_status,
             artifact_validation_status=artifact_validation_status,
@@ -1886,7 +1923,7 @@ class WorkbenchWorkflowRunner:
                 str(item.get("handler_id") or "") == "json_schema"
                 for item in validator_results
             ),
-            validate_exists=any(
+            validate_exists=bool(skill_step_results) or any(
                 str(item.get("status") or "") in {"completed", "failed"}
                 for item in validator_results
             ),
@@ -1956,28 +1993,41 @@ class WorkbenchWorkflowRunner:
                 "technical_diagnostics": {"error": "missing_skill_invocation"},
                 "artifact_dir": str(step_dir),
             }
-        lifecycle_status = "completed"
-        lifecycle_events: list[dict[str, Any]] = []
-        from app.services.skill_run_executor import (
-            ScriptedSkillAgentAdapter,
-            SkillRunExecutor,
-            SkillRunExecutorError,
+        invocation = _read_json(invocation_path)
+        runtime = invocation.get("runtime") if isinstance(invocation, dict) else None
+        producer_runtime = (
+            runtime.get("producer") if isinstance(runtime, dict) else None
         )
-
+        producer_execution = (
+            producer_runtime.get("execution")
+            if isinstance(producer_runtime, dict)
+            else None
+        )
+        if not isinstance(producer_execution, dict):
+            return {
+                "step_id": node_id,
+                "node_id": node_id,
+                "type": "skill_step",
+                "status": "error",
+                "error": "skill_agent_runtime_unavailable",
+                "technical_diagnostics": {
+                    "error": "skill_agent_runtime_unavailable"
+                },
+                "artifact_dir": str(step_dir),
+            }
+        from app.services.skill_agent_adapter import (
+            SkillAgentAdapterError,
+            execute_skill_step,
+        )
         try:
-            lifecycle = SkillRunExecutor(
-                adapter=ScriptedSkillAgentAdapter([
-                    {"event": "skill_step_started", "status": "running", "node_id": node_id},
-                    {"event": "skill_step_completed", "status": "completed", "node_id": node_id},
-                ])
-            ).execute(invocation_path)
-            lifecycle_status = str(lifecycle.get("status") or "completed")
-            lifecycle_events = [
-                dict(item)
-                for item in lifecycle.get("events") or []
-                if isinstance(item, dict)
-            ]
-        except SkillRunExecutorError as exc:
+            return execute_skill_step(
+                task_run=task_run,
+                node=node,
+                invocation=invocation,
+                event_sink=self._emit_event,
+                is_cancelled=self._is_cancelled,
+            )
+        except SkillAgentAdapterError as exc:
             return {
                 "step_id": node_id,
                 "node_id": node_id,
@@ -1987,20 +2037,33 @@ class WorkbenchWorkflowRunner:
                 "technical_diagnostics": {"error": "skill_step_lifecycle_failed"},
                 "artifact_dir": str(step_dir),
             }
-        return {
-            "step_id": node_id,
-            "node_id": node_id,
-            "type": "skill_step",
-            "status": "completed" if lifecycle_status == "completed" else lifecycle_status,
-            "artifact_dir": str(step_dir),
-            "skill_step": {
-                "node_id": node_id,
-                "lifecycle_status": lifecycle_status,
-                "resolved_input_ids": sorted(resolved_inputs),
-                "artifact_scope": "skill_invocation",
-            },
-            "lifecycle_events": lifecycle_events,
-        }
+
+    def _execute_v3_skill_judge_node(self, *, task_run: Any) -> dict[str, Any]:
+        task_dir = Path(task_run.artifact_dir)
+        invocation = _read_json(task_dir / "skill_invocation.json")
+        from app.services.skill_agent_adapter import (
+            SkillAgentAdapterError,
+            execute_skill_judge,
+        )
+
+        try:
+            return execute_skill_judge(
+                task_run=task_run,
+                invocation=invocation,
+                event_sink=self._emit_event,
+                is_cancelled=self._is_cancelled,
+            )
+        except SkillAgentAdapterError as exc:
+            return {
+                "step_id": "skill.judge",
+                "node_id": "skill.judge",
+                "type": "skill_judge",
+                "status": "error",
+                "error": str(exc),
+                "technical_diagnostics": {"error": "skill_judge_lifecycle_failed"},
+                "artifact_dir": str(task_dir),
+                "governance_status": "failed",
+            }
 
     def _execute_v3_tool_node(
         self,

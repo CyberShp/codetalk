@@ -68,6 +68,11 @@ def _version(tmp_path):
         encoding="utf-8",
     )
     validation.write_text("{}", encoding="utf-8")
+    unpacked_root = tmp_path / "source"
+    (unpacked_root / "steps").mkdir(parents=True)
+    (unpacked_root / "steps" / "collect.md").write_text(
+        "# Collect real evidence\n", encoding="utf-8"
+    )
     return SimpleNamespace(
         version_id="skill_version_1",
         skill_id="skill.example",
@@ -75,6 +80,7 @@ def _version(tmp_path):
         source_zip_path=source_zip,
         ir_path=ir,
         validation_report_path=validation,
+        unpacked_root=unpacked_root,
     )
 
 
@@ -102,11 +108,13 @@ def test_freeze_skill_run_invocation_writes_immutable_execution_record(tmp_path)
     assert payload["skill_id"] == "skill.example"
     assert payload["skill_version_id"] == "skill_version_1"
     assert payload["skill_content_digest"] == "sha256:" + "1" * 64
-    assert payload["source_zip"]["ref"] == "source.zip"
+    assert payload["source_zip"]["ref"] == "frozen_skill/source-package.zip"
     assert payload["source_zip"]["digest"].startswith("sha256:")
-    assert payload["skill_ir"]["ref"] == "skill-ir.json"
+    assert payload["skill_ir"]["ref"] == "frozen_skill/skill-ir-v1.json"
     assert payload["skill_ir"]["digest"] == payload["skill_ir_digest"]
-    assert payload["validation_report"]["ref"] == "validation.json"
+    assert payload["validation_report"]["ref"] == (
+        "frozen_skill/validation-report.json"
+    )
     assert payload["validation_report"]["digest"].startswith("sha256:")
     assert payload["input_snapshot"]["ref"] == "skill_input_snapshot.json"
     assert json.loads((tmp_path / "run" / "skill_input_snapshot.json").read_text(encoding="utf-8")) == {
@@ -115,6 +123,43 @@ def test_freeze_skill_run_invocation_writes_immutable_execution_record(tmp_path)
     assert payload["selected_delivery_ids"] == ["delivery.report"]
     assert payload["required_artifact_ids"] == ["artifact.report"]
     assert payload["judge"]["required"] is True
+
+
+def test_freeze_skill_run_invocation_copies_immutable_skill_inputs_into_attempt(
+    tmp_path,
+):
+    from app.services.skill_run_invocation import freeze_skill_run_invocation
+
+    version = _version(tmp_path)
+    run_root = tmp_path / "run-frozen"
+    invocation = freeze_skill_run_invocation(
+        version=version,
+        task_run_id="task_run_frozen",
+        task_id="task_frozen",
+        artifact_root=run_root,
+        inputs={"input.source": str(tmp_path)},
+        expected_content_digest="sha256:" + "1" * 64,
+    )
+
+    frozen_root = run_root / "frozen_skill"
+    assert (frozen_root / "source" / "steps" / "collect.md").read_text(
+        encoding="utf-8"
+    ) == "# Collect real evidence\n"
+    for reference in (
+        invocation.source_zip,
+        invocation.skill_ir,
+        invocation.validation_report,
+    ):
+        frozen_path = run_root / reference["ref"]
+        assert frozen_path.is_file()
+        assert frozen_path.is_relative_to(frozen_root)
+
+    (version.unpacked_root / "steps" / "collect.md").write_text(
+        "# mutated published source\n", encoding="utf-8"
+    )
+    assert (frozen_root / "source" / "steps" / "collect.md").read_text(
+        encoding="utf-8"
+    ) == "# Collect real evidence\n"
 
 
 def test_freeze_skill_run_invocation_rejects_digest_or_artifact_drift(tmp_path):
@@ -144,3 +189,49 @@ def test_freeze_skill_run_invocation_rejects_digest_or_artifact_drift(tmp_path):
             inputs={},
             expected_content_digest="sha256:" + "1" * 64,
         )
+
+
+def test_freeze_skill_run_invocation_records_real_agent_runtime_without_fake_preflight(
+    tmp_path,
+):
+    from app.services.skill_run_invocation import freeze_skill_run_invocation
+
+    invocation = freeze_skill_run_invocation(
+        version=_version(tmp_path),
+        task_run_id="task_run_real",
+        task_id="task_real",
+        artifact_root=tmp_path / "run-real",
+        inputs={"input.source": str(tmp_path)},
+        expected_content_digest="sha256:" + "1" * 64,
+        agent_runtime={
+            "id": "default-opencode",
+            "provider": "opencode",
+            "command": "/usr/local/bin/opencode",
+            "args": ["--model", "deepseek/deepseek-v4-flash"],
+            "prompt_transport": "opencode_run_arg",
+            "mcp_profile": "",
+            "requires_network": True,
+            "env": {"DEEPSEEK_API_KEY": "secret-never-freeze"},
+            "timeout_seconds": 900,
+        },
+    )
+
+    producer = invocation.runtime["producer"]
+    assert producer["runtime_id"] == "agent-runtime:default-opencode"
+    assert producer["requested_provider"] == "opencode"
+    assert producer["preflight_receipt"]["status"] == "pending"
+    assert producer["execution"] == {
+        "runtime_config_id": "default-opencode",
+        "provider_ref": "agent-runtime:default-opencode",
+        "command": [
+            "/usr/local/bin/opencode",
+            "--model",
+            "deepseek/deepseek-v4-flash",
+        ],
+        "prompt_transport": "opencode_run_arg",
+        "mcp_profile": "",
+        "requires_network": True,
+        "environment_keys": ["DEEPSEEK_API_KEY"],
+    }
+    assert "secret-never-freeze" not in json.dumps(invocation.runtime)
+    assert producer["observed_runtime_version"] == "unknown"

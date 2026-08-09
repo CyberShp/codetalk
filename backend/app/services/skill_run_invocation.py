@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
+import shutil
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -50,6 +51,8 @@ def freeze_skill_run_invocation(
     skill_ir: dict[str, Any] | None = None,
     selected_deliveries: list[str] | tuple[str, ...] | None = None,
     expected_content_digest: str = "",
+    agent_runtime: dict[str, Any] | None = None,
+    preflight_receipt: dict[str, Any] | None = None,
 ) -> SkillRunInvocation:
     """Persist the immutable Skill Version and run inputs before execution."""
 
@@ -71,6 +74,13 @@ def freeze_skill_run_invocation(
     judge = _judge_payload(ir)
     root = Path(artifact_root)
     root.mkdir(parents=True, exist_ok=True)
+    frozen = _freeze_skill_inputs(
+        root=root,
+        source_zip=source_zip,
+        source_root=Path(getattr(version, "unpacked_root", "")),
+        ir_path=ir_path,
+        validation_path=validation_path,
+    )
     input_snapshot_path = root / "skill_input_snapshot.json"
     input_payload = json.loads(json.dumps(dict(inputs or {}), ensure_ascii=False))
     input_snapshot_path.write_text(
@@ -82,8 +92,20 @@ def freeze_skill_run_invocation(
     selected = _selected_delivery_ids(ir, selected_deliveries)
     required_artifacts = _required_artifact_ids(ir, selected)
     runtime = {
-        "producer": _runtime_envelope("producer", ["tools", "artifact_collection", "cancellation"], agent_timeout_seconds=1800),
-        "judge": _runtime_envelope("judge", ["session_isolation", "artifact_collection", "cancellation"], agent_timeout_seconds=900)
+        "producer": _runtime_envelope(
+            "producer",
+            ["tools", "artifact_collection", "cancellation"],
+            agent_timeout_seconds=1800,
+            agent_runtime=agent_runtime,
+            preflight_receipt=preflight_receipt,
+        ),
+        "judge": _runtime_envelope(
+            "judge",
+            ["session_isolation", "artifact_collection", "cancellation"],
+            agent_timeout_seconds=900,
+            agent_runtime=agent_runtime,
+            preflight_receipt=preflight_receipt,
+        )
         if judge.get("required") or judge.get("artifact_ids")
         else None,
     }
@@ -112,9 +134,11 @@ def freeze_skill_run_invocation(
         "skill_version_id": str(getattr(version, "version_id", "") or ""),
         "skill_content_digest": actual,
         "skill_ir_digest": skill_ir_digest,
-        "source_zip": _artifact_reference(version, source_zip),
-        "skill_ir": _artifact_reference(version, ir_path),
-        "validation_report": _artifact_reference(version, validation_path),
+        "source_zip": _run_artifact_reference(root, frozen["source_zip"]),
+        "skill_ir": _run_artifact_reference(root, frozen["skill_ir"]),
+        "validation_report": _run_artifact_reference(
+            root, frozen["validation_report"]
+        ),
         "input_snapshot": {
             "ref": "skill_input_snapshot.json",
             "digest": input_snapshot_digest,
@@ -164,32 +188,72 @@ def _json_digest(payload: dict[str, Any]) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
-def _artifact_reference(version: Any, path: Path) -> dict[str, Any]:
-    ref = path.name
-    version_root = getattr(version, "version_root", None)
-    if version_root:
-        try:
-            ref = path.relative_to(Path(version_root)).as_posix()
-        except ValueError:
-            ref = path.name
+def _freeze_skill_inputs(
+    *,
+    root: Path,
+    source_zip: Path,
+    source_root: Path,
+    ir_path: Path,
+    validation_path: Path,
+) -> dict[str, Path]:
+    if not source_root.is_dir():
+        raise SkillRunInvocationError("skill invocation missing unpacked_root")
+    frozen_root = root / "frozen_skill"
+    if frozen_root.exists():
+        raise SkillRunInvocationError("skill invocation frozen inputs already exist")
+    temporary = root / f".frozen_skill-{uuid.uuid4().hex}.tmp"
+    try:
+        temporary.mkdir(parents=False)
+        shutil.copy2(source_zip, temporary / "source-package.zip")
+        shutil.copy2(ir_path, temporary / "skill-ir-v1.json")
+        shutil.copy2(validation_path, temporary / "validation-report.json")
+        shutil.copytree(source_root, temporary / "source", symlinks=True)
+        temporary.replace(frozen_root)
+    except Exception:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
     return {
-        "ref": ref,
+        "source_zip": frozen_root / "source-package.zip",
+        "skill_ir": frozen_root / "skill-ir-v1.json",
+        "validation_report": frozen_root / "validation-report.json",
+    }
+
+
+def _run_artifact_reference(root: Path, path: Path) -> dict[str, Any]:
+    return {
+        "ref": path.relative_to(root).as_posix(),
         "digest": _sha256_path(path),
         "access_scope": "read",
     }
 
 
-def _runtime_envelope(role: str, capabilities: list[str], *, agent_timeout_seconds: int) -> dict[str, Any]:
+def _runtime_envelope(
+    role: str,
+    capabilities: list[str],
+    *,
+    agent_timeout_seconds: int,
+    agent_runtime: dict[str, Any] | None,
+    preflight_receipt: dict[str, Any] | None,
+) -> dict[str, Any]:
     timestamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-    runtime_id = f"runtime/{role}/local"
-    report_digest = "sha256:" + hashlib.sha256(f"{role}:{','.join(capabilities)}".encode("utf-8")).hexdigest()
-    return {
+    runtime_config = dict(agent_runtime or {})
+    runtime_config_id = str(runtime_config.get("id") or "").strip()
+    provider = str(runtime_config.get("provider") or "unconfigured").strip()
+    runtime_id = (
+        f"agent-runtime:{runtime_config_id}"
+        if runtime_config_id
+        else f"runtime/{role}/unconfigured"
+    )
+    report_digest = "sha256:" + hashlib.sha256(
+        f"{role}:{','.join(capabilities)}".encode()
+    ).hexdigest()
+    envelope = {
         "runtime_id": runtime_id,
-        "requested_provider": "opencode",
-        "effective_provider": "opencode",
+        "requested_provider": provider,
+        "effective_provider": provider if runtime_config_id else "unknown",
         "requested_model": "deepseek/deepseek-v4-flash",
-        "effective_model": "deepseek/deepseek-v4-flash",
-        "observed_runtime_version": "local-preflight",
+        "effective_model": "unknown",
+        "observed_runtime_version": "unknown",
         "requested_capabilities": capabilities,
         "declared_context_window_tokens": 200000,
         "requested_max_output_tokens": 4096,
@@ -202,13 +266,31 @@ def _runtime_envelope(role: str, capabilities: list[str], *, agent_timeout_secon
         },
         "capability_report_id": f"capability {role}/local",
         "capability_report_digest": report_digest,
-        "preflight_receipt": {
-            "status": "passed",
+        "preflight_receipt": dict(preflight_receipt)
+        if preflight_receipt
+        else {
+            "status": "pending",
             "timestamp": timestamp,
-            "endpoint_class": "local-dev",
-            "credential_ready": True,
+            "endpoint_class": "local-runtime",
+            "credential_ready": False,
         },
     }
+    command = str(runtime_config.get("command") or "").strip()
+    if runtime_config_id and command:
+        envelope["execution"] = {
+            "runtime_config_id": runtime_config_id,
+            "provider_ref": f"agent-runtime:{runtime_config_id}",
+            "command": [command, *[str(item) for item in runtime_config.get("args") or []]],
+            "prompt_transport": str(runtime_config.get("prompt_transport") or "stdin"),
+            "mcp_profile": str(runtime_config.get("mcp_profile") or ""),
+            "requires_network": bool(runtime_config.get("requires_network", True)),
+            "environment_keys": sorted(
+                str(key)
+                for key in (runtime_config.get("env") or {})
+                if str(key).strip()
+            ),
+        }
+    return envelope
 
 
 def _judge_payload(ir: dict[str, Any]) -> dict[str, Any]:

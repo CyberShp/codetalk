@@ -262,7 +262,36 @@
         },
         "capability_report_id": { "$ref": "#/$defs/opaqueId" },
         "capability_report_digest": { "$ref": "#/$defs/digest" },
-        "preflight_receipt": { "$ref": "#/$defs/preflight" }
+        "preflight_receipt": { "$ref": "#/$defs/preflight" },
+        "execution": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "runtime_config_id",
+            "provider_ref",
+            "command",
+            "prompt_transport",
+            "mcp_profile",
+            "requires_network"
+          ],
+          "properties": {
+            "runtime_config_id": { "$ref": "#/$defs/opaqueId" },
+            "provider_ref": { "type": "string", "minLength": 1 },
+            "command": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "prompt_transport": { "type": "string", "minLength": 1 },
+            "mcp_profile": { "type": "string" },
+            "requires_network": { "type": "boolean" },
+            "environment_keys": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
       },
       "allOf": [
         {
@@ -303,6 +332,7 @@
       "properties": {
         "status": {
           "enum": [
+            "pending",
             "passed",
             "failed"
           ]

@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import sqlite3
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -1331,6 +1332,7 @@ def test_prepared_runs_persist_task_attempt_metadata_and_legacy_defaults(tmp_pat
 async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_path, monkeypatch):
     from app.api import workbench_v2_tasks
     from app.config import settings
+    from app.services import skill_agent_adapter
     from app.services.artifact_profiles import ArtifactProfileStore
     from app.services.workbench_task_run_events import WorkbenchTaskRunEventStore
 
@@ -1348,6 +1350,81 @@ async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_pat
     monkeypatch.setattr(settings, "data_dir", str(data_dir))
     monkeypatch.setattr(settings, "sqlite_db", str(sqlite_db))
     monkeypatch.setattr(settings, "workbench_v2_enabled", True)
+    runtime = {
+        "id": "runtime-test",
+        "provider": "opencode",
+        "command": "opencode",
+        "args": [],
+        "prompt_transport": "opencode_run_arg",
+        "enabled": True,
+    }
+    monkeypatch.setattr(
+        workbench_v2_tasks,
+        "get_agent_runtime_sync",
+        lambda runtime_id: runtime if runtime_id == runtime["id"] else None,
+    )
+
+    async def passed_preflight(_: dict) -> dict:
+        return {
+            "status": "passed",
+            "timestamp": "2026-08-10T00:00:00Z",
+            "endpoint_class": "local-runtime-cli",
+            "credential_ready": False,
+        }
+
+    monkeypatch.setattr(
+        workbench_v2_tasks, "_agent_runtime_preflight", passed_preflight
+    )
+
+    def execute_skill_step_for_test(*, task_run, node, **_):
+        definition = task_run.task_bundle["effective_compiled_definition"]
+        step = next(
+            item
+            for item in definition["steps"]
+            if item["step_id"] == node["node_id"]
+        )
+        required_ids = set(step["completion_gate"]["required_artifact_ids"])
+        artifact_root = Path(task_run.artifact_dir) / "artifacts"
+        artifact_root.mkdir(exist_ok=True)
+        for artifact in definition["artifacts"]:
+            if artifact["artifact_id"] in required_ids:
+                target = artifact_root / artifact["path"]
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("# test evidence\n", encoding="utf-8")
+        return {
+            "step_id": node["node_id"],
+            "node_id": node["node_id"],
+            "type": "skill_step",
+            "status": "completed",
+            "artifact_dir": str(artifact_root),
+            "agent_session_id": "test-producer-session",
+            "duration_ms": 1,
+            "artifacts": [],
+        }
+
+    def execute_skill_judge_for_test(*, task_run, **_):
+        report = Path(task_run.artifact_dir) / "skill_judge_report.json"
+        report.write_text(
+            json.dumps({"status": "READY", "ready": True}), encoding="utf-8"
+        )
+        return {
+            "step_id": "skill.judge",
+            "node_id": "skill.judge",
+            "type": "skill_judge",
+            "status": "completed",
+            "artifact_dir": task_run.artifact_dir,
+            "agent_session_id": "test-judge-session",
+            "duration_ms": 1,
+            "artifacts": ["skill_judge_report.json"],
+            "governance_status": "passed",
+        }
+
+    monkeypatch.setattr(
+        skill_agent_adapter, "execute_skill_step", execute_skill_step_for_test
+    )
+    monkeypatch.setattr(
+        skill_agent_adapter, "execute_skill_judge", execute_skill_judge_for_test
+    )
 
     version = _publish_test_skill_version(data_dir, tmp_path / "source")
     artifact_profile = ArtifactProfileStore(
@@ -1395,6 +1472,7 @@ async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_pat
                 "skill_version_id": version.version_id,
                 "lifecycle_status": "ready",
                 "input_values": {"input.source": "/ignored"},
+                "execution_overrides": {"agent_runtime_id": "runtime-test"},
                 "output_overrides": {"selected_deliveries": ["delivery.developer-test-code-explanation"]},
                 "tags": ["storage"],
             },
@@ -1485,7 +1563,9 @@ async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_pat
     assert "交付件档案不存在" in unknown_profile.json()["detail"]
     assert first.status_code == 201
     assert first.json()["attempt_number"] == 1
-    assert execution.execution_status == "completed"
+    assert execution.execution_status == "completed", json.dumps(
+        execution.step_results, ensure_ascii=False
+    )
     assert second.status_code == 201
     assert second.json()["attempt_number"] == 2
     assert second.json()["parent_task_run_id"] == first.json()["task_run_id"]

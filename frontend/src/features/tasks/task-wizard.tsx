@@ -11,7 +11,7 @@ import { skillDisplayName } from "@/features/skills/skill-display";
 import { SkillVersionSummary } from "@/features/skills/skill-version-summary";
 import type { WorkbenchTask } from "@/lib/types/task";
 import type { SkillVersion } from "@/lib/types/skill";
-import type { Workspace } from "@/lib/types";
+import type { AgentRuntime, Workspace } from "@/lib/types";
 import { workflowStepMcpProfiles } from "./task-wizard-contract.mjs";
 
 const labels = ["选择 Skill", "任务信息", "填写输入", "执行配置", "确认输出", "检查运行"];
@@ -36,6 +36,7 @@ export function TaskWizard() {
   const [skillVersions, setSkillVersions] = useState<SkillVersion[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [providers, setProviders] = useState<ProviderCapability[]>([]);
+  const [agentRuntimes, setAgentRuntimes] = useState<AgentRuntime[]>([]);
   const [skills, setSkills] = useState<SkillCapability[]>([]);
   const [skillId, setSkillId] = useState(requestedSkillId);
   const [versionId, setVersionId] = useState("");
@@ -48,6 +49,7 @@ export function TaskWizard() {
   const [tags, setTags] = useState("");
   const [inputs, setInputs] = useState<Record<string, unknown>>({});
   const [executionOverrides, setExecutionOverrides] = useState<Record<string, unknown>>({});
+  const [agentRuntimeId, setAgentRuntimeId] = useState("");
   const [outputOverrides, setOutputOverrides] = useState<Record<string, unknown>>({});
   const [executionProfileId, setExecutionProfileId] = useState<ExecutionProfile["id"]>("rapid");
   const [busy, setBusy] = useState(false);
@@ -67,11 +69,13 @@ export function TaskWizard() {
       skillsApi.listVersions(),
       api.workspaces.list(),
       api.workbench.providerCapabilities(),
-    ]).then(([versionItems, workspaceItems, providerItems]) => {
+      api.settings.listAgentRuntimes({ enabled: true }),
+    ]).then(([versionItems, workspaceItems, providerItems, runtimeItems]) => {
       const versions = versionItems.items;
       setSkillVersions(versions);
       setWorkspaces(workspaceItems);
       setProviders(providerItems.providers);
+      setAgentRuntimes(runtimeItems.items);
       setSkills([]);
       if (!taskParam) {
         const requested = versions.find((item) =>
@@ -100,7 +104,7 @@ export function TaskWizard() {
     void workbenchTasksApi.get(taskParam).then((item) => {
       if (!active || hydrationRequestId.current !== requestId) return;
       hydratedTaskId.current = taskParam;
-      setTask(item); setSkillId(item.skill_id || ""); setVersionId(item.skill_version_id || ""); setSkillIr(item.skill_version?.ir || null); setName(item.name); setDescription(item.description); setWorkspaceId(item.workspace_id); setTags(item.tags.join(", ")); setInputs(item.input_values); setExecutionOverrides(item.execution_overrides); setOutputOverrides(item.output_overrides); if (item.execution_profile_id) setExecutionProfileId(item.execution_profile_id as ExecutionProfile["id"]);
+      setTask(item); setSkillId(item.skill_id || ""); setVersionId(item.skill_version_id || ""); setSkillIr(item.skill_version?.ir || null); setName(item.name); setDescription(item.description); setWorkspaceId(item.workspace_id); setTags(item.tags.join(", ")); setInputs(item.input_values); setExecutionOverrides(item.execution_overrides); setAgentRuntimeId(String(item.execution_overrides.agent_runtime_id || "")); setOutputOverrides(item.output_overrides); if (item.execution_profile_id) setExecutionProfileId(item.execution_profile_id as ExecutionProfile["id"]);
     }).catch((cause) => {
       if (!active || hydrationRequestId.current !== requestId) return;
       setError(cause instanceof Error ? cause.message : "任务草稿恢复失败");
@@ -166,21 +170,21 @@ export function TaskWizard() {
   };
   const save = async (lifecycleStatus?: "draft" | "ready") => {
     if (!skillId || !versionId || !workspaceId || !name.trim()) throw new Error("请完整填写任务名称、Skill 和工作空间");
-    const mutable = { name: name.trim(), description: description.trim(), lifecycle_status: lifecycleStatus || task?.lifecycle_status || "draft", execution_profile_id: executionProfileId, input_values: inputs, execution_overrides: executionOverrides, output_overrides: sanitizeOutputOverrides(outputOverrides, isV3Contract), tags: tags.split(/[,，]/).map((item) => item.trim()).filter(Boolean) };
+    const mutable = { name: name.trim(), description: description.trim(), lifecycle_status: lifecycleStatus || task?.lifecycle_status || "draft", execution_profile_id: executionProfileId, input_values: inputs, execution_overrides: { ...executionOverrides, agent_runtime_id: agentRuntimeId }, output_overrides: sanitizeOutputOverrides(outputOverrides, isV3Contract), tags: tags.split(/[,，]/).map((item) => item.trim()).filter(Boolean) };
     const saved = task
       ? await workbenchTasksApi.update(task.task_id, mutable)
       : await workbenchTasksApi.create({ ...mutable, workspace_id: workspaceId, skill_version_id: versionId });
     hydratedTaskId.current = saved.task_id;
     setTask(saved); return saved;
   };
-  const go = async (next: number) => { setError(""); setBusy(true); try { validateStep(step, { skillId, workspaceId, name, definition, inputs }); if (step >= 2) { const saved = await save("draft"); router.replace(`/tasks/new?task=${saved.task_id}&step=${next}`); } else { const nextParams = new URLSearchParams({ step: String(next) }); if (skillId) nextParams.set("skill_id", skillId); if (versionId) nextParams.set("skill_version_id", versionId); router.replace(`/tasks/new?${nextParams.toString()}`); } setStep(next); } catch (cause) { setError(cause instanceof Error ? cause.message : "保存失败"); } finally { setBusy(false); } };
+  const go = async (next: number) => { setError(""); setBusy(true); try { validateStep(step, { skillId, workspaceId, name, definition, inputs, agentRuntimeId }); if (step >= 2) { const saved = await save("draft"); router.replace(`/tasks/new?task=${saved.task_id}&step=${next}`); } else { const nextParams = new URLSearchParams({ step: String(next) }); if (skillId) nextParams.set("skill_id", skillId); if (versionId) nextParams.set("skill_version_id", versionId); router.replace(`/tasks/new?${nextParams.toString()}`); } setStep(next); } catch (cause) { setError(cause instanceof Error ? cause.message : "保存失败"); } finally { setBusy(false); } };
   const finish = async (mode: "draft" | "ready" | "run") => { setBusy(true); setError(""); try { const saved = await save("draft"); if (mode === "draft") { router.push(`/tasks/${saved.task_id}`); return; } await workbenchTasksApi.compile(saved.task_id); const ready = await workbenchTasksApi.update(saved.task_id, { lifecycle_status: "ready" }); if (mode === "ready") { router.push(`/tasks/${ready.task_id}`); return; } const attempt = await workbenchTasksApi.createRun(ready.task_id, "", executionProfileId); await api.workbench.taskRuns.execute(attempt.task_run_id, 0, true); router.push(`/tasks/${ready.task_id}/runs/${attempt.task_run_id}`); } catch (cause) { setError(cause instanceof Error ? cause.message : "任务检查失败"); } finally { setBusy(false); } };
 
   return <main className="ct-v2-task-wizard"><header><Link href="/tasks"><ArrowLeft size={15} />任务中心</Link><div><span>新建任务</span><h1>{name || "未命名任务"}</h1></div><em>{task ? "草稿已保存" : "尚未创建草稿"}</em></header>{task?.ai_origins?.[0] && <div className="ct-v2-task-origin" role="status"><MessageSquareText size={14}/><span>此任务来自 AI 线程，Skill Version 和工作空间已固定。</span><Link href={`/ai/${encodeURIComponent(task.ai_origins[0].conversation_id)}`}>返回来源线程</Link></div>}<ol>{labels.map((label, index) => <li key={label} className={step === index + 1 ? "is-active" : step > index + 1 ? "is-done" : ""}><span>{step > index + 1 ? <Check size={12} /> : index + 1}</span><strong>{label}</strong></li>)}</ol><section className="ct-v2-task-wizard-body">
     {step === 1 && <SkillChoice items={skillVersions} value={versionId} selected={version} onChange={selectSkillVersion} locked={Boolean(task)} />}
     {step === 2 && <TaskInfo name={name} description={description} workspaceId={workspaceId} tags={tags} workspaces={workspaces} onName={setName} onDescription={setDescription} onWorkspace={setWorkspaceId} onTags={setTags} workspaceLocked={Boolean(task)} />}
     {step === 3 && <DynamicInputs definitions={definition.inputs || []} values={inputs} onChange={setInputs} onUploadBusyChange={(delta) => setPendingUploads((count) => Math.max(0, count + delta))} onUploadError={setError} />}
-    {step === 4 && <ExecutionConfig steps={definition.steps || []} providers={providers} skills={skills} overrides={executionOverrides} onChange={setExecutionOverrides} profiles={definition.execution_profiles?.length ? definition.execution_profiles : compatibilityExecutionProfiles} selectedProfile={executionProfileId} onProfileChange={setExecutionProfileId} />}
+    {step === 4 && <ExecutionConfig steps={definition.steps || []} providers={providers} skills={skills} agentRuntimes={agentRuntimes} agentRuntimeId={agentRuntimeId} onAgentRuntimeChange={setAgentRuntimeId} overrides={executionOverrides} onChange={setExecutionOverrides} profiles={definition.execution_profiles?.length ? definition.execution_profiles : compatibilityExecutionProfiles} selectedProfile={executionProfileId} onProfileChange={setExecutionProfileId} />}
     {step === 5 && <OutputConfig outputs={definition.outputs || []} steps={definition.steps || []} overrides={outputOverrides} onChange={setOutputOverrides} v3Contract={isV3Contract} />}
     {step === 6 && <TaskReview task={task} name={name} workspace={workspaces.find((item) => item.id === workspaceId)?.name || ""} definition={definition} inputs={inputs} outputOverrides={outputOverrides} executionProfileId={executionProfileId} onFinish={finish} busy={busy} v3Contract={isV3Contract} />}
   </section>{error && <div className="ct-v2-notice is-error" role="alert">{error}</div>}<footer><button type="button" disabled={step === 1 || busy || pendingUploads > 0} onClick={() => void go(step - 1)}><ArrowLeft size={14} />上一步</button><span>第 {step} / 6 步</span>{step < 6 ? <button className="ct-v2-primary-button" type="button" disabled={busy || pendingUploads > 0} onClick={() => void go(step + 1)}>{(busy || pendingUploads > 0) && <Loader2 className="animate-spin" size={14} />}{pendingUploads > 0 ? "文件上传中" : "保存并继续"}<ArrowRight size={14} /></button> : <span />}</footer></main>;
@@ -214,13 +218,13 @@ function DynamicInputs({ definitions, values, onChange, onUploadBusyChange, onUp
   })}{!visible.length && <p>该 Skill 只需要所选工作空间，无需额外输入。</p>}</div></div>;
 }
 
-function ExecutionConfig({ steps, providers, skills, overrides, onChange, profiles, selectedProfile, onProfileChange }: { steps:Array<Record<string,unknown>>;providers:ProviderCapability[];skills:SkillCapability[];overrides:Record<string,unknown>;onChange:(v:Record<string,unknown>)=>void;profiles:ExecutionProfile[];selectedProfile:ExecutionProfile["id"];onProfileChange:(value:ExecutionProfile["id"])=>void }) {
+function ExecutionConfig({ steps, providers, skills, agentRuntimes, agentRuntimeId, onAgentRuntimeChange, overrides, onChange, profiles, selectedProfile, onProfileChange }: { steps:Array<Record<string,unknown>>;providers:ProviderCapability[];skills:SkillCapability[];agentRuntimes:AgentRuntime[];agentRuntimeId:string;onAgentRuntimeChange:(value:string)=>void;overrides:Record<string,unknown>;onChange:(v:Record<string,unknown>)=>void;profiles:ExecutionProfile[];selectedProfile:ExecutionProfile["id"];onProfileChange:(value:ExecutionProfile["id"])=>void }) {
   const nodes = (overrides.nodes || {}) as Record<string, Record<string, unknown>>;
   const agentSteps = steps.filter((item) => item.type === "agent_task" || item.step_id || item.instruction_path);
   const executors = providers.filter((provider) => provider.capabilities?.supports_artifact_export);
   const setNode = (id:string,value:Record<string,unknown>|null) => { const next = {...nodes}; if (value) next[id] = value; else delete next[id]; onChange(Object.keys(next).length ? {nodes:next} : {}); };
   const selectedPolicy = profiles.find((profile) => profile.id === selectedProfile);
-  return <div className="ct-v2-task-step"><h2>确认执行配置</h2><p>默认完整继承 Skill 契约；运行时覆盖会在 Attempt 创建时冻结。</p>{profiles.length > 0 && <fieldset className="ct-v2-execution-profile"><legend>执行档位</legend><div>{profiles.map((profile) => <label key={profile.id}><input type="radio" name="execution-profile" checked={selectedProfile === profile.id} onChange={() => onProfileChange(profile.id)} /><strong>{profile.label}</strong><span>{profile.delivery_class === "bounded_analysis" ? "聚焦分析" : "完整测试交付"} · 预计 {profile.expected_duration_minutes[0]}-{profile.expected_duration_minutes[1]} 分钟 · 最多 {profile.max_subagents} 个辅助 Agent</span></label>)}</div>{selectedPolicy && <small>本次选择会在启动时冻结到运行快照，重试将沿用该档位。</small>}</fieldset>}<div className="ct-v2-execution-list">{agentSteps.map((item) => {
+  return <div className="ct-v2-task-step"><h2>确认执行配置</h2><p>默认完整继承 Skill 契约；运行时覆盖会在 Attempt 创建时冻结。</p><label><span>Agent Runtime *</span><select aria-label="Agent Runtime" value={agentRuntimeId} onChange={(event) => onAgentRuntimeChange(event.target.value)}><option value="">选择启用的真实执行器</option>{agentRuntimes.map((runtime) => <option key={runtime.id} value={runtime.id}>{runtime.name} · {runtime.provider}</option>)}</select><small>{agentRuntimes.length ? "所选命令、传输协议和运行配置会冻结到本次 Attempt。" : "没有启用的 Agent Runtime，请先在设置中配置并启用。"}</small></label>{profiles.length > 0 && <fieldset className="ct-v2-execution-profile"><legend>执行档位</legend><div>{profiles.map((profile) => <label key={profile.id}><input type="radio" name="execution-profile" checked={selectedProfile === profile.id} onChange={() => onProfileChange(profile.id)} /><strong>{profile.label}</strong><span>{profile.delivery_class === "bounded_analysis" ? "聚焦分析" : "完整测试交付"} · 预计 {profile.expected_duration_minutes[0]}-{profile.expected_duration_minutes[1]} 分钟 · 最多 {profile.max_subagents} 个辅助 Agent</span></label>)}</div>{selectedPolicy && <small>本次选择会在启动时冻结到运行快照，重试将沿用该档位。</small>}</fieldset>}<div className="ct-v2-execution-list">{agentSteps.map((item) => {
     const id = stepDefinitionId(item); const current = nodes[id]; const selectedProvider = String((current?.provider as Record<string,unknown>)?.value || item.provider || ""); const provider = providers.find((candidate) => candidate.provider === selectedProvider); const mcpOptions = provider?.capabilities?.mcp_profiles || []; const inheritedMcpProfiles = item.id ? workflowStepMcpProfiles(item) : [];
     return <article key={id}><div><strong>{String(item.title || item.label || id)}</strong><span>{String(item.instruction_path || providers.find((candidate) => candidate.provider === String(item.provider || ""))?.display_name || item.provider || item.type || "Skill step")}</span><small>产物: {String((item.produces as string[] || []).join("、") || "按 Skill 契约")} · MCP: {String(inheritedMcpProfiles.join("、") || "冻结默认")}</small></div>{item.id ? <label><input type="checkbox" checked={Boolean(current)} onChange={(event) => setNode(id, event.target.checked ? {provider:{mode:"replace",value:String(item.provider || "")},mcp_profiles:{mode:"replace",value:inheritedMcpProfiles},skill_ids:{mode:"replace",value:item.skills || []}} : null)} />覆盖本任务</label> : <small>Skill-first 运行会冻结此步骤、指引路径、完成门禁和产物契约。</small>}{current && <div className="ct-v2-override-fields"><label><span>执行器</span><select value={selectedProvider} onChange={(event) => setNode(id,{...current,provider:{mode:"replace",value:event.target.value},mcp_profiles:{mode:"replace",value:[]}})}>{executors.map((candidate) => <option key={candidate.provider} value={candidate.provider}>{candidate.display_name} · {providerStatus(candidate.status)}</option>)}</select></label><SearchMultiSelect label="MCP" options={mcpOptions.map((value) => ({id:value,label:value}))} selected={((current.mcp_profiles as Record<string,unknown>)?.value as string[] || [])} emptyText={provider?.capabilities?.supports_mcp ? "该执行器尚未配置 MCP" : "该执行器不支持 MCP"} onChange={(value) => setNode(id,{...current,mcp_profiles:{mode:"replace",value}})} /><SearchMultiSelect label="Skills" options={skills} selected={((current.skill_ids as Record<string,unknown>)?.value as string[] || [])} emptyText="没有可用 Skills" onChange={(value) => setNode(id,{...current,skill_ids:{mode:"replace",value}})} /><button type="button" onClick={() => setNode(id,null)}><RotateCcw size={13}/>恢复默认</button></div>}</article>;
   })}{!agentSteps.length && <p>这个 Skill 没有声明执行步骤。</p>}</div></div>;
@@ -249,7 +253,7 @@ function TaskReview({ task,name,workspace,definition,inputs,outputOverrides,exec
 function sanitizeOutputOverrides(overrides: Record<string, unknown>, v3Contract: boolean) { if (!v3Contract) return overrides; const { custom_outputs: customOutputs, ...declaredOutputOverrides } = overrides; void customOutputs; return declaredOutputOverrides; }
 function outputEnabled(item:Record<string,unknown>, overrides:Record<string,unknown>) { const changes=(overrides.outputs||{}) as Record<string,Record<string,unknown>>; const value=changes[outputDefinitionId(item)]||{}; return Boolean(item.required)||Boolean(value.enabled??item.default_enabled??true); }
 function inputResolverLabel(value:unknown) { return ({manual:"手动填写",workspace:"工作空间自动注入",local:"本地文件"} as Record<string,string>)[String(value||"manual")]||String(value||"手动填写"); }
-function validateStep(step:number,data:{skillId:string;workspaceId:string;name:string;definition:Definition;inputs:Record<string,unknown>}) { if(step===1&&!data.skillId)throw new Error("请选择已发布 Skill");if(step===2&&(!data.name.trim()||!data.workspaceId))throw new Error("请填写任务名称并选择工作空间");if(step===3){const missing=(data.definition.inputs||[]).filter(item=>item.required&&!isWorkspaceInputDefinition(item)&&isMissing(data.inputs[inputDefinitionId(item)]));if(missing.length)throw new Error(`请填写必需输入：${missing.map(item=>String(item.label||inputDefinitionId(item))).join("、")}`);} }
+function validateStep(step:number,data:{skillId:string;workspaceId:string;name:string;definition:Definition;inputs:Record<string,unknown>;agentRuntimeId:string}) { if(step===1&&!data.skillId)throw new Error("请选择已发布 Skill");if(step===2&&(!data.name.trim()||!data.workspaceId))throw new Error("请填写任务名称并选择工作空间");if(step===3){const missing=(data.definition.inputs||[]).filter(item=>item.required&&!isWorkspaceInputDefinition(item)&&isMissing(data.inputs[inputDefinitionId(item)]));if(missing.length)throw new Error(`请填写必需输入：${missing.map(item=>String(item.label||inputDefinitionId(item))).join("、")}`);}if(step===4&&!data.agentRuntimeId)throw new Error("请选择 Agent Runtime"); }
 function isWorkspaceInputDefinition(item: Record<string, unknown>) {
   return item.kind === "workspace" || item.resolver === "workspace" || (
     inputDefinitionId(item) === "repo_path" && String(item.type || item.kind) === "directory"

@@ -7,6 +7,7 @@ import shutil
 import sqlite3
 import threading
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -14,22 +15,24 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.config import settings
+from app.services.agent_cli_bridge import probe_agent_runtime
+from app.services.agent_runtimes import get_agent_runtime_sync
+from app.services.ai_workbench_links import AIWorkbenchLinkStore
 from app.services.artifact_profiles import ArtifactProfileStore
 from app.services.evidence_memory import EvidenceMemoryStore
-from app.services.ai_workbench_links import AIWorkbenchLinkStore
-from app.services.test_semantic_library import TestSemanticLibraryStore
 from app.services.knowledge_store import KnowledgeStore
-from app.services.skill_store import SkillStore
 from app.services.skill_run_invocation import (
     SkillRunInvocationError,
     freeze_skill_run_invocation,
 )
+from app.services.skill_store import SkillStore
+from app.services.test_semantic_library import TestSemanticLibraryStore
+from app.services.workbench_run_enrichment import enrich_prepared_task_run
 from app.services.workbench_task_run import (
     WorkbenchTaskRunPreparer,
     WorkbenchTaskRunStore,
     refresh_run_snapshot_v3,
 )
-from app.services.workbench_run_enrichment import enrich_prepared_task_run
 from app.services.workbench_task_run_events import WorkbenchTaskRunEventStore
 from app.services.workbench_task_store import WorkbenchTask, WorkbenchTaskStore
 from app.services.workflow_dsl import WorkflowStore
@@ -105,6 +108,39 @@ def artifact_profile_store() -> ArtifactProfileStore:
 
 def knowledge_store() -> KnowledgeStore:
     return KnowledgeStore(settings.data_path / "knowledge" / "knowledge.sqlite3")
+
+
+def _selected_agent_runtime(
+    task: WorkbenchTask,
+    *,
+    execution_overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    runtime_id = str(
+        (execution_overrides if execution_overrides is not None else task.execution_overrides)
+        .get("agent_runtime_id")
+        or ""
+    ).strip()
+    if not runtime_id:
+        raise ValueError("请选择 Agent Runtime 后再启动运行")
+    runtime = get_agent_runtime_sync(runtime_id)
+    if runtime is None:
+        raise ValueError(f"Agent Runtime 不存在：{runtime_id}")
+    if not bool(runtime.get("enabled", True)):
+        raise ValueError(f"Agent Runtime 已停用：{runtime_id}")
+    return runtime
+
+
+async def _agent_runtime_preflight(runtime: dict[str, Any]) -> dict[str, Any]:
+    result = await probe_agent_runtime(runtime)
+    if not bool(result.get("success")):
+        message = str(result.get("message") or "Agent Runtime preflight failed")
+        raise ValueError(message)
+    return {
+        "status": "passed",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "endpoint_class": "local-runtime-cli",
+        "credential_ready": bool(result.get("credential_ready", False)),
+    }
 
 
 def _require_v2() -> None:
@@ -331,11 +367,35 @@ async def create_task_attempt(task_id: str, payload: TaskRunCreateRequest) -> di
     if task.lifecycle_status != "ready":
         raise HTTPException(status_code=409, detail="只有就绪任务可以启动运行")
     workspace = _workspace(task.workspace_id)
+    parent_run_id = str(payload.parent_task_run_id or "")
+    parent_preview = next(
+        (
+            run
+            for run in _task_runs(task_id)
+            if run.task_run_id == parent_run_id
+        ),
+        None,
+    )
+    if parent_run_id and parent_preview is None:
+        raise HTTPException(status_code=422, detail="父运行不属于当前任务")
+    runtime_overrides = (
+        dict(parent_preview.task_bundle.get("execution_overrides") or {})
+        if parent_preview is not None
+        else task.execution_overrides
+    )
+    try:
+        agent_runtime = _selected_agent_runtime(
+            task, execution_overrides=runtime_overrides
+        )
+        preflight_receipt = await _agent_runtime_preflight(agent_runtime)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422, detail=f"Skill invocation cannot be frozen: {exc}"
+        ) from exc
 
     with _ATTEMPT_LOCK:
         previous = _task_runs(task_id)
         attempt_number = max((run.attempt_number for run in previous), default=0) + 1
-        parent_run_id = str(payload.parent_task_run_id or "")
         parent_run = next(
             (run for run in previous if run.task_run_id == parent_run_id),
             None,
@@ -493,8 +553,10 @@ async def create_task_attempt(task_id: str, payload: TaskRunCreateRequest) -> di
                     or []
                 ),
                 expected_content_digest=task.skill_content_digest,
+                agent_runtime=agent_runtime,
+                preflight_receipt=preflight_receipt,
             )
-        except SkillRunInvocationError as exc:
+        except (SkillRunInvocationError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=f"Skill invocation cannot be frozen: {exc}") from exc
         prepared.task_bundle["skill_invocation"] = asdict(invocation)
         prepared.task_bundle["skill_judge_required"] = bool(invocation.judge.get("required"))
@@ -968,23 +1030,32 @@ def _effective_skill_configuration_payload(
 
 
 def _skill_plan(skill_ir: dict[str, Any]) -> dict[str, Any]:
-    steps = [
-        str(item.get("id") or item.get("step_id") or "")
+    step_items = [
+        item
         for item in skill_ir.get("steps") or []
-        if isinstance(item, dict) and str(item.get("id") or item.get("step_id") or "")
+        if isinstance(item, dict)
+        and str(item.get("id") or item.get("step_id") or "")
     ]
+    steps = [str(item.get("id") or item.get("step_id") or "") for item in step_items]
+    topological_order = [
+        str(item) for item in skill_ir.get("topological_order") or [] if str(item)
+    ] or steps
     return {
         "compiled_contract_version": 3,
         "plan_version": 1,
         "skill_id": str(skill_ir.get("skill_id") or ""),
-        "topological_order": steps,
+        "topological_order": topological_order,
         "nodes": [
             {
-                "node_id": step_id,
+                "node_id": str(item.get("id") or item.get("step_id") or ""),
                 "type": "skill_step",
-                "depends_on": [],
+                "depends_on": [
+                    str(dependency)
+                    for dependency in item.get("depends_on") or []
+                    if str(dependency)
+                ],
             }
-            for step_id in steps
+            for item in step_items
         ],
     }
 
@@ -996,8 +1067,49 @@ def _skill_compat_definition(version: Any, skill_ir: dict[str, Any]) -> dict[str
         "compiled_contract_version": 3,
         "inputs": skill_ir.get("inputs") or [],
         "outputs": skill_ir.get("deliveries") or skill_ir.get("outputs") or [],
+        "declared_outputs": _skill_declared_outputs(skill_ir),
         "steps": skill_ir.get("steps") or [],
+        "artifacts": skill_ir.get("artifacts") or [],
+        "judge": skill_ir.get("judge") or {},
+        "required_agent_capabilities": skill_ir.get("required_agent_capabilities")
+        or [],
     }
+
+
+def _skill_declared_outputs(skill_ir: dict[str, Any]) -> list[dict[str, Any]]:
+    artifacts = {
+        str(item.get("artifact_id") or ""): item
+        for item in skill_ir.get("artifacts") or []
+        if isinstance(item, dict) and str(item.get("artifact_id") or "")
+    }
+    declared: list[dict[str, Any]] = []
+    for delivery in skill_ir.get("deliveries") or []:
+        if not isinstance(delivery, dict):
+            continue
+        delivery_id = str(delivery.get("delivery_id") or "")
+        artifact_ids = [
+            str(item) for item in delivery.get("artifact_ids") or [] if str(item)
+        ]
+        for index, artifact_id in enumerate(artifact_ids):
+            artifact = artifacts.get(artifact_id)
+            if not artifact:
+                continue
+            output_id = (
+                delivery_id
+                if len(artifact_ids) == 1
+                else f"{delivery_id}.{index + 1}"
+            )
+            output = {
+                "output_id": output_id,
+                "artifact": str(artifact.get("path") or ""),
+                "producer_step_id": str(artifact.get("producer_step_id") or ""),
+                "required": bool(artifact.get("required", True)),
+            }
+            schema = artifact.get("schema") or artifact.get("json_schema")
+            if isinstance(schema, dict):
+                output["schema"] = schema
+            declared.append(output)
+    return declared
 
 
 def _task_runs(task_id: str) -> list[Any]:
