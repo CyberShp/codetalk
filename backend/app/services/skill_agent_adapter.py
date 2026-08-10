@@ -7,6 +7,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from app.services.agent_runtimes import get_agent_runtime_sync
 from app.services.harness_facade import AgentHarnessFacade, HarnessRunRequest
 from app.services.provider_adapters.contracts import (
     ProviderResumeToken,
@@ -45,6 +46,7 @@ def execute_skill_step(
     required_artifacts = _required_artifact_paths(definition, step)
     if not required_artifacts:
         raise SkillAgentAdapterError("skill_step_artifact_contract_missing")
+
     adapter = create_provider_adapter(
         provider=str(execution.get("provider_ref") or ""),
         prompt_transport=str(execution.get("prompt_transport") or ""),
@@ -70,19 +72,24 @@ def execute_skill_step(
         mcp_profile=str(execution.get("mcp_profile") or ""),
         prompt_transport=str(execution.get("prompt_transport") or ""),
         timeout_seconds=int(
-            (producer.get("timeout_budget") or {}).get("agent_timeout_seconds")
-            or 0
+            (producer.get("timeout_budget") or {}).get("agent_timeout_seconds") or 0
         ),
         requires_network=bool(execution.get("requires_network", True)),
         run_id=f"{task_run.task_run_id}_skill_producer",
     )
     facade = AgentHarnessFacade(artifact_root, adapter=adapter)
     session = facade.prepare(request)
+    _apply_configured_runtime(
+        session,
+        execution,
+        hard_timeout_seconds=request.timeout_seconds or 1800,
+    )
+
     resume_token = _load_producer_resume_token(task_dir)
     if resume_token is None:
         result = facade.execute(
             session,
-            timeout_sec=request.timeout_seconds or 0,
+            timeout_sec=0,
             is_cancelled=is_cancelled,
             event_sink=event_sink,
         )
@@ -90,7 +97,7 @@ def execute_skill_step(
         result = facade.resume(
             session,
             resume_token,
-            timeout_sec=request.timeout_seconds or 0,
+            timeout_sec=0,
             is_cancelled=is_cancelled,
             event_sink=event_sink,
         )
@@ -98,10 +105,9 @@ def execute_skill_step(
         raise SkillAgentAdapterError(result.code or "skill_agent_operation_unsupported")
     if str(result.status or "") != "completed":
         raise SkillAgentAdapterError(str(result.error or result.status or "skill_agent_failed"))
+
     _persist_producer_resume_token(task_dir, result.provider_diagnostics)
-    missing = [
-        path for path in required_artifacts if not (artifact_root / path).is_file()
-    ]
+    missing = [path for path in required_artifacts if not (artifact_root / path).is_file()]
     if missing:
         raise SkillAgentAdapterError(
             "skill_step_required_artifacts_missing:" + ",".join(missing)
@@ -129,11 +135,10 @@ def execute_skill_judge(
 ) -> dict[str, Any]:
     runtime = invocation.get("runtime")
     judge_runtime = runtime.get("judge") if isinstance(runtime, dict) else None
-    execution = (
-        judge_runtime.get("execution") if isinstance(judge_runtime, dict) else None
-    )
+    execution = judge_runtime.get("execution") if isinstance(judge_runtime, dict) else None
     if not isinstance(execution, dict):
         raise SkillAgentAdapterError("skill_judge_runtime_unavailable")
+
     task_dir = Path(str(task_run.artifact_dir)).expanduser().resolve()
     definition = _compiled_definition(task_run)
     judge = invocation.get("judge") if isinstance(invocation.get("judge"), dict) else {}
@@ -141,12 +146,14 @@ def execute_skill_judge(
     artifact_paths = _artifact_paths_by_id(definition, artifact_ids)
     if len(artifact_paths) != len(artifact_ids):
         raise SkillAgentAdapterError("skill_judge_artifact_contract_missing")
+
     artifact_root = _bounded_artifact_root(task_dir, invocation)
     missing = [path for path in artifact_paths if not (artifact_root / path).is_file()]
     if missing:
         raise SkillAgentAdapterError(
             "skill_judge_required_artifacts_missing:" + ",".join(missing)
         )
+
     adapter = create_provider_adapter(
         provider=str(execution.get("provider_ref") or ""),
         prompt_transport=str(execution.get("prompt_transport") or ""),
@@ -171,26 +178,29 @@ def execute_skill_judge(
         mcp_profile=str(execution.get("mcp_profile") or ""),
         prompt_transport=str(execution.get("prompt_transport") or ""),
         timeout_seconds=int(
-            (judge_runtime.get("timeout_budget") or {}).get("agent_timeout_seconds")
-            or 0
+            (judge_runtime.get("timeout_budget") or {}).get("agent_timeout_seconds") or 0
         ),
         requires_network=bool(execution.get("requires_network", True)),
         run_id=f"{task_run.task_run_id}_skill_judge",
     )
     facade = AgentHarnessFacade(task_dir, adapter=adapter)
     session = facade.prepare(request)
+    _apply_configured_runtime(
+        session,
+        execution,
+        hard_timeout_seconds=request.timeout_seconds or 900,
+    )
     result = facade.execute(
         session,
-        timeout_sec=request.timeout_seconds or 0,
+        timeout_sec=0,
         is_cancelled=is_cancelled,
         event_sink=event_sink,
     )
     if isinstance(result, ProviderUnsupported):
         raise SkillAgentAdapterError(result.code or "skill_judge_operation_unsupported")
     if str(result.status or "") != "completed":
-        raise SkillAgentAdapterError(
-            str(result.error or result.status or "skill_judge_failed")
-        )
+        raise SkillAgentAdapterError(str(result.error or result.status or "skill_judge_failed"))
+
     report_path = task_dir / "skill_judge_report.json"
     try:
         report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -198,9 +208,7 @@ def execute_skill_judge(
         raise SkillAgentAdapterError("skill_judge_report_invalid") from exc
     if not isinstance(report, dict):
         raise SkillAgentAdapterError("skill_judge_report_invalid")
-    checked_ids = {
-        str(item) for item in report.get("checked_artifact_ids") or [] if str(item)
-    }
+    checked_ids = {str(item) for item in report.get("checked_artifact_ids") or [] if str(item)}
     if (
         report.get("ready") is not True
         or str(report.get("status") or "") not in {"READY", "READY_WITH_WARNINGS"}
@@ -218,6 +226,39 @@ def execute_skill_judge(
         "artifacts": list(result.artifacts),
         "governance_status": "passed",
     }
+
+
+def _apply_configured_runtime(
+    session: Any,
+    execution: dict[str, Any],
+    *,
+    hard_timeout_seconds: int,
+) -> None:
+    """Restore the selected Agent Runtime semantics lost by the generic Harness adapter."""
+
+    runtime_id = str(execution.get("runtime_config_id") or "").strip()
+    configured = get_agent_runtime_sync(runtime_id) if runtime_id else None
+    metadata = getattr(session, "metadata", None)
+    runtime = metadata.get("runtime") if isinstance(metadata, dict) else None
+    if not isinstance(configured, dict) or not isinstance(runtime, dict):
+        return
+
+    runtime["output_mode"] = str(configured.get("output_mode") or "auto")
+    runtime["completion_mode"] = str(configured.get("completion_mode") or "process_exit")
+    runtime["idle_complete_seconds"] = max(
+        1, int(configured.get("idle_complete_seconds") or 5)
+    )
+    runtime["sentinel_text"] = str(configured.get("sentinel_text") or "")
+    runtime["session_persistence"] = str(
+        configured.get("session_persistence") or "none"
+    )
+    runtime["resume_args"] = [str(item) for item in configured.get("resume_args") or []]
+
+    hard_timeout = max(1, int(hard_timeout_seconds or 1))
+    configured_timeout = max(1, int(configured.get("timeout_seconds") or hard_timeout))
+    runtime["timeout_seconds"] = min(configured_timeout, hard_timeout)
+    runtime["activity_timeout_seconds"] = min(configured_timeout, hard_timeout)
+    runtime["total_timeout_seconds"] = hard_timeout
 
 
 def _producer_runtime(invocation: dict[str, Any]) -> dict[str, Any]:
@@ -256,9 +297,7 @@ def _required_artifact_paths(
     definition: dict[str, Any], step: dict[str, Any]
 ) -> list[str]:
     gate = step.get("completion_gate") if isinstance(step.get("completion_gate"), dict) else {}
-    required_ids = {
-        str(item) for item in gate.get("required_artifact_ids") or [] if str(item)
-    }
+    required_ids = {str(item) for item in gate.get("required_artifact_ids") or [] if str(item)}
     paths = [
         str(item.get("path") or "")
         for item in definition.get("artifacts") or []
