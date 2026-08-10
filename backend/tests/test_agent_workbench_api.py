@@ -102,6 +102,42 @@ def _write_frozen_plan_authority(task_dir: Path, plan: dict) -> None:
     )
 
 
+async def test_skill_workflow_summary_is_agent_backed_and_event_context_tracks_node_status(tmp_path):
+    from app.api.agent_workbench import (
+        _task_run_ui_event_context,
+        _task_run_ui_workflow_execution_metadata,
+    )
+
+    metadata = _task_run_ui_workflow_execution_metadata({
+        "steps": [
+            {"step_id": "step-01"},
+            {"step_id": "judge-01"},
+        ],
+    }, plan_nodes=[
+        {"node_id": "step-01", "type": "skill_step"},
+        {"node_id": "judge-01", "type": "skill_judge"},
+    ])
+    (tmp_path / "task_run_events.jsonl").write_text(
+        "\n".join([
+            json.dumps({
+                "event_type": "step_started",
+                "created_at": "2026-08-11T01:00:00Z",
+                "payload": {"step_id": "step-01"},
+            }),
+            json.dumps({
+                "event_type": "step_completed",
+                "created_at": "2026-08-11T01:05:00Z",
+                "payload": {"step_id": "step-01"},
+            }),
+        ]),
+        encoding="utf-8",
+    )
+
+    assert metadata["execution_subject"] == "agent"
+    assert "未调用 AI" not in metadata["user_message"]
+    assert _task_run_ui_event_context(tmp_path)["step-01"]["status"] == "completed"
+
+
 async def test_task_run_detail_accepts_skill_step_ids_with_dots(workbench_client):
     task_run_id = "task_run_skill_step_dot"
     step_id = "step.step-01"
@@ -4154,6 +4190,80 @@ async def test_workbench_task_run_execute_api_schedules_background_run_and_expos
     running = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}")
     assert running.status_code == 200
     assert running.json()["run_ui_summary"]["nodes"][0]["status_label"] == "运行中"
+
+
+async def test_skill_task_default_execute_persists_frozen_overall_deadline(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    from app.api import agent_workbench
+
+    task_run_id = "task-run-skill-default-deadline"
+    task_dir = _task_run_dir(task_run_id)
+    task_dir.mkdir(parents=True)
+    (task_dir / "skill_invocation.json").write_text(
+        json.dumps(
+            {
+                "runtime": {
+                    "producer": {
+                        "timeout_budget": {"overall_timeout_seconds": 1800},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (task_dir / "task_run.json").write_text(
+        json.dumps(
+            {
+                "task_run_id": task_run_id,
+                "task_id": "task-skill-deadline",
+                "workflow_id": "skill.codetalks-module-full-analysis",
+                "workspace_id": "ws-skill-deadline",
+                "repo_path": str(tmp_path),
+                "artifact_dir": str(task_dir),
+                "workflow_snapshot": {"compiled_contract_version": 3},
+                "input_snapshot": {},
+                "task_bundle": {
+                    "compiled_contract_version": 3,
+                    "compiled_definition": {"compiled_contract_version": 3},
+                    "compiled_plan": {"compiled_contract_version": 3, "nodes": []},
+                },
+                "agent_runs": [],
+                "status": "prepared",
+                "execution_status": "prepared",
+                "runtime": {"status": "prepared"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    scheduled_background: list[str] = []
+
+    async def record_background(*, task_run_id: str, payload) -> None:
+        scheduled_background.append(task_run_id)
+
+    monkeypatch.setattr(
+        agent_workbench,
+        "_execute_task_run_background",
+        record_background,
+    )
+
+    scheduled = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/execute",
+        json={},
+    )
+    await asyncio.sleep(0)
+
+    assert scheduled.status_code == 202
+    persisted = json.loads(
+        (task_dir / "task_run.json").read_text(encoding="utf-8")
+    )
+    deadline = datetime.fromisoformat(
+        persisted["runtime"]["total_execution_timeout_at"]
+    )
+    assert 1798 <= (deadline - datetime.now(timezone.utc)).total_seconds() <= 1800
+    assert scheduled_background == [task_run_id]
 
 
 async def test_workbench_task_run_events_stream_yields_incremental_events_until_terminal(

@@ -555,6 +555,11 @@ async def create_task_attempt(task_id: str, payload: TaskRunCreateRequest) -> di
                 expected_content_digest=task.skill_content_digest,
                 agent_runtime=agent_runtime,
                 preflight_receipt=preflight_receipt,
+                execution_profile_id=str(
+                    (prepared.task_bundle.get("execution_profile") or {}).get("id")
+                    or execution_profile_id
+                    or "rapid"
+                ),
             )
         except (SkillRunInvocationError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=f"Skill invocation cannot be frozen: {exc}") from exc

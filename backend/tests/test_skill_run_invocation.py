@@ -235,3 +235,44 @@ def test_freeze_skill_run_invocation_records_real_agent_runtime_without_fake_pre
     }
     assert "secret-never-freeze" not in json.dumps(invocation.runtime)
     assert producer["observed_runtime_version"] == "unknown"
+
+
+@pytest.mark.parametrize(
+    ("profile_id", "idle_timeout", "step_timeout", "overall_timeout"),
+    [
+        ("rapid", 300, 1200, 1800),
+        ("deep", 600, 5400, 7200),
+    ],
+)
+def test_freeze_skill_run_invocation_records_independent_profile_timeout_budgets(
+    tmp_path,
+    profile_id,
+    idle_timeout,
+    step_timeout,
+    overall_timeout,
+):
+    from app.services.skill_run_invocation import freeze_skill_run_invocation
+
+    invocation = freeze_skill_run_invocation(
+        version=_version(tmp_path),
+        task_run_id=f"task_run_{profile_id}",
+        task_id=f"task_{profile_id}",
+        artifact_root=tmp_path / f"run-{profile_id}",
+        inputs={"input.source": str(tmp_path)},
+        expected_content_digest="sha256:" + "1" * 64,
+        execution_profile_id=profile_id,
+    )
+
+    budget = invocation.runtime["producer"]["timeout_budget"]
+    assert budget["profile_id"] == profile_id
+    assert budget["idle_timeout_seconds"] == idle_timeout
+    assert budget["step_timeout_seconds"] == step_timeout
+    assert budget["overall_timeout_seconds"] == overall_timeout
+    assert budget["agent_timeout_seconds"] == step_timeout
+
+    payload = json.loads(
+        (tmp_path / f"run-{profile_id}" / "skill_invocation.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert list(_validator("skill-run-invocation-v1").iter_errors(payload)) == []

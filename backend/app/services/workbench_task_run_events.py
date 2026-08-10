@@ -523,6 +523,8 @@ def _public_event(event: dict[str, Any]) -> dict[str, Any]:
 
 def _public_event_kind(event: dict[str, Any]) -> str:
     event_type = str(event.get("event_type") or "").strip().lower()
+    payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    harness_kind = str(payload.get("harness_event_kind") or "").strip().lower()
     if event_type in {
         "queued", "running", "step_started", "step_completed", "cancelled", "interrupted",
         "node_queued", "node_started", "node_progress", "node_completed", "node_blocked",
@@ -534,8 +536,12 @@ def _public_event_kind(event: dict[str, Any]) -> str:
         return "done"
     if event_type in {"artifact_created", "artifact", "artifact_progress"}:
         return "artifact"
-    if event_type == "agent_output":
+    if event_type in {"agent_output", "activity"} or harness_kind == "activity":
         return "output"
+    if event_type in {"tool_requested", "tool_started"}:
+        return "tool_use"
+    if event_type in {"tool_completed", "tool_failed"}:
+        return "tool_result"
     if event_type in {"step_failed", "node_failed", "failed", "error", "provider_readiness_blocked"}:
         return "error"
     if event_type in {"thinking", "reasoning", "diagnostic", "trace", "tool_use", "tool_result"}:

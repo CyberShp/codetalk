@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,9 +17,72 @@ from app.services.skill_store import SkillStore
 
 logger = logging.getLogger(__name__)
 
-CODETALK_PRESET_PACK_ID = "pack.codetalks-v2.4"
-CODETALK_PRESET_PROJECT_ID = "skill_project_codetalks_v24_presets"
-CODETALK_PRESET_SOURCE_ROOT = "skills/presets/codetalks-v2.4"
+CODETALK_PRESET_RELEASE = "v2.5"
+CODETALK_PRESET_PACK_ID = "pack.codetalks-v2.5"
+CODETALK_PRESET_PROJECT_ID = "skill_project_codetalks_v25_presets"
+CODETALK_PRESET_SOURCE_ROOT = "skills/presets/codetalks-v2.5"
+CODETALK_PRESET_SOURCE_ARCHIVE = "codetalks-fused-v2.4-zh.zip"
+CODETALK_PRESET_SOURCE_ARCHIVE_SHA256 = "7369ef35d339bc554610754ceb385b78d15f94fc8e1e5435350c4ebcf2b27325"
+CODETALK_PRESET_SOURCE_TREE_SHA256 = "4cd94b0bf7f389b30ed38890621a6d76ffc914c19ba2ff446a9cb4069282fa33"
+CODETALK_PRESET_RESOURCE_ROOT = Path(__file__).resolve().parents[1] / "resources" / "skills" / "codetalks-v2.5"
+
+CODETALK_PRESET_SOURCE_FILES: tuple[str, ...] = (
+    "NOTICE.md",
+    "README.md",
+    "SKILL.md",
+    "checklists/final-validation.md",
+    "checklists/judge-checklist.md",
+    "references/analysis-models.md",
+    "references/codehub-mr-access.md",
+    "references/coverage-usage.md",
+    "references/evidence-consumption.md",
+    "references/failure-guidewords.md",
+    "references/markdown-narrative-first.md",
+    "references/output-separation.md",
+    "references/path-fidelity.md",
+    "references/scenario-expansion-engine.md",
+    "references/tool-routing.md",
+    "references/worker-judge-protocol.md",
+    "scripts/run_guard.py",
+    "steps/01-intake-and-scope.md",
+    "steps/02-evidence-consumption.md",
+    "steps/03-breadth-inventory.md",
+    "steps/04-flow-deep-analysis.md",
+    "steps/05-scenario-expansion.md",
+    "steps/06-sfmea-blackbox-translation.md",
+    "steps/07-test-design.md",
+    "steps/08-independent-judge.md",
+    "steps/09-final-delivery.md",
+    "templates/coverage-gate-template.md",
+    "templates/开发给测试讲代码模板.md",
+    "templates/流程讲解活文档模板.md",
+    "templates/黑盒测试用例Markdown模板.md",
+    "workflow-manifest.json",
+    "workflows/custom.md",
+    "workflows/issue-regression.md",
+    "workflows/module-analysis.md",
+    "workflows/root-cause.md",
+    "workflows/special-risk.md",
+    "运行产物中文命名对照.md",
+)
+
+CODETALK_PRESET_STEP_FILES: tuple[str, ...] = (
+    "steps/01-intake-and-scope.md",
+    "steps/02-evidence-consumption.md",
+    "steps/03-breadth-inventory.md",
+    "steps/04-flow-deep-analysis.md",
+    "steps/05-scenario-expansion.md",
+    "steps/06-sfmea-blackbox-translation.md",
+    "steps/07-test-design.md",
+    "steps/08-independent-judge.md",
+    "steps/09-final-delivery.md",
+)
+
+_PLACEHOLDER_MARKERS = (
+    "this file is part of the codetalk",
+    "built-in scenarios for skill-first task creation",
+    "print('codetalk skill run guard')",
+)
 
 
 @dataclass(frozen=True)
@@ -76,6 +141,9 @@ def codetalk_preset_payload(data_dir: str | Path) -> list[dict[str, str]]:
             "label": scenario.label,
             "description": scenario.description,
             "source_root": str(source_root),
+            "preset_release": CODETALK_PRESET_RELEASE,
+            "source_archive": CODETALK_PRESET_SOURCE_ARCHIVE,
+            "source_archive_sha256": CODETALK_PRESET_SOURCE_ARCHIVE_SHA256,
         }
         for scenario in CODETALK_PRESET_SCENARIOS
     ]
@@ -98,7 +166,10 @@ def ensure_codetalk_skill_presets(store: SkillStore) -> dict[str, Any]:
     pipeline = SkillBuildPipeline(store)
     reviewer = SkillReviewService(store)
     for scenario in CODETALK_PRESET_SCENARIOS:
-        if store.list_versions(skill_id=scenario.skill_id):
+        if any(
+            version.project_id == CODETALK_PRESET_PROJECT_ID
+            for version in store.list_versions(skill_id=scenario.skill_id)
+        ):
             existing.append(scenario.skill_id)
             continue
         draft = store.create_draft_from_source(
@@ -113,7 +184,7 @@ def ensure_codetalk_skill_presets(store: SkillStore) -> dict[str, Any]:
             scope="full",
             provenance=ReviewProvenance(
                 purpose=f"built-in CodeTalk preset seed: {scenario.scenario_id}",
-                session_id=f"preset-seed/codetalks-v2.4/{scenario.scenario_id}",
+                session_id=f"preset-seed/codetalks-v2.5/{scenario.scenario_id}",
                 provider="deepseek",
                 requested_model="deepseek-v4-flash",
                 effective_model="deepseek-v4-flash",
@@ -131,28 +202,31 @@ def ensure_codetalk_skill_presets(store: SkillStore) -> dict[str, Any]:
         "created": created,
         "existing": existing,
         "scenario_count": len(CODETALK_PRESET_SCENARIOS),
+        "preset_release": CODETALK_PRESET_RELEASE,
+        "source_archive": CODETALK_PRESET_SOURCE_ARCHIVE,
+        "source_archive_sha256": CODETALK_PRESET_SOURCE_ARCHIVE_SHA256,
+        "source_tree_sha256": CODETALK_PRESET_SOURCE_TREE_SHA256,
     }
 
 
 def write_codetalk_v24_source(root: Path) -> None:
+    """Copy the pinned v2.4 source bytes into the mutable v2.5 seed area."""
+
+    source_root = CODETALK_PRESET_RESOURCE_ROOT
+    _validate_codetalk_preset_source(source_root)
+    root = Path(root)
+    if root.exists():
+        _reject_symlinks(root)
+        unexpected = set(_relative_files(root)) - set(CODETALK_PRESET_SOURCE_FILES)
+        if unexpected:
+            raise ValueError(f"Codetalk preset destination contains unexpected files: {sorted(unexpected)!r}")
     root.mkdir(parents=True, exist_ok=True)
-    manifest = _v24_manifest()
-    _write_text(root / "workflow-manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
-    for scenario in CODETALK_PRESET_SCENARIOS:
-        _write_text(
-            root / "workflows" / f"{scenario.scenario_id}.md",
-            f"# {scenario.label}\n\n{scenario.description}\n",
-        )
-    for path in [
-        "SKILL.md",
-        "scripts/run_guard.py",
-        "checklists/judge-checklist.md",
-        "references/tool-routing.md",
-        "templates/开发给测试讲代码模板.md",
-        *manifest["required_core_rules"].values(),
-        *(step["file"] for step in manifest["steps"]),
-    ]:
-        _write_text(root / path, _default_source_content(path))
+    for relative_path in CODETALK_PRESET_SOURCE_FILES:
+        source = source_root / relative_path
+        destination = root / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+    _validate_codetalk_preset_source(root)
 
 
 def _get_or_create_preset_project(store: SkillStore) -> Any:
@@ -161,61 +235,80 @@ def _get_or_create_preset_project(store: SkillStore) -> Any:
     except KeyError:
         return store.create_project(
             project_id=CODETALK_PRESET_PROJECT_ID,
-            name="CodeTalk v2.4 Preset Skills",
+            name="CodeTalk v2.5 Preset Skills",
             pack_id=CODETALK_PRESET_PACK_ID,
         )
 
 
-def _write_text(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists() and path.read_text(encoding="utf-8") == content:
-        return
-    path.write_text(content, encoding="utf-8")
+def _validate_codetalk_preset_source(root: Path) -> None:
+    files = _relative_files(root)
+    if files != tuple(sorted(CODETALK_PRESET_SOURCE_FILES)):
+        raise ValueError(f"Codetalk preset source inventory mismatch: {files!r}")
+
+    for relative_path in files:
+        path = root / relative_path
+        if path.suffix not in {".md", ".py", ".json"}:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError(f"Codetalk preset source is not UTF-8: {relative_path}") from exc
+        lowered = text.lower()
+        if any(marker in lowered for marker in _PLACEHOLDER_MARKERS):
+            raise ValueError(f"Codetalk preset source contains placeholder content: {relative_path}")
+
+    try:
+        manifest = json.loads((root / "workflow-manifest.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Codetalk preset workflow-manifest.json is invalid") from exc
+    steps = manifest.get("steps")
+    if not isinstance(steps, list):
+        raise ValueError("Codetalk preset manifest steps must be a list")
+    step_files = tuple(step.get("file") for step in steps if isinstance(step, dict))
+    if step_files != CODETALK_PRESET_STEP_FILES:
+        raise ValueError(f"Codetalk preset manifest must declare the authoritative nine steps: {step_files!r}")
+    for step_file in step_files:
+        instruction = (root / step_file).read_text(encoding="utf-8")
+        has_boundary = any(boundary in instruction for boundary in ("必须", "不得", "禁止", "只允许"))
+        if "## 目标" not in instruction or len(instruction.strip()) < 150 or not has_boundary:
+            raise ValueError(f"Codetalk preset step is not substantive: {step_file}")
+
+    if len((root / "SKILL.md").read_text(encoding="utf-8")) < 5000:
+        raise ValueError("Codetalk preset SKILL.md is not substantive")
+    if len((root / "checklists" / "judge-checklist.md").read_text(encoding="utf-8")) < 500:
+        raise ValueError("Codetalk preset Judge checklist is not substantive")
+    if len((root / "scripts" / "run_guard.py").read_text(encoding="utf-8")) < 1000:
+        raise ValueError("Codetalk preset run guard is not substantive")
+
+    digest = _source_tree_digest(root)
+    if digest != CODETALK_PRESET_SOURCE_TREE_SHA256:
+        raise ValueError(f"Codetalk preset source digest mismatch: {digest}")
 
 
-def _default_source_content(path: str) -> str:
-    if path == "SKILL.md":
-        return "# CodeTalk v2.4 Preset Pack\n\nBuilt-in scenarios for Skill-first task creation.\n"
-    if path == "scripts/run_guard.py":
-        return "print('codetalk skill run guard')\n"
-    return f"# {path}\n\nThis file is part of the CodeTalk v2.4 preset Skill source.\n"
+def _relative_files(root: Path) -> tuple[str, ...]:
+    root = Path(root)
+    if not root.is_dir() or root.is_symlink():
+        raise ValueError(f"Codetalk preset source directory is missing or unsafe: {root}")
+    _reject_symlinks(root)
+    return tuple(
+        sorted(
+            path.relative_to(root).as_posix()
+            for path in root.rglob("*")
+            if path.is_file()
+        )
+    )
 
 
-def _v24_manifest() -> dict[str, Any]:
-    required_by_step = [
-        ["活文档/01-范围与任务契约.md"],
-        ["活文档/02-输入材料消费记录.md", "内部索引/运行计划.json", "内部索引/输入材料索引.json", "活文档/覆盖门禁/步骤02-覆盖门禁.md"],
-        ["活文档/03-入口清单与说明.md", "活文档/04-流程清单与说明.md", "活文档/05-状态清单与说明.md", "活文档/06-资源清单与说明.md", "活文档/07-分析模型适用性.md", "活文档/覆盖门禁/步骤03-覆盖门禁.md"],
-        ["活文档/08-分支处置与解释.md", "活文档/09-状态转换处置与解释.md", "活文档/10-资源生命周期处置与解释.md", "活文档/11-异常传播链与解释.md", "活文档/12-开发讲解覆盖台账.md", "活文档/覆盖门禁/步骤04-覆盖门禁.md"],
-        ["活文档/13-场景候选池与推导说明.md", "活文档/14-风险点清单与因果说明.md", "活文档/覆盖门禁/步骤05-覆盖门禁.md"],
-        ["活文档/15-SFMEA分析.md", "活文档/16-黑盒控制与观测映射.md", "活文档/17-测试设计依据.md", "活文档/覆盖门禁/步骤06-覆盖门禁.md"],
-        ["活文档/18-测试追溯矩阵.md", "活文档/覆盖门禁/步骤07-覆盖门禁.md"],
-        ["活文档/19-独立审查报告.md", "活文档/覆盖门禁/最终覆盖门禁.md", "内部索引/独立审查状态.json"],
-        ["正式输出/开发给测试讲代码.md", "正式输出/流程分支状态资源与异常传播.md", "正式输出/风险点与SFMEA.md", "正式输出/黑盒测试场景.md", "正式输出/黑盒测试流程.md", "正式输出/黑盒测试用例.md", "正式输出/覆盖审计与分析限制.md", "正式输出/完整分析报告.md"],
-    ]
-    steps: list[dict[str, Any]] = []
-    for index, required in enumerate(required_by_step, start=1):
-        step_id = f"{index:02d}"
-        step: dict[str, Any] = {
-            "id": step_id,
-            "file": f"steps/{step_id}-step.md",
-            "required": required,
-            "markdown_min_chars": 600 + index,
-        }
-        if index == 4:
-            step["requires_glob"] = ["活文档/流程讲解/流程-*.md"]
-            step["flow_narrative_validation"] = True
-        steps.append(step)
-    return {
-        "version": "2.4",
-        "required_core_rules": {
-            "path-fidelity": "references/path-fidelity.md",
-            "evidence-consumption": "references/evidence-consumption.md",
-            "narrative-first": "references/markdown-narrative-first.md",
-        },
-        "evidence_allowed_status": ["parsed", "partially_parsed", "blocked", "out_of_scope", "unreadable"],
-        "coverage_allowed_outcomes": ["analyzed", "covered_by_other", "not_applicable", "blocked", "need_verify", "truncated"],
-        "flow_required_headings": ["## 一、这里是干什么的", "## 二、外部怎么触发"],
-        "flow_key_narrative_headings": ["## 一、这里是干什么的"],
-        "steps": steps,
-    }
+def _reject_symlinks(root: Path) -> None:
+    if root.is_symlink() or any(path.is_symlink() for path in root.rglob("*")):
+        raise ValueError(f"Codetalk preset source cannot contain symlinks: {root}")
+
+
+def _source_tree_digest(root: Path) -> str:
+    digest = hashlib.sha256()
+    for relative_path in _relative_files(root):
+        digest.update(relative_path.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update((root / relative_path).read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()

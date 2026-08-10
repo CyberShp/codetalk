@@ -1304,7 +1304,10 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
             else node
             for node in nodes
         ]
-    execution_metadata = _task_run_ui_workflow_execution_metadata(workflow)
+    execution_metadata = _task_run_ui_workflow_execution_metadata(
+        workflow,
+        plan_nodes=list(plan_nodes.values()),
+    )
     status = _task_run_ui_status(execution=execution, nodes=nodes)
     live_readiness_failures = _task_run_ui_live_readiness_failures(task_root)
     live_readiness_actions = _task_run_ui_live_readiness_actions(task_root)
@@ -1527,7 +1530,13 @@ def _task_run_ui_node_summary(
 ) -> dict[str, Any]:
     step_id = _task_run_ui_step_id(step)
     execution_contract = _agent_step_execution_contract(task_root=task_root, step_id=step_id)
-    status_value = str((step_result or {}).get("status") or "prepared")
+    persisted_status = str((step_result or {}).get("status") or "prepared")
+    event_status = str(event_context.get("status") or "")
+    status_value = (
+        event_status
+        if event_status and persisted_status in {"", "prepared", "queued"}
+        else persisted_status
+    )
     node_outputs = _task_run_ui_node_outputs(
         workflow_contract=workflow_contract,
         step_id=step_id,
@@ -1577,7 +1586,7 @@ def _task_run_ui_node_summary(
     return {
         "id": step_id,
         "label": label,
-        "type": str(step.get("type") or ""),
+        "type": str(step.get("type") or plan_node.get("type") or plan_node.get("kind") or ""),
         "status": status_value,
         "status_label": _task_run_ui_status_label(status_value),
         "provider": execution_metadata["provider"] or str(step.get("provider") or ""),
@@ -1654,8 +1663,16 @@ def _task_run_ui_event_context(task_root: Path) -> dict[str, dict[str, Any]]:
         timestamp = str(event.get("created_at") or event.get("timestamp") or "")
         if event_type in {"step_started", "node_started"} and timestamp:
             context.setdefault("started_at", timestamp)
+            context["status"] = "running"
         if event_type in {"step_completed", "step_failed", "step_cancelled", "node_completed", "node_failed"} and timestamp:
             context["completed_at"] = timestamp
+        if event_type in {"step_completed", "node_completed", "node_reused"}:
+            context["status"] = "completed"
+        elif event_type in {"step_failed", "node_failed"}:
+            reported = str(payload.get("status") or "").strip().lower()
+            context["status"] = "interrupted" if reported == "interrupted" else "failed"
+        elif event_type in {"step_cancelled", "cancelled"}:
+            context["status"] = "cancelled"
         kind = str(event.get("event_kind") or payload.get("kind") or "")
         if kind in {"tool_use", "tool_result"}:
             tool = str(payload.get("tool") or payload.get("name") or "").strip()
@@ -1766,19 +1783,34 @@ def _task_run_ui_failure_class(reasons: list[str]) -> str:
     return "configuration" if any(marker in text for marker in configuration_markers) else "runtime"
 
 
-def _task_run_ui_workflow_execution_metadata(workflow: dict[str, Any]) -> dict[str, str]:
+def _task_run_ui_workflow_execution_metadata(
+    workflow: dict[str, Any],
+    *,
+    plan_nodes: list[dict[str, Any]] | None = None,
+) -> dict[str, str]:
     subject = str(workflow.get("execution_subject") or "").strip()
     label = str(workflow.get("execution_label") or "").strip()
     user_message = str(workflow.get("user_message") or "").strip()
     steps = [step for step in workflow.get("steps") or [] if isinstance(step, dict)]
-    step_types = {str(step.get("type") or "") for step in steps}
-    has_agent_or_llm = bool(step_types & {"agent_task", "builtin_llm", "llm_task"})
+    step_types = {
+        str(step.get("type") or step.get("kind") or "")
+        for step in [*steps, *(plan_nodes or [])]
+    }
+    has_agent_or_llm = bool(step_types & {
+        "agent_task", "builtin_llm", "llm_task", "skill_step", "skill_judge",
+    })
+    if not subject and has_agent_or_llm:
+        subject = "agent"
     if not subject and steps and not has_agent_or_llm:
         subject = "local_static"
     if subject == "local_static" and not label:
         label = "本地静态扫描（无 AI）"
     if subject == "local_static" and not user_message:
         user_message = "该工作流只执行本地静态源码扫描，未调用 AI 或外部 Agent。"
+    if subject == "agent" and not label:
+        label = "智能体工作流"
+    if subject == "agent" and not user_message:
+        user_message = "该工作流由外部 Agent 执行，并持续生成可检查的进展与产物。"
     return {
         "execution_subject": subject,
         "execution_label": label,
@@ -2960,9 +2992,13 @@ async def execute_task_run_workflow(
         return _scheduled_task_run_response(task_run=task_run, status=current_status)
 
     try:
+        effective_timeout_sec = _task_run_effective_timeout_sec(
+            task_run,
+            requested_timeout_sec=payload.timeout_sec,
+        )
         total_execution_timeout_at = _persist_task_run_total_execution_deadline(
             task_run_id,
-            timeout_sec=payload.timeout_sec,
+            timeout_sec=effective_timeout_sec,
             event_store=event_store,
             status="queued",
         )
@@ -2978,7 +3014,8 @@ async def execute_task_run_workflow(
             task_run_id,
             "queued",
             {
-                "timeout_sec": payload.timeout_sec,
+                "timeout_sec": effective_timeout_sec,
+                "requested_timeout_sec": payload.timeout_sec,
                 "total_execution_timeout_at": total_execution_timeout_at,
                 "stop_on_error": payload.stop_on_error,
             },
@@ -3623,6 +3660,40 @@ def _approval_total_execution_budget_sec(record: Any) -> int:
     if deadline is None or entered_at is None:
         return 0
     return max(0, math.ceil((deadline - entered_at).total_seconds()))
+
+
+def _task_run_effective_timeout_sec(
+    task_run: Any,
+    *,
+    requested_timeout_sec: int,
+) -> int:
+    requested = max(0, int(requested_timeout_sec or 0))
+    if requested > 0:
+        return requested
+    task_dir = Path(str(task_run.artifact_dir)).expanduser().resolve()
+    invocation_path = task_dir / "skill_invocation.json"
+    try:
+        if invocation_path.is_symlink():
+            return 0
+        resolved = invocation_path.resolve(strict=True)
+        resolved.relative_to(task_dir)
+        invocation = json.loads(resolved.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return 0
+    runtime = invocation.get("runtime") if isinstance(invocation, dict) else None
+    producer = runtime.get("producer") if isinstance(runtime, dict) else None
+    budget = (
+        producer.get("timeout_budget") if isinstance(producer, dict) else None
+    )
+    try:
+        overall = int(
+            budget.get("overall_timeout_seconds")
+            if isinstance(budget, dict)
+            else 0
+        )
+    except (TypeError, ValueError):
+        return 0
+    return overall if overall > 0 else 0
 
 
 def _total_execution_deadline_text(timeout_sec: int) -> str | None:

@@ -16,6 +16,20 @@ class SkillRunInvocationError(ValueError):
     """Raised when a Skill invocation cannot be frozen safely."""
 
 
+_PROFILE_TIMEOUT_BUDGETS = {
+    "rapid": {
+        "idle_timeout_seconds": 300,
+        "step_timeout_seconds": 1200,
+        "overall_timeout_seconds": 1800,
+    },
+    "deep": {
+        "idle_timeout_seconds": 600,
+        "step_timeout_seconds": 5400,
+        "overall_timeout_seconds": 7200,
+    },
+}
+
+
 @dataclass(frozen=True)
 class SkillRunInvocation:
     schema_version: str
@@ -53,6 +67,7 @@ def freeze_skill_run_invocation(
     expected_content_digest: str = "",
     agent_runtime: dict[str, Any] | None = None,
     preflight_receipt: dict[str, Any] | None = None,
+    execution_profile_id: str = "rapid",
 ) -> SkillRunInvocation:
     """Persist the immutable Skill Version and run inputs before execution."""
 
@@ -91,18 +106,25 @@ def freeze_skill_run_invocation(
     skill_ir_digest = _sha256_path(ir_path)
     selected = _selected_delivery_ids(ir, selected_deliveries)
     required_artifacts = _required_artifact_ids(ir, selected)
+    profile_id = str(execution_profile_id or "rapid").strip().lower()
+    timeout_budget = _profile_timeout_budget(profile_id)
     runtime = {
         "producer": _runtime_envelope(
             "producer",
             ["tools", "artifact_collection", "cancellation"],
-            agent_timeout_seconds=1800,
+            timeout_budget=timeout_budget,
             agent_runtime=agent_runtime,
             preflight_receipt=preflight_receipt,
         ),
         "judge": _runtime_envelope(
             "judge",
             ["session_isolation", "artifact_collection", "cancellation"],
-            agent_timeout_seconds=900,
+            timeout_budget={
+                **timeout_budget,
+                "step_timeout_seconds": min(
+                    timeout_budget["step_timeout_seconds"], 900
+                ),
+            },
             agent_runtime=agent_runtime,
             preflight_receipt=preflight_receipt,
         )
@@ -231,7 +253,7 @@ def _runtime_envelope(
     role: str,
     capabilities: list[str],
     *,
-    agent_timeout_seconds: int,
+    timeout_budget: dict[str, Any],
     agent_runtime: dict[str, Any] | None,
     preflight_receipt: dict[str, Any] | None,
 ) -> dict[str, Any]:
@@ -247,6 +269,7 @@ def _runtime_envelope(
     report_digest = "sha256:" + hashlib.sha256(
         f"{role}:{','.join(capabilities)}".encode()
     ).hexdigest()
+    step_timeout_seconds = int(timeout_budget["step_timeout_seconds"])
     envelope = {
         "runtime_id": runtime_id,
         "requested_provider": provider,
@@ -258,11 +281,14 @@ def _runtime_envelope(
         "declared_context_window_tokens": 200000,
         "requested_max_output_tokens": 4096,
         "timeout_budget": {
+            "profile_id": str(timeout_budget["profile_id"]),
             "queue_timeout_seconds": 60,
-            "agent_timeout_seconds": agent_timeout_seconds,
+            "idle_timeout_seconds": int(timeout_budget["idle_timeout_seconds"]),
+            "step_timeout_seconds": step_timeout_seconds,
+            "agent_timeout_seconds": step_timeout_seconds,
             "script_timeout_seconds": 300,
             "validation_timeout_seconds": 600,
-            "overall_timeout_seconds": max(agent_timeout_seconds + 600, 1800),
+            "overall_timeout_seconds": int(timeout_budget["overall_timeout_seconds"]),
         },
         "capability_report_id": f"capability {role}/local",
         "capability_report_digest": report_digest,
@@ -291,6 +317,13 @@ def _runtime_envelope(
             ),
         }
     return envelope
+
+
+def _profile_timeout_budget(profile_id: str) -> dict[str, Any]:
+    configured = _PROFILE_TIMEOUT_BUDGETS.get(profile_id)
+    if configured is None:
+        raise SkillRunInvocationError(f"unsupported execution profile: {profile_id}")
+    return {"profile_id": profile_id, **configured}
 
 
 def _judge_payload(ir: dict[str, Any]) -> dict[str, Any]:

@@ -76,6 +76,44 @@ def test_agent_output_event_is_public_output_not_diagnostic(tmp_path):
     assert event["event_kind"] == "output"
 
 
+def test_legacy_activity_and_harness_activity_are_public_output(tmp_path):
+    from app.services.workbench_task_run_events import WorkbenchTaskRunEventStore
+
+    store = WorkbenchTaskRunEventStore(tmp_path)
+    legacy = store.append("run-legacy", "activity", {"text": "working"})
+    projected = store.append(
+        "run-projected",
+        "provider_event",
+        {
+            "text": "working",
+            "harness_event_kind": "activity",
+            "harness_visibility": "summary",
+        },
+    )
+
+    assert legacy["event_kind"] == "output"
+    assert projected["event_kind"] == "output"
+
+
+def test_harness_tool_lifecycle_is_projected_to_public_tool_kinds(tmp_path):
+    from app.services.workbench_task_run_events import WorkbenchTaskRunEventStore
+
+    store = WorkbenchTaskRunEventStore(tmp_path)
+    requested = store.append(
+        "run-tool",
+        "tool_requested",
+        {"tool_id": "source.read", "tool_call_id": "call-1"},
+    )
+    completed = store.append(
+        "run-tool",
+        "tool_completed",
+        {"tool_id": "source.read", "tool_call_id": "call-1", "output": "done"},
+    )
+
+    assert requested["event_kind"] == "tool_use"
+    assert completed["event_kind"] == "tool_result"
+
+
 def test_scheduler_reuses_seeded_successful_nodes_and_starts_at_failed_node():
     from app.services.workflow_scheduler import WorkflowDagScheduler
 

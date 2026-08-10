@@ -253,7 +253,10 @@
             "overall_timeout_seconds"
           ],
           "properties": {
+            "profile_id": { "enum": ["rapid", "deep"] },
             "queue_timeout_seconds": { "type": "integer", "minimum": 1 },
+            "idle_timeout_seconds": { "type": "integer", "minimum": 1 },
+            "step_timeout_seconds": { "type": "integer", "minimum": 1 },
             "agent_timeout_seconds": { "type": "integer", "minimum": 1 },
             "script_timeout_seconds": { "type": "integer", "minimum": 1 },
             "validation_timeout_seconds": { "type": "integer", "minimum": 1 },

@@ -24,6 +24,43 @@ def test_harness_event_normalizer_hides_raw_provider_diagnostics_from_user_outpu
     assert event.user_message == ""
 
 
+def test_harness_projects_provider_activity_to_live_output_and_rejects_session_only_tools():
+    from app.services.harness_facade import project_provider_event
+
+    activity = project_provider_event(
+        "activity",
+        {"provider": "opencode", "text": "Step 01 complete."},
+    )
+    content_activity = project_provider_event(
+        "agent_output",
+        {"provider": "local-cli", "content": "ordinary workflow output"},
+    )
+    fake_tool = project_provider_event(
+        "tool_use",
+        {
+            "provider": "opencode",
+            "session_id": "session-1",
+            "resume_session_id": "session-1",
+            "event_type": "tool_use",
+        },
+    )
+    tool = project_provider_event(
+        "tool_use",
+        {"tool": "read_file", "call_id": "call-1", "input": {"path": "main.py"}},
+    )
+
+    assert activity is not None
+    assert activity[0] == "agent_output"
+    assert activity[1]["harness_event_kind"] == "activity"
+    assert activity[1]["harness_visibility"] == "summary"
+    assert content_activity is not None
+    assert content_activity[0] == "agent_output"
+    assert fake_tool is None
+    assert tool is not None
+    assert tool[0] == "tool_use"
+    assert tool[1]["harness_event_kind"] == "tool_started"
+
+
 def test_harness_event_normalizer_preserves_required_lifecycle_vocabulary():
     from app.services.harness_facade import normalize_provider_event
 

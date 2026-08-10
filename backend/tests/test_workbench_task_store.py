@@ -1489,7 +1489,10 @@ async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_pat
         )
         first = await client.post(
             f"/api/workbench/tasks/{task_id}/runs",
-            json={"artifact_profile_id": artifact_profile["id"]},
+            json={
+                "artifact_profile_id": artifact_profile["id"],
+                "execution_profile_id": "deep",
+            },
         )
         first_run_dir = data_dir / "workbench" / "task_runs" / first.json()["task_run_id"]
         from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
@@ -1607,6 +1610,7 @@ async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_pat
     assert invocation_payload["skill_version_id"] == version.version_id
     assert invocation_payload["skill_content_digest"] == version.content_digest
     assert invocation_payload["task_id"] == task_id
+    assert invocation_payload["runtime"]["producer"]["timeout_budget"]["profile_id"] == "deep"
     assert invocation_payload["selected_delivery_ids"] == ["delivery.developer-test-code-explanation"]
     assert invocation_payload["judge"]["required"] is True
     compiled_plan_artifact = json.loads(

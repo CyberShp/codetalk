@@ -157,7 +157,7 @@ def test_facade_supported_resume_uses_standard_lifecycle_and_artifact_boundary(t
     assert result.artifacts == ["report.md"]
     assert [kind for kind, _payload in events] == [
         "run_started",
-        "activity",
+        "agent_output",
         "artifact_created",
         "completed",
     ]

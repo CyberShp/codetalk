@@ -140,6 +140,22 @@ def _v3_total_execution_deadline_monotonic(
         return time.monotonic() + remaining
     if timeout_sec > 0:
         return time.monotonic() + timeout_sec
+    invocation = _read_json(Path(task_run.artifact_dir) / "skill_invocation.json")
+    runtime = invocation.get("runtime") if isinstance(invocation, dict) else None
+    producer = runtime.get("producer") if isinstance(runtime, dict) else None
+    timeout_budget = (
+        producer.get("timeout_budget") if isinstance(producer, dict) else None
+    )
+    try:
+        overall_timeout_seconds = int(
+            timeout_budget.get("overall_timeout_seconds")
+            if isinstance(timeout_budget, dict)
+            else 0
+        )
+    except (TypeError, ValueError):
+        overall_timeout_seconds = 0
+    if overall_timeout_seconds > 0:
+        return time.monotonic() + overall_timeout_seconds
     return None
 
 
@@ -1612,6 +1628,14 @@ class WorkbenchWorkflowRunner:
                     task_run=task_run,
                     node=node,
                     resolved_inputs=resolved_inputs,
+                    prior_step_results=[
+                        results_by_node[prior_node_id]
+                        for prior_node_id in (
+                            effective_plan.get("topological_order") or []
+                        )
+                        if prior_node_id in results_by_node
+                    ],
+                    timeout_sec=node_timeout_sec,
                 )
             else:
                 step = steps_by_id.get(node_id)
@@ -1820,7 +1844,14 @@ class WorkbenchWorkflowRunner:
             self._emit_step_finished(result)
             return result
 
-        scheduled = WorkflowDagScheduler(event_sink=self._emit_event).run(
+        def emit_scheduler_event(event_type: str, payload: dict[str, Any]) -> None:
+            # The DAG is only the Producer phase for Skill runs.  Do not tell
+            # cockpit consumers that the Attempt is complete before the
+            # required isolated Judge has finished.
+            if event_type != "run_completed":
+                self._emit_event(event_type, payload)
+
+        scheduled = WorkflowDagScheduler(event_sink=emit_scheduler_event).run(
             effective_plan,
             execute_node=execute_node,
             seed_results=seed_results,
@@ -1868,7 +1899,18 @@ class WorkbenchWorkflowRunner:
                     "started_at": _now(),
                 },
             )
-            judge_result = self._execute_v3_skill_judge_node(task_run=task_run)
+            judge_timeout_sec: int | None = None
+            if execution_deadline_monotonic is not None:
+                judge_timeout_sec = max(
+                    0,
+                    math.ceil(
+                        execution_deadline_monotonic - time.monotonic()
+                    ),
+                )
+            judge_result = self._execute_v3_skill_judge_node(
+                task_run=task_run,
+                timeout_sec=judge_timeout_sec,
+            )
             step_results.append(judge_result)
             execution_results.append(judge_result)
             results_by_node["skill.judge"] = judge_result
@@ -1969,6 +2011,18 @@ class WorkbenchWorkflowRunner:
         )
         self._write_v3_execution_artifact(task_run.task_run_id, result)
         self._emit_event("v3_status_updated", _v3_status_event_payload(result))
+        self._emit_event(
+            "run_completed",
+            {
+                "status": (
+                    "succeeded"
+                    if execution_status == "completed"
+                    else "waiting_for_input"
+                    if execution_status == "waiting_for_input"
+                    else "failed"
+                )
+            },
+        )
         return result
 
     def _execute_v3_skill_step_node(
@@ -1977,6 +2031,8 @@ class WorkbenchWorkflowRunner:
         task_run: Any,
         node: dict[str, Any],
         resolved_inputs: dict[str, Any],
+        prior_step_results: list[dict[str, Any]],
+        timeout_sec: int,
     ) -> dict[str, Any]:
         node_id = str(node.get("node_id") or "")
         task_dir = Path(task_run.artifact_dir)
@@ -2024,6 +2080,17 @@ class WorkbenchWorkflowRunner:
                 task_run=task_run,
                 node=node,
                 invocation=invocation,
+                resolved_inputs=resolved_inputs,
+                execution_profile=(
+                    dict(task_run.task_bundle.get("execution_profile") or {})
+                    if isinstance(task_run.task_bundle, dict)
+                    and isinstance(
+                        task_run.task_bundle.get("execution_profile"), dict
+                    )
+                    else {}
+                ),
+                prior_step_results=prior_step_results,
+                timeout_sec=timeout_sec,
                 event_sink=self._emit_event,
                 is_cancelled=self._is_cancelled,
             )
@@ -2034,12 +2101,45 @@ class WorkbenchWorkflowRunner:
                 "type": "skill_step",
                 "status": "error",
                 "error": str(exc),
-                "technical_diagnostics": {"error": "skill_step_lifecycle_failed"},
+                "technical_diagnostics": {
+                    "error": str(exc),
+                    "lifecycle_error": "skill_step_lifecycle_failed",
+                },
                 "artifact_dir": str(step_dir),
             }
 
-    def _execute_v3_skill_judge_node(self, *, task_run: Any) -> dict[str, Any]:
+    def _execute_v3_skill_judge_node(
+        self,
+        *,
+        task_run: Any,
+        timeout_sec: int | None = None,
+    ) -> dict[str, Any]:
         task_dir = Path(task_run.artifact_dir)
+        if self._is_cancelled():
+            result = _cancelled_step_result(
+                {"id": "skill.judge", "type": "skill_judge"}
+            )
+            result.update(
+                {
+                    "node_id": "skill.judge",
+                    "artifact_dir": str(task_dir),
+                    "governance_status": "failed",
+                }
+            )
+            return result
+        if timeout_sec is not None and timeout_sec <= 0:
+            return {
+                "step_id": "skill.judge",
+                "node_id": "skill.judge",
+                "type": "skill_judge",
+                "status": "timed_out",
+                "error": "total_execution_timeout",
+                "timed_out": True,
+                "timeout_kind": "overall",
+                "technical_diagnostics": {"error": "total_execution_timeout"},
+                "artifact_dir": str(task_dir),
+                "governance_status": "failed",
+            }
         invocation = _read_json(task_dir / "skill_invocation.json")
         from app.services.skill_agent_adapter import (
             SkillAgentAdapterError,
@@ -2050,6 +2150,7 @@ class WorkbenchWorkflowRunner:
             return execute_skill_judge(
                 task_run=task_run,
                 invocation=invocation,
+                timeout_sec=int(timeout_sec or 0),
                 event_sink=self._emit_event,
                 is_cancelled=self._is_cancelled,
             )
@@ -2060,7 +2161,10 @@ class WorkbenchWorkflowRunner:
                 "type": "skill_judge",
                 "status": "error",
                 "error": str(exc),
-                "technical_diagnostics": {"error": "skill_judge_lifecycle_failed"},
+                "technical_diagnostics": {
+                    "error": str(exc),
+                    "lifecycle_error": "skill_judge_lifecycle_failed",
+                },
                 "artifact_dir": str(task_dir),
                 "governance_status": "failed",
             }

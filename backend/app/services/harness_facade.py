@@ -363,8 +363,9 @@ class AgentHarnessFacade:
                 "cancelled",
             }:
                 return
-            if event_sink is not None:
-                event_sink(kind, payload)
+            projected = project_provider_event(kind, payload)
+            if event_sink is not None and projected is not None:
+                event_sink(*projected)
             return None
 
         baseline = self._snapshot_declared_artifacts(provider_session)
@@ -478,11 +479,17 @@ class AgentHarnessFacade:
         event_sink: Callable[[str, dict[str, Any]], None] | None,
     ) -> dict[str, Any]:
         tool_id = str(payload.get("tool_id") or "").strip()
+        provider_call_id = str(payload.get("tool_call_id") or "").strip()
         arguments = payload.get("arguments")
         self._emit_lifecycle_event(
             event_sink,
             "tool_requested",
-            {"tool_id": tool_id, "arguments": arguments},
+            {
+                "tool_id": tool_id,
+                "tool": tool_id,
+                "tool_call_id": provider_call_id,
+                "arguments": arguments,
+            },
         )
         if self._tool_dispatcher is None:
             result = ToolCallResult(
@@ -501,7 +508,6 @@ class AgentHarnessFacade:
                 and self._tool_action_context is not None
                 and isinstance(arguments, dict)
             ):
-                provider_call_id = str(payload.get("tool_call_id") or "").strip()
                 if not provider_call_id:
                     result = ToolCallResult(
                         tool_id=tool_id,
@@ -579,7 +585,10 @@ class AgentHarnessFacade:
             "tool_completed" if result.status == "completed" else "tool_failed",
             {
                 "tool_id": tool_id,
+                "tool": tool_id,
+                "tool_call_id": provider_call_id,
                 "status": result.status,
+                "output": result.output,
                 "error": asdict(result.error) if result.error is not None else None,
             },
         )
@@ -1400,3 +1409,54 @@ def normalize_provider_event(event_type: str, payload: dict[str, Any] | None = N
     if raw in {"failed", "error"}:
         return HarnessEvent("failed", "user", data, "执行失败")
     return HarnessEvent("diagnostic", "diagnostic", {**data, "raw_event_type": raw})
+
+
+def project_provider_event(
+    event_type: str,
+    payload: dict[str, Any] | None = None,
+) -> tuple[str, dict[str, Any]] | None:
+    """Project provider telemetry into honest public cockpit events.
+
+    Provider session callbacks sometimes retain the raw event name while only
+    carrying resume identifiers. Those callbacks are useful internally but are
+    not tool calls and must never be presented as such.
+    """
+    data = dict(payload or {})
+    raw = str(event_type or "").strip().lower()
+    if raw in {"tool_use", "tool_result"}:
+        tool = str(data.get("tool") or data.get("name") or "").strip()
+        call_id = str(data.get("call_id") or data.get("tool_call_id") or "").strip()
+        if not tool or not call_id:
+            return None
+        normalized = HarnessEvent(
+            "tool_started" if raw == "tool_use" else "tool_completed",
+            "summary",
+            data,
+            "正在调用工具" if raw == "tool_use" else "工具调用完成",
+        )
+    else:
+        normalized = normalize_provider_event(raw, data)
+
+    public_type = raw or "diagnostic"
+    if normalized.kind == "activity":
+        text = (
+            data.get("text")
+            or data.get("delta")
+            or data.get("output")
+            or data.get("message")
+            or data.get("content")
+        )
+        if not isinstance(text, str) or not text.strip():
+            return None
+        public_type = "agent_output"
+    elif normalized.visibility == "diagnostic":
+        public_type = "diagnostic"
+
+    projected = {
+        **data,
+        "harness_event_kind": normalized.kind,
+        "harness_visibility": normalized.visibility,
+    }
+    if normalized.user_message:
+        projected["harness_user_message"] = normalized.user_message
+    return public_type, projected

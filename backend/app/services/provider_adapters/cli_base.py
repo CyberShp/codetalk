@@ -113,6 +113,11 @@ class CliProviderAdapter:
             provider_ref=str(request.provider or ""),
         )
 
+        total_timeout_seconds = max(1, int(request.timeout_seconds or 120))
+        activity_timeout_seconds = max(
+            1,
+            int(request.idle_timeout_seconds or total_timeout_seconds),
+        )
         runtime = {
             "id": f"harness-{self.provider}",
             "name": self.provider,
@@ -124,10 +129,10 @@ class CliProviderAdapter:
             "completion_mode": "process_exit",
             "session_persistence": "resume_args",
             "resume_args": [],
-            "timeout_seconds": int(request.timeout_seconds or 120),
+            "timeout_seconds": total_timeout_seconds,
             "idle_complete_seconds": max(1, int(request.idle_timeout_seconds or 5)),
-            "activity_timeout_seconds": max(1, int(request.timeout_seconds or 120)),
-            "total_timeout_seconds": int(request.timeout_seconds or 120),
+            "activity_timeout_seconds": activity_timeout_seconds,
+            "total_timeout_seconds": total_timeout_seconds,
             "mcp_profile": str(request.mcp_profile or ""),
             "requires_network": bool(request.requires_network),
             "env": {
@@ -272,14 +277,7 @@ class CliProviderAdapter:
             runtime["total_timeout_seconds"] = int(timeout_sec)
         if idle_timeout_sec is not None and idle_timeout_sec > 0:
             runtime["idle_complete_seconds"] = max(1, int(idle_timeout_sec))
-            if str(runtime.get("completion_mode") or "") != "process_exit":
-                runtime["activity_timeout_seconds"] = max(1, int(idle_timeout_sec))
-            else:
-                runtime["activity_timeout_seconds"] = max(
-                    int(runtime.get("activity_timeout_seconds") or 0),
-                    int(runtime.get("total_timeout_seconds") or 0),
-                    int(runtime.get("timeout_seconds") or 120),
-                )
+            runtime["activity_timeout_seconds"] = max(1, int(idle_timeout_sec))
 
         execution = _ActiveExecution()
         with self._active_lock:
@@ -449,16 +447,38 @@ def _captured_material_read_paths(
     """
 
     resolved_artifact_dir = artifact_dir.expanduser().resolve()
-    task_root = (
-        resolved_artifact_dir.parent.parent
-        if resolved_artifact_dir.parent.name == "agent_runs"
-        else resolved_artifact_dir
-    )
-    input_root = task_root / "inputs"
+    if resolved_artifact_dir.parent.name == "agent_runs":
+        task_root = resolved_artifact_dir.parent.parent
+    elif resolved_artifact_dir.name == "artifacts":
+        task_root = resolved_artifact_dir.parent
+    else:
+        task_root = resolved_artifact_dir
+
+    paths: set[str] = set()
+    if isinstance(task_bundle.get("skill_invocation"), dict):
+        for relative_path, expected_kind in (
+            ("frozen_skill", "directory"),
+            ("inputs", "directory"),
+            ("skill_input_snapshot.json", "file"),
+        ):
+            trusted = _bounded_task_capture(
+                task_root,
+                relative_path,
+                expected_kind=expected_kind,
+            )
+            if trusted is not None:
+                paths.add(str(trusted))
+
+    input_root_path = task_root / "inputs"
     try:
-        input_root = input_root.resolve(strict=True)
+        if input_root_path.is_symlink():
+            raise OSError("captured input root is a symlink")
+        input_root = input_root_path.resolve(strict=True)
+        input_root.relative_to(task_root)
     except OSError:
-        return []
+        input_root = None
+    except ValueError:
+        input_root = None
 
     input_materials = task_bundle.get("input_materials")
     materials = (
@@ -466,8 +486,10 @@ def _captured_material_read_paths(
         if isinstance(input_materials, dict)
         else []
     )
-    paths: set[str] = set()
+    expose_input_root = input_root is not None and str(input_root) in paths
     for material in materials or []:
+        if input_root is None or expose_input_root:
+            break
         if not isinstance(material, dict):
             continue
         for key in (
@@ -491,6 +513,27 @@ def _captured_material_read_paths(
                 continue
             paths.add(str(resolved))
     return sorted(paths)
+
+
+def _bounded_task_capture(
+    task_root: Path,
+    relative_path: str,
+    *,
+    expected_kind: str,
+) -> Path | None:
+    candidate = task_root / relative_path
+    try:
+        if candidate.is_symlink():
+            return None
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(task_root)
+    except (OSError, ValueError):
+        return None
+    if expected_kind == "directory" and not resolved.is_dir():
+        return None
+    if expected_kind == "file" and not resolved.is_file():
+        return None
+    return resolved
 
 
 def _now() -> str:

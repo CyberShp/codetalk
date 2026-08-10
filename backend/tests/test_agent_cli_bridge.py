@@ -796,6 +796,83 @@ async def test_stream_runtime_removes_internally_owned_artifact_directory(
 
 
 @pytest.mark.asyncio
+async def test_stream_runtime_activity_resets_idle_but_not_hard_total_timeout(
+    monkeypatch,
+    tmp_path,
+):
+    from app.config import settings
+    from app.services import agent_cli_bridge
+
+    monkeypatch.setattr(settings, "intranet_network_mode", False)
+    session_updates: list[dict[str, object]] = []
+
+    with pytest.raises(
+        agent_cli_bridge.AgentRuntimeError,
+        match=r"安全运行上限（2s）",
+    ):
+        async for _chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": [
+                    "-c",
+                    (
+                        "import json, time\n"
+                        "for index in range(20):\n"
+                        " print(json.dumps({'type': 'thread.started', "
+                        "'thread_id': f'thread-{index}'}), flush=True)\n"
+                        " time.sleep(0.2)\n"
+                    ),
+                ],
+                "prompt_transport": "stdin",
+                "output_mode": "stream_json",
+                "completion_mode": "process_exit",
+                "sandbox_mode": "off",
+                "requires_network": False,
+                "activity_timeout_seconds": 1,
+                "total_timeout_seconds": 2,
+            },
+            prompt="keep reporting activity",
+            cwd=str(tmp_path),
+            session_update=session_updates.append,
+        ):
+            pass
+
+    assert len(session_updates) >= 2
+
+
+@pytest.mark.asyncio
+async def test_stream_runtime_silence_triggers_idle_before_hard_total_timeout(
+    monkeypatch,
+    tmp_path,
+):
+    from app.config import settings
+    from app.services import agent_cli_bridge
+
+    monkeypatch.setattr(settings, "intranet_network_mode", False)
+
+    with pytest.raises(
+        agent_cli_bridge.AgentRuntimeError,
+        match=r"连续 1s 没有输出或进度",
+    ):
+        async for _chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": ["-c", "import time; time.sleep(3)"],
+                "prompt_transport": "stdin",
+                "output_mode": "plain",
+                "completion_mode": "process_exit",
+                "sandbox_mode": "off",
+                "requires_network": False,
+                "activity_timeout_seconds": 1,
+                "total_timeout_seconds": 4,
+            },
+            prompt="remain silent",
+            cwd=str(tmp_path),
+        ):
+            pass
+
+
+@pytest.mark.asyncio
 async def test_stream_opencode_invalid_config_cleans_all_isolated_runtime_state(tmp_path):
     from app.services import agent_cli_bridge
 

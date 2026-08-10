@@ -256,6 +256,7 @@ def test_provider_tool_call_reuses_attempt_journal_instead_of_repeating_effect(
     )
 
     outputs = []
+    events: list[tuple[str, dict]] = []
     for _ in range(2):
         facade = AgentHarnessFacade(
             tmp_path,
@@ -272,13 +273,21 @@ def test_provider_tool_call_reuses_attempt_journal_instead_of_repeating_effect(
             workflow_snapshot={},
             task_bundle={},
         ))
-        outputs.append(facade.execute(session).provider_diagnostics["tool_result"])
+        outputs.append(facade.execute(
+            session,
+            event_sink=lambda event_type, payload: events.append((event_type, payload)),
+        ).provider_diagnostics["tool_result"])
 
     assert effects == 1
     assert [item["output"] for item in outputs] == [
         {"value": 1},
         {"value": 1},
     ]
+    requested = [payload for event_type, payload in events if event_type == "tool_requested"]
+    completed = [payload for event_type, payload in events if event_type == "tool_completed"]
+    assert all(item["tool_call_id"] == "call-1" for item in requested)
+    assert all(item["tool_call_id"] == "call-1" for item in completed)
+    assert all(item["output"] == {"value": 1} for item in completed)
 
 
 def test_provider_tool_call_without_stable_id_fails_closed_before_dispatch(tmp_path):

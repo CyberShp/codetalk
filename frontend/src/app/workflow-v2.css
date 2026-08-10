@@ -868,6 +868,14 @@
 .ct-v2-run-summary { min-height: 0; overflow: auto; padding: 12px; }
 .ct-v2-run-summary > section { margin-bottom: 12px; border: 1px solid #dce4ea; border-radius: 6px; background: #fff; padding: 11px 13px; }
 .ct-v2-run-summary h2 { margin: 0 0 8px; font-size: 14px; }
+.ct-v2-run-overview-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
+.ct-v2-run-overview-metrics article { border: 1px solid #e1e8ed; border-radius: 5px; background: #f8fafb; padding: 8px 10px; }
+.ct-v2-run-overview-metrics span { display: block; margin-bottom: 3px; color: #71818d; font-size: 11px; }
+.ct-v2-run-overview-metrics strong { color: #263742; font-size: 14px; }
+.ct-v2-current-activity header, .ct-v2-live-output header { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #71818d; font-size: 12px; }
+.ct-v2-current-activity p { margin: 8px 0 0; color: #344651; font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
+.ct-v2-live-output { margin: 10px 12px; border: 1px solid #dce5ea; border-left: 3px solid #17829a; border-radius: 5px; background: #fff; padding: 9px 11px; }
+.ct-v2-live-output pre { max-height: 280px; overflow: auto; margin: 7px 0 0; color: #263742; font-family: inherit; font-size: 13px; line-height: 1.65; white-space: pre-wrap; }
 .ct-v2-node-timeline { display: grid; gap: 2px; }
 .ct-v2-node-timeline > button { display: grid; width: 100%; grid-template-columns: 21px minmax(0, 1fr) auto; align-items: center; gap: 6px; border: 0; border-top: 1px solid #edf1f4; background: transparent; padding: 8px 6px; color: inherit; text-align: left; }
 .ct-v2-node-timeline > button:hover, .ct-v2-node-timeline > button.is-selected { background: #f0f7f9; }

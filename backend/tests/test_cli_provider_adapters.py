@@ -120,7 +120,7 @@ def test_cli_adapters_reuse_bridge_and_preserve_prompt_verbatim(
     assert runtime["prompt_transport"] == transport
     assert runtime["output_mode"] == output_mode
     assert runtime["total_timeout_seconds"] == 91
-    assert runtime["activity_timeout_seconds"] == runtime["total_timeout_seconds"]
+    assert runtime["activity_timeout_seconds"] == 17
     assert runtime["env"]["CODETALK_AGENT_ARTIFACT_DIR"] == str(tmp_path.resolve())
     assert result.status == "completed"
     assert result.artifacts == []
@@ -192,7 +192,7 @@ def test_cli_adapter_executes_with_frozen_config_and_live_runtime_secrets(
     assert runtime_env["CODETALK_AGENT_ARTIFACT_DIR"] == str(tmp_path.resolve())
 
 
-def test_cli_adapter_process_exit_activity_timeout_uses_total_timeout(tmp_path):
+def test_cli_adapter_process_exit_keeps_idle_timeout_separate_from_total(tmp_path):
     _, _, OpenCodeAdapter = _adapter_types()
     session = OpenCodeAdapter(tmp_path).prepare(
         _request(
@@ -205,7 +205,155 @@ def test_cli_adapter_process_exit_activity_timeout_uses_total_timeout(tmp_path):
     runtime = session.metadata["runtime"]
 
     assert runtime["completion_mode"] == "process_exit"
-    assert runtime["activity_timeout_seconds"] == runtime["total_timeout_seconds"]
+    assert runtime["activity_timeout_seconds"] == 17
+    assert runtime["total_timeout_seconds"] == 91
+
+
+def test_cli_adapter_execution_overrides_idle_and_total_independently(
+    monkeypatch,
+    tmp_path,
+):
+    from app.services import agent_cli_bridge
+
+    CodexCliAdapter, _, _ = _adapter_types()
+    captured: dict[str, object] = {}
+
+    async def fake_stream_agent_runtime(**kwargs):
+        captured.update(kwargs)
+        if False:
+            yield "unreachable"
+
+    monkeypatch.setattr(
+        agent_cli_bridge,
+        "stream_agent_runtime",
+        fake_stream_agent_runtime,
+    )
+    adapter = CodexCliAdapter(tmp_path)
+    session = adapter.prepare(_request("codex", "bounded execution"))
+
+    result = adapter.execute(session, timeout_sec=73, idle_timeout_sec=11)
+
+    assert result.status == "completed"
+    runtime = captured["runtime"]
+    assert runtime["activity_timeout_seconds"] == 11
+    assert runtime["total_timeout_seconds"] == 73
+
+
+def test_cli_adapter_exposes_frozen_skill_and_task_captures_from_skill_artifact_root(
+    monkeypatch,
+    tmp_path,
+):
+    from app.services import agent_cli_bridge
+
+    CodexCliAdapter, _, _ = _adapter_types()
+    task_root = tmp_path / "task-run"
+    artifact_dir = task_root / "artifacts"
+    frozen_skill = task_root / "frozen_skill"
+    input_root = task_root / "inputs"
+    artifact_dir.mkdir(parents=True)
+    (frozen_skill / "source" / "steps").mkdir(parents=True)
+    (frozen_skill / "source" / "steps" / "01.md").write_text(
+        "analyze the captured source\n",
+        encoding="utf-8",
+    )
+    input_root.mkdir()
+    copied = input_root / "module.c"
+    copied.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+    snapshot = task_root / "skill_input_snapshot.json"
+    snapshot.write_text("{}\n", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("must remain inaccessible", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    async def fake_stream_agent_runtime(**kwargs):
+        captured.update(kwargs)
+        if False:
+            yield "unreachable"
+
+    monkeypatch.setattr(
+        agent_cli_bridge,
+        "stream_agent_runtime",
+        fake_stream_agent_runtime,
+    )
+    request = replace(
+        _request("codex", "read frozen inputs"),
+        task_bundle={
+            "rendered_user_input": "read frozen inputs",
+            "required_artifacts": ["report.md"],
+            "skill_invocation": {
+                "input_snapshot": {"ref": str(outside)},
+                "source_zip": {"ref": str(outside)},
+            },
+            "input_materials": {
+                "materials": [
+                    {
+                        "copied_path": str(copied),
+                        "original_path": str(outside),
+                    }
+                ]
+            },
+        },
+    )
+    adapter = CodexCliAdapter(artifact_dir)
+    session = adapter.prepare(request)
+
+    result = adapter.execute(session)
+
+    assert result.status == "completed"
+    assert captured["runtime"]["sandbox_read_paths"] == sorted(
+        [
+            str(frozen_skill.resolve()),
+            str(input_root.resolve()),
+            str(snapshot.resolve()),
+        ]
+    )
+    assert str(outside.resolve()) not in captured["runtime"]["sandbox_read_paths"]
+
+
+def test_cli_adapter_failure_preserves_partial_output_session_and_timeout_classification(
+    monkeypatch,
+    tmp_path,
+):
+    from app.services import agent_cli_bridge
+
+    CodexCliAdapter, _, _ = _adapter_types()
+
+    async def fake_stream_agent_runtime(**kwargs):
+        kwargs["session_update"](
+            {
+                "event_type": "session_init",
+                "session_id": "provider-session-1",
+                "resume_session_id": "provider-resume-1",
+            }
+        )
+        yield "partial provider output"
+        raise agent_cli_bridge.AgentRuntimeError(
+            "执行器连续 300s 没有输出或进度"
+        )
+
+    monkeypatch.setattr(
+        agent_cli_bridge,
+        "stream_agent_runtime",
+        fake_stream_agent_runtime,
+    )
+    adapter = CodexCliAdapter(tmp_path)
+    session = adapter.prepare(_request("codex", "preserve diagnostics"))
+
+    result = adapter.execute(session)
+
+    assert result.status == "failed"
+    assert result.timed_out is True
+    assert result.error == "执行器连续 300s 没有输出或进度"
+    assert result.provider_diagnostics["output"] == "partial provider output"
+    assert result.provider_diagnostics["provider_session"] == {
+        "event_type": "session_init",
+        "session_id": "provider-session-1",
+        "resume_session_id": "provider-resume-1",
+    }
+    assert result.provider_diagnostics["resume_token"] == {
+        "provider": "codex",
+        "value": "provider-resume-1",
+    }
 
 
 def test_cli_adapter_exposes_only_captured_task_materials_to_the_sandbox(
