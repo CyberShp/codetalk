@@ -50,8 +50,6 @@ def execute_skill_step(
         prompt_transport=str(execution.get("prompt_transport") or ""),
         artifact_dir=artifact_root,
     )
-    if adapter is None:
-        raise SkillAgentAdapterError("skill_agent_adapter_unavailable")
     request = HarnessRunRequest(
         provider=str(execution.get("provider_ref") or ""),
         command=[str(item) for item in execution.get("command") or []],
@@ -154,8 +152,6 @@ def execute_skill_judge(
         prompt_transport=str(execution.get("prompt_transport") or ""),
         artifact_dir=task_dir,
     )
-    if adapter is None:
-        raise SkillAgentAdapterError("skill_judge_adapter_unavailable")
     request = HarnessRunRequest(
         provider=str(execution.get("provider_ref") or ""),
         command=[str(item) for item in execution.get("command") or []],
@@ -343,18 +339,39 @@ def _render_step_prompt(
     source_root = task_dir / "frozen_skill" / "source"
     instruction_path = str(step.get("instruction_path") or "")
     instruction = source_root / instruction_path if instruction_path else None
+    input_snapshot_path = task_dir / "skill_input_snapshot.json"
+    try:
+        input_snapshot = input_snapshot_path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise SkillAgentAdapterError("skill_input_snapshot_unavailable") from exc
+    if instruction is not None:
+        try:
+            instruction_text = instruction.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise SkillAgentAdapterError("skill_step_instruction_unavailable") from exc
+        if not instruction_text:
+            raise SkillAgentAdapterError("skill_step_instruction_unavailable")
+    else:
+        instruction_text = "(embedded contract only)"
     required = "\n".join(f"- {path}" for path in required_artifacts)
     return (
-        "Execute the frozen CodeTalk Skill step below against the current source workspace.\n"
+        "Execute only the current frozen CodeTalk Skill step against the current source workspace.\n"
         f"Step ID: {node_id}\n"
         f"Step title: {step.get('title') or node_id!s}\n"
         f"Frozen Skill source: {source_root}\n"
-        f"Step instruction: {instruction or '(embedded contract only)'}\n"
-        f"Artifact root: {artifact_root}\n"
-        "Read the frozen Skill instructions before acting. Preserve artifacts from earlier steps. "
+        f"Artifact root: {artifact_root}\n\n"
+        "Task input snapshot:\n"
+        f"{input_snapshot or '{}'}\n\n"
+        "Current step instruction:\n"
+        f"{instruction_text}\n\n"
+        "Execution boundary:\n"
+        "- Work only on this step; do not execute or precompute later steps.\n"
+        "- Keep source exploration inside the scope declared by the task input.\n"
+        "- If this step defines scope or a task contract, inspect only enough source to verify that boundary; do not perform a full-repository analysis.\n"
+        "- Preserve artifacts from earlier steps.\n"
         "Write every required artifact below the artifact root using exactly these relative paths:\n"
         f"{required}\n"
-        "Do not report completion until every required file exists and contains substantive evidence."
+        "Stop this step as soon as every required file exists and contains substantive evidence."
     )
 
 
