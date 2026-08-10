@@ -47,7 +47,10 @@ def create_provider_adapter(
 
     provider_id = str(provider or "").strip().lower()
     transport = str(prompt_transport or "").strip().lower()
-    if provider_id in {"builtin", "builtin-llm", "builtin_llm"} or transport == "builtin_llm":
+    if (
+        provider_id in {"builtin", "builtin-llm", "builtin_llm"}
+        or transport == "builtin_llm"
+    ):
         if builtin_execute_callable is None:
             raise ValueError("builtin provider requires an execute callable")
         return BuiltinModelAdapter(
@@ -90,11 +93,18 @@ def provider_capability_names(
 
     provider_id = str(provider or "").strip().lower()
     transport = str(prompt_transport or "").strip().lower()
-    if provider_id in {"builtin", "builtin-llm", "builtin_llm"} or transport == "builtin_llm":
+    if (
+        provider_id in {"builtin", "builtin-llm", "builtin_llm"}
+        or transport == "builtin_llm"
+    ):
         capabilities = BUILTIN_MODEL_CAPABILITIES
     else:
         adapter_type = _SPECIALIZED_TRANSPORT_ADAPTERS.get(transport)
-        adapter = adapter_type(Path(".")) if adapter_type is not None else CliProviderAdapter(Path("."))
+        adapter = (
+            adapter_type(Path("."))
+            if adapter_type is not None
+            else CliProviderAdapter(Path("."))
+        )
         capabilities = adapter.capabilities()
     return sorted(
         name
