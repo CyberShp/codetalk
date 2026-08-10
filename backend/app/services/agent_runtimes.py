@@ -15,7 +15,6 @@ import aiosqlite
 from app.config import settings
 
 MANAGED_PROVIDER_PROMPT_TRANSPORTS = {"claude_print_arg", "codex_exec_json", "opencode_run_arg"}
-AGENT_PROVIDERS = {"claude", "codex", "opencode", "nga", "custom"}
 AGENT_RUNTIME_PROVIDER_PREFIX = "agent-runtime:"
 PROMPT_TRANSPORTS = {"stdin", "argv_last", *MANAGED_PROVIDER_PROMPT_TRANSPORTS}
 OUTPUT_MODES = {"plain", "ndjson", "stream_json", "auto"}
@@ -242,8 +241,6 @@ class AgentRuntimeStore:
                         result.get("prompt_transport") or data.get("prompt_transport") or "stdin"
                     ),
                 )
-            if provider not in AGENT_PROVIDERS:
-                raise ValueError(f"不支持的 Agent provider: {provider}")
             result["provider"] = provider
 
         result["args"] = _clean_args(result.get("args")) if "args" in result else ([] if not partial else result.get("args"))
