@@ -18,6 +18,99 @@ logger = logging.getLogger(__name__)
 CODETALK_PRESET_PACK_ID = "pack.codetalks-v2.4"
 CODETALK_PRESET_PROJECT_ID = "skill_project_codetalks_v24_presets"
 CODETALK_PRESET_SOURCE_ROOT = "skills/presets/codetalks-v2.4"
+CODETALK_PRESET_REVISION = "2026-08-10-step-contract-v1"
+
+_STEP_INSTRUCTIONS = {
+    "steps/01-step.md": """# Step 01 - 范围与任务契约
+
+只完成本轮分析范围确认，不做后续全量源码分析。
+
+1. 读取任务输入，确认目标模块、分析目标、用户约束和输入材料。
+2. 只查看足以确认边界的少量源码或目录；禁止为了“更完整”扫描整个仓库。
+3. 明确 in-scope、out-of-scope、关键假设、未知项和后续步骤需要遵守的范围。
+4. 仅生成 `活文档/01-范围与任务契约.md`。
+5. 文件写完且内容足够支撑后续步骤后立即结束当前 Step，不预执行 Step 02 及之后的工作。
+""",
+    "steps/02-step.md": """# Step 02 - 输入材料与运行计划
+
+只整理输入材料和后续分析计划，不展开深度源码分析。
+
+1. 读取 Step 01 的范围契约和本次任务输入。
+2. 记录每份输入材料的用途、可读状态和与目标范围的关系。
+3. 形成后续步骤的有限运行计划与输入索引；不得扩展 Step 01 已冻结的范围。
+4. 生成本 Step 声明的输入消费记录、运行计划、输入材料索引和覆盖门禁文件。
+5. 所有必需文件写完后立即结束当前 Step。
+""",
+    "steps/03-step.md": """# Step 03 - 入口、流程、状态与资源发现
+
+在已冻结范围内完成第一轮源码证据发现。
+
+1. 只搜索 Step 01 声明的模块或目录。
+2. 定位主要外部入口、核心流程、关键状态和资源对象，并记录真实仓库相对路径及符号证据。
+3. 给出分析模型适用性和仍待验证的证据缺口。
+4. 生成本 Step 声明的入口、流程、状态、资源、模型适用性和覆盖门禁文件。
+5. 不提前做详细分支展开、SFMEA 或测试用例设计；必需文件完成后结束。
+""",
+    "steps/04-step.md": """# Step 04 - 分支、状态转换、资源生命周期与异常传播
+
+只深化 Step 03 已识别出的关键流程，不重新做无边界入口发现。
+
+1. 沿已有入口和流程证据展开重要条件分支、状态转换、资源申请/释放和异常传播链。
+2. 对关键流程生成 `活文档/流程讲解/流程-*.md`，并引用真实代码路径和符号。
+3. 生成本 Step 声明的分支、状态、资源、异常传播、覆盖台账和覆盖门禁文件。
+4. 新发现仅在与既有流程直接相关时纳入；禁止扩展到无关模块。
+5. 所有必需文件完成后结束当前 Step。
+""",
+    "steps/05-step.md": """# Step 05 - 场景候选与风险推导
+
+基于已有代码证据推导测试场景和风险，不重新扫描源码。
+
+1. 使用 Step 03/04 的入口、流程、状态、资源和异常传播证据。
+2. 推导正常、异常、边界、并发、恢复和资源不足等候选场景。
+3. 对每个风险说明触发条件、原因、影响和已有检测/恢复线索。
+4. 生成本 Step 声明的场景候选池、风险清单和覆盖门禁文件。
+5. 必需文件完成后结束当前 Step。
+""",
+    "steps/06-step.md": """# Step 06 - SFMEA 与黑盒测试设计依据
+
+把既有风险转换成可验证的测试设计，不扩大源码范围。
+
+1. 对 Step 05 风险形成 SFMEA，包含 failure mode、cause、effect、detection、S/O/D、RPN 和 mitigation。
+2. 把内部机制映射为黑盒可控制输入和可观察日志、指标、状态或协议行为。
+3. 说明测试设计依据及证据来源。
+4. 生成本 Step 声明的 SFMEA、控制与观测映射、测试设计依据和覆盖门禁文件。
+5. 必需文件完成后结束当前 Step。
+""",
+    "steps/07-step.md": """# Step 07 - 测试追溯
+
+建立证据、风险与测试设计之间的追溯关系。
+
+1. 将入口、流程、状态、资源、异常链和风险逐项映射到对应测试场景或验证方式。
+2. 标记尚未覆盖、被其他项覆盖、不适用、阻塞或仍需确认的项目。
+3. 生成测试追溯矩阵和本 Step 覆盖门禁文件。
+4. 不重新执行前面步骤的全量分析；仅针对明确缺口做最小补证。
+5. 必需文件完成后结束当前 Step。
+""",
+    "steps/08-step.md": """# Step 08 - 独立审查
+
+审查已有产物，不重新从头执行分析。
+
+1. 检查前序产物是否满足范围、证据、覆盖、追溯和一致性要求。
+2. 对缺口给出明确状态和原因；只允许为确认具体缺口做最小源码复核。
+3. 生成独立审查报告、最终覆盖门禁和 `内部索引/独立审查状态.json`。
+4. 不生成正式交付件；该工作留给 Step 09。
+5. 必需文件完成后结束当前 Step。
+""",
+    "steps/09-step.md": """# Step 09 - 正式交付
+
+只基于已完成并审查过的活文档进行最终汇总。
+
+1. 汇总前序产物形成 8 个声明的正式输出。
+2. 保留代码证据、分析限制、风险、SFMEA、黑盒场景、流程和用例之间的一致性。
+3. 除非为修正一个明确的证据缺口，否则禁止重新进行全仓源码探索。
+4. 写完全部声明的正式输出后立即结束；不要继续追加未声明的分析任务。
+""",
+}
 
 
 @dataclass(frozen=True)
@@ -82,12 +175,7 @@ def codetalk_preset_payload(data_dir: str | Path) -> list[dict[str, str]]:
 
 
 def ensure_codetalk_skill_presets(store: SkillStore) -> dict[str, Any]:
-    """Publish the five built-in CodeTalk scenarios if they are absent.
-
-    The seeding path uses the same public Store -> Build -> Review -> Publish
-    services as user-created Skills. It is intentionally idempotent per
-    ``skill_id`` so backend restarts do not produce duplicate versions.
-    """
+    """Publish each built-in scenario once per preset source revision."""
 
     store.initialize_and_migrate()
     source_root = codetalk_preset_source_root(store.data_dir)
@@ -98,7 +186,8 @@ def ensure_codetalk_skill_presets(store: SkillStore) -> dict[str, Any]:
     pipeline = SkillBuildPipeline(store)
     reviewer = SkillReviewService(store)
     for scenario in CODETALK_PRESET_SCENARIOS:
-        if store.list_versions(skill_id=scenario.skill_id):
+        versions = store.list_versions(skill_id=scenario.skill_id)
+        if any(_has_current_preset_revision(version) for version in versions):
             existing.append(scenario.skill_id)
             continue
         draft = store.create_draft_from_source(
@@ -113,7 +202,7 @@ def ensure_codetalk_skill_presets(store: SkillStore) -> dict[str, Any]:
             scope="full",
             provenance=ReviewProvenance(
                 purpose=f"built-in CodeTalk preset seed: {scenario.scenario_id}",
-                session_id=f"preset-seed/codetalks-v2.4/{scenario.scenario_id}",
+                session_id=f"preset-seed/codetalks-v2.4/{scenario.scenario_id}/{CODETALK_PRESET_REVISION}",
                 provider="deepseek",
                 requested_model="deepseek-v4-flash",
                 effective_model="deepseek-v4-flash",
@@ -132,6 +221,15 @@ def ensure_codetalk_skill_presets(store: SkillStore) -> dict[str, Any]:
         "existing": existing,
         "scenario_count": len(CODETALK_PRESET_SCENARIOS),
     }
+
+
+def _has_current_preset_revision(version: Any) -> bool:
+    root = Path(str(getattr(version, "unpacked_root", "") or ""))
+    try:
+        skill_text = (root / "SKILL.md").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return f"Preset revision: {CODETALK_PRESET_REVISION}" in skill_text
 
 
 def write_codetalk_v24_source(root: Path) -> None:
@@ -175,9 +273,15 @@ def _write_text(path: Path, content: str) -> None:
 
 def _default_source_content(path: str) -> str:
     if path == "SKILL.md":
-        return "# CodeTalk v2.4 Preset Pack\n\nBuilt-in scenarios for Skill-first task creation.\n"
+        return (
+            "# CodeTalk v2.4 Preset Pack\n\n"
+            f"Preset revision: {CODETALK_PRESET_REVISION}\n\n"
+            "Built-in scenarios for Skill-first task creation.\n"
+        )
     if path == "scripts/run_guard.py":
         return "print('codetalk skill run guard')\n"
+    if path in _STEP_INSTRUCTIONS:
+        return _STEP_INSTRUCTIONS[path]
     return f"# {path}\n\nThis file is part of the CodeTalk v2.4 preset Skill source.\n"
 
 
