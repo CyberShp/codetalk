@@ -1,4 +1,4 @@
-"""Explicit mapping from frozen workflow provider settings to adapters."""
+"""Resolve frozen workflow provider settings to provider adapters."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from typing import Any
 
 from app.services.provider_adapters.builtin_model import BUILTIN_MODEL_CAPABILITIES
 from app.services.provider_adapters.claude_code import ClaudeCliAdapter
+from app.services.provider_adapters.cli_base import CliProviderAdapter
 from app.services.provider_adapters.contracts import ProviderCapabilities
 from app.services.provider_adapters.codex_cli import CodexCliAdapter
 from app.services.provider_adapters.opencode import OpenCodeAdapter
@@ -23,7 +24,7 @@ from app.services.workbench_artifact_path_authority import (
 install_workbench_artifact_path_authority()
 
 
-_TRANSPORT_ADAPTERS = {
+_SPECIALIZED_TRANSPORT_ADAPTERS = {
     "codex_exec_json": CodexCliAdapter,
     "claude_print_arg": ClaudeCliAdapter,
     "opencode_run_arg": OpenCodeAdapter,
@@ -36,11 +37,12 @@ def create_provider_adapter(
     prompt_transport: str,
     artifact_dir: str | Path,
     builtin_execute_callable: Callable[..., Any] | None = None,
-) -> Any | None:
-    """Return an adapter only for a provider contract CodeTalk owns explicitly.
+) -> Any:
+    """Return an adapter without using provider or transport as an allowlist.
 
-    Unknown providers deliberately return ``None`` so callers must choose the
-    named legacy compatibility path instead of silently guessing a transport.
+    Known managed transports keep their specialized adapters. Every other CLI
+    runtime falls back to the existing generic CLI adapter and lets the runtime
+    bridge validate the configured prompt transport when execution starts.
     """
 
     provider_id = str(provider or "").strip().lower()
@@ -53,10 +55,15 @@ def create_provider_adapter(
             execute_callable=builtin_execute_callable,
         )
 
-    adapter_type = _TRANSPORT_ADAPTERS.get(transport)
-    if adapter_type is None:
-        return None
-    return adapter_type(artifact_dir)
+    adapter_type = _SPECIALIZED_TRANSPORT_ADAPTERS.get(transport)
+    if adapter_type is not None:
+        return adapter_type(artifact_dir)
+
+    adapter = CliProviderAdapter(artifact_dir)
+    adapter.provider = provider_id or "cli"
+    adapter.prompt_transport = transport or "stdin"
+    adapter.output_mode = "auto"
+    return adapter
 
 
 def missing_provider_capabilities(
@@ -78,7 +85,7 @@ def provider_capability_names(
     *,
     provider: str = "",
     prompt_transport: str = "",
-) -> list[str] | None:
+) -> list[str]:
     """Project the Adapter contract into the compiler's capability snapshot."""
 
     provider_id = str(provider or "").strip().lower()
@@ -86,10 +93,9 @@ def provider_capability_names(
     if provider_id in {"builtin", "builtin-llm", "builtin_llm"} or transport == "builtin_llm":
         capabilities = BUILTIN_MODEL_CAPABILITIES
     else:
-        adapter_type = _TRANSPORT_ADAPTERS.get(transport)
-        if adapter_type is None:
-            return None
-        capabilities = adapter_type(Path(".")).capabilities()
+        adapter_type = _SPECIALIZED_TRANSPORT_ADAPTERS.get(transport)
+        adapter = adapter_type(Path(".")) if adapter_type is not None else CliProviderAdapter(Path("."))
+        capabilities = adapter.capabilities()
     return sorted(
         name
         for name in ProviderCapabilities.__dataclass_fields__
